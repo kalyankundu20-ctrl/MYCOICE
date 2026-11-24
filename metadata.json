@@ -1,0 +1,6 @@
+{
+  "name": "KK Agency Ledger",
+  "description": "Billing, ticket limit monitoring, prize verification, and WhatsApp digital invoicing for KK Agency.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

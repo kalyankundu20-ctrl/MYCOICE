@@ -1,0 +1,291 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --kk-brand: #0B1E47;
+    --kk-brand-mid: #122E6B;
+    --kk-brand-end: #1B449C;
+    --kk-brand-hover: #1D4ED8;
+    --kk-canvas: #F3F6FB;
+    --kk-surface: #FFFFFF;
+    --kk-tint: #EEF4FF;
+    --kk-tint-border: #C7D7FE;
+  }
+
+  html,
+  body {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    font-family: var(--font-sans);
+    background-color: #0B1E47;
+    color: #0f172a;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
+    touch-action: manipulation;
+  }
+
+  /* Edge-to-edge full-screen root on iOS/Android standalone PWAs (avoids 100dvh bottom cut/gap bug on iOS) */
+  #root {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background-color: var(--kk-canvas);
+  }
+
+  /* Hide native number spinners to preserve space in dense numeric cells */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  /* Hide Chrome/Android native datalist arrow inside compact sheet cells so ITEM (M5/M10/M20) never clips */
+  input.ios-compact-input::-webkit-calendar-picker-indicator,
+  input.ios-compact-input::-webkit-list-button {
+    display: none !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-appearance: none !important;
+  }
+
+  /* Prevent iOS Safari / WebView auto-zoom on ANY input, select, or textarea focus */
+  @media (max-width: 639px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(.ios-compact-input):not(.ios-compact-input-md):not(.ios-compact-input-bill),
+    select:not(.ios-compact-input):not(.ios-compact-input-md):not(.ios-compact-input-bill),
+    textarea:not(.ios-compact-input):not(.ios-compact-input-md):not(.ios-compact-input-bill) {
+      font-size: 16px !important;
+    }
+
+    .ios-compact-wrap {
+      position: relative;
+      width: 100%;
+      height: 36px;
+      overflow: hidden;
+    }
+
+    .ios-compact-input {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 131.58% !important;
+      height: 48px !important;
+      font-size: 16px !important;
+      line-height: 1.3 !important;
+      transform: scale(0.76);
+      transform-origin: top left;
+    }
+
+    .ios-compact-wrap-md {
+      position: relative;
+      width: 100%;
+      height: 35px;
+      overflow: hidden;
+    }
+
+    .ios-compact-input-md {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 117.65% !important;
+      height: 42px !important;
+      font-size: 16px !important;
+      line-height: 1.25 !important;
+      transform: scale(0.85);
+      transform-origin: top left;
+    }
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Unlayered mobile compact Bill inputs (JOMA / DUE / RATE) so they always win over utilities */
+@media (max-width: 639px) {
+  .ios-compact-wrap-bill {
+    position: relative !important;
+    width: 100% !important;
+    height: 34px !important;
+    overflow: hidden !important;
+  }
+
+  .ios-compact-input-bill {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 119.05% !important;
+    height: 40.5px !important;
+    font-size: 16px !important;
+    line-height: 1.25 !important;
+    transform: scale(0.84) !important;
+    transform-origin: top left !important;
+  }
+
+  /* All Cols Screen 1 fit: full NAME visible without ellipsis + MOR..FRESH clean layout */
+  .bill-col-name {
+    width: auto;
+    min-width: max(92px, calc((100vw - 18px) * 0.25));
+    max-width: none;
+  }
+  .bill-col-sess {
+    width: calc((100vw - 18px) * 0.11);
+    min-width: calc((100vw - 18px) * 0.11);
+  }
+  .bill-col-sold {
+    width: calc((100vw - 18px) * 0.125);
+    min-width: calc((100vw - 18px) * 0.125);
+  }
+  .bill-col-bill {
+    width: calc((100vw - 18px) * 0.145);
+    min-width: calc((100vw - 18px) * 0.145);
+  }
+  .bill-col-fresh {
+    width: calc((100vw - 18px) * 0.15);
+    min-width: calc((100vw - 18px) * 0.15);
+  }
+}
+
+/* Custom subtle scrollbars for dense data grids */
+.ledger-scroll::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.ledger-scroll::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+.ledger-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+
+.ledger-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Refined unified theme gradients & single-elevation surfaces */
+.kk-brand-gradient {
+  background-color: #0B1E47;
+  background-image: linear-gradient(145deg, var(--kk-brand) 0%, var(--kk-brand-mid) 56%, var(--kk-brand-end) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 4px 18px -4px rgba(15, 23, 42, 0.24);
+}
+
+.kk-table-head {
+  background-color: #0B1E47;
+  background-image: linear-gradient(95deg, var(--kk-brand) 0%, var(--kk-brand-mid) 54%, var(--kk-brand-end) 100%);
+  color: #ffffff;
+}
+
+.kk-surface-card {
+  background-color: var(--kk-surface);
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 18px -8px rgba(15, 23, 42, 0.06);
+}
+
+/* Crisp Fluid Spring Motion System */
+@keyframes kkFadeUp {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes kkModalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translate3d(0, 12px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+
+@keyframes kkDrawerIn {
+  from {
+    opacity: 0;
+    transform: translate3d(36px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.kk-tab-enter {
+  animation: kkFadeUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.kk-modal-in {
+  animation: kkModalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.kk-drawer-in {
+  animation: kkDrawerIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.kk-card-lift {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s ease;
+}
+
+.kk-card-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px -8px rgba(15, 23, 42, 0.12);
+}
+
+button:not(:disabled),
+a[role="button"] {
+  transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+button:not(:disabled):active,
+a[role="button"]:active {
+  transform: scale(0.97);
+  transition: transform 0.06s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kk-tab-enter,
+  .kk-modal-in,
+  .kk-drawer-in,
+  .kk-card-lift {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+  button:not(:disabled):active,
+  a[role="button"]:active {
+    transform: none !important;
+  }
+}

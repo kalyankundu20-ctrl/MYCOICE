@@ -1,0 +1,1114 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Safety Net (Pillar 4.1)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // PRIMITIVE HELPERS (Phase 3 + Red Team Patched)
+    // =========================================================================
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() &&
+        ('email_verified' in request.auth.token) &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidOptionalId(id) {
+      return id is string && (id.size() == 0 || (id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$')));
+    }
+
+    function isValidAccessKey(k) {
+      return k is string && k.size() >= 16 && k.size() <= 64 && k.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidIsoDate(d) {
+      return d is string && d.size() == 10 && d.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isValidRole(r) {
+      return r is string && (r == 'admin' || r == 'master' || r == 'client');
+    }
+
+    function isValidStringList(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || arr[0] is string);
+    }
+
+    function isValidNonEmptyStringList(arr, maxLen) {
+      return arr is list && arr.size() >= 1 && arr.size() <= maxLen && arr[0] is string;
+    }
+
+    function isValidEntryList(arr) {
+      return arr is list && arr.size() <= 500 && (arr.size() == 0 || arr[0] is map);
+    }
+
+    // Zero-DB-read bootstrap admin check (safe for allow list — Pillar 8)
+    function isBootstrapAdminEmail() {
+      return isVerifiedUser() &&
+        ('email' in request.auth.token) &&
+        request.auth.token.email == 'kalyankundu20@gmail.com';
+    }
+
+    // Full bootstrap admin check (for single-doc operations)
+    function isBootstrapAdmin() {
+      return isBootstrapAdminEmail() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isAgencyOwner(agencyId) {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+        get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid == request.auth.uid;
+    }
+
+    function isActiveAgencyMember(agencyId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/agencies/$(agencyId)/members/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/agencies/$(agencyId)/members/$(request.auth.uid)).data.active == true;
+    }
+
+    function getMemberDoc(agencyId) {
+      return get(/databases/$(database)/documents/agencies/$(agencyId)/members/$(request.auth.uid)).data;
+    }
+
+    function isActiveAdminMember(agencyId) {
+      return isActiveAgencyMember(agencyId) && getMemberDoc(agencyId).role == 'admin';
+    }
+
+    function isActiveMasterMember(agencyId) {
+      return isActiveAgencyMember(agencyId) && getMemberDoc(agencyId).role == 'master';
+    }
+
+    function isAgencyAdmin(agencyId) {
+      return isBootstrapAdmin() || isAgencyOwner(agencyId) || isActiveAdminMember(agencyId);
+    }
+
+    function isPartyActive(agencyId, partyId) {
+      return exists(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(partyId)) &&
+        get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(partyId)).data.active == true;
+    }
+
+    // Server-clock IST session cutoff check (1PM -> 12:58=778, 6PM -> 17:58=1078, 8PM -> 19:58=1198)
+    // Applied strictly to Sellers & Masters; Admin is always exempt.
+    // Matches client sessionLock.ts: future date is always open; otherwise follow exact IST cutoff times.
+    function pad2(n) {
+      return n < 10 ? ('0' + string(n)) : string(n);
+    }
+
+    function isSessionOpenIST(dateStr, cutoffMinutes) {
+      let ist = request.time + duration.value(330, 'm');
+      let istDate = string(ist.year()) + '-' + pad2(ist.month()) + '-' + pad2(ist.day());
+      let istMins = ist.hours() * 60 + ist.minutes();
+      return (dateStr is string && dateStr > istDate) || istMins < cutoffMinutes;
+    }
+
+    // =========================================================================
+    // VALIDATION BLUEPRINTS (Pillar 2 — Anti-Update-Gap)
+    // =========================================================================
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'active', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'active', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.active is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'agencyId', 'partyId', 'role', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'agencyId', 'partyId', 'role', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        isValidId(data.agencyId) &&
+        isValidId(data.partyId) &&
+        isValidRole(data.role) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPartyInvite(data) {
+      return data.keys().hasAll([
+          'accessKey', 'agencyId', 'partyId', 'partyName', 'role',
+          'parentMasterId', 'parentMasterUid', 'ownerUid', 'createdByUid',
+          'active', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'accessKey', 'agencyId', 'partyId', 'partyName', 'role',
+          'parentMasterId', 'parentMasterUid', 'ownerUid', 'createdByUid',
+          'active', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidAccessKey(data.accessKey) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.partyId) &&
+        data.partyName is string && data.partyName.size() >= 1 && data.partyName.size() <= 60 &&
+        isValidRole(data.role) &&
+        isValidOptionalId(data.parentMasterId) &&
+        isValidOptionalId(data.parentMasterUid) &&
+        isValidId(data.ownerUid) &&
+        isValidId(data.createdByUid) &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAgency(data) {
+      return data.keys().hasAll([
+          'agencyId', 'name', 'ownerUid', 'adminUids', 'date',
+          'limitThreshold', 'excludedPrizeNames', 'itemOptions',
+          'winning1PM', 'winning6PM', 'winning8PM', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'name', 'ownerUid', 'adminUids', 'date',
+          'limitThreshold', 'sellerLimitThreshold', 'excludedPrizeNames', 'itemOptions',
+          'winning1PM', 'winning6PM', 'winning8PM', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        isValidId(data.ownerUid) &&
+        isValidNonEmptyStringList(data.adminUids, 10) &&
+        isValidIsoDate(data.date) &&
+        data.limitThreshold is number && data.limitThreshold >= 1 && data.limitThreshold <= 1000 &&
+        (!('sellerLimitThreshold' in data) || (data.sellerLimitThreshold is number && data.sellerLimitThreshold >= 1 && data.sellerLimitThreshold <= 1000)) &&
+        isValidStringList(data.excludedPrizeNames, 50) &&
+        isValidNonEmptyStringList(data.itemOptions, 20) &&
+        data.winning1PM is string && data.winning1PM.size() <= 20000 &&
+        data.winning6PM is string && data.winning6PM.size() <= 20000 &&
+        data.winning8PM is string && data.winning8PM.size() <= 20000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminPrivateConfig(data) {
+      return data.keys().hasAll([
+          'agencyId', 'ownerUid', 'whatsappNumber', 'autoArchiveDaily',
+          'pausedAutoArchiveDate', 'extraNames', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'ownerUid', 'whatsappNumber', 'autoArchiveDaily',
+          'pausedAutoArchiveDate', 'extraNames', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.ownerUid) &&
+        data.whatsappNumber is string && data.whatsappNumber.size() <= 30 &&
+        data.autoArchiveDaily is bool &&
+        data.pausedAutoArchiveDate is string && data.pausedAutoArchiveDate.size() <= 10 &&
+        isValidStringList(data.extraNames, 100) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAgencyMember(data) {
+      return data.keys().hasAll([
+          'agencyId', 'uid', 'partyId', 'role', 'parentMasterId',
+          'ownerUid', 'accessKey', 'active', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'uid', 'partyId', 'role', 'parentMasterId',
+          'ownerUid', 'accessKey', 'active', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.uid) &&
+        isValidId(data.partyId) &&
+        isValidRole(data.role) &&
+        isValidOptionalId(data.parentMasterId) &&
+        isValidId(data.ownerUid) &&
+        isValidAccessKey(data.accessKey) &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidParty(data) {
+      return data.keys().hasAll([
+          'agencyId', 'partyId', 'name', 'role', 'parentMasterId',
+          'parentMasterUid', 'ownerUid', 'adminUids', 'rate', 'due',
+          'joma', 'active', 'accessKey', 'assignedUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'partyId', 'name', 'role', 'parentMasterId',
+          'parentMasterUid', 'ancestorMasterIds', 'ancestorMasterUids',
+          'ownerUid', 'adminUids', 'rate', 'due',
+          'joma', 'active', 'accessKey', 'assignedUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.partyId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+        isValidRole(data.role) &&
+        isValidOptionalId(data.parentMasterId) &&
+        isValidOptionalId(data.parentMasterUid) &&
+        (!('ancestorMasterIds' in data) || isValidStringList(data.ancestorMasterIds, 10)) &&
+        (!('ancestorMasterUids' in data) || isValidStringList(data.ancestorMasterUids, 10)) &&
+        isValidId(data.ownerUid) &&
+        isValidNonEmptyStringList(data.adminUids, 10) &&
+        data.rate is number && data.rate >= 0 && data.rate <= 10000 &&
+        data.due is number && data.due >= -100000000 && data.due <= 100000000 &&
+        data.joma is number && data.joma >= -100000000 && data.joma <= 100000000 &&
+        data.active is bool &&
+        isValidAccessKey(data.accessKey) &&
+        isValidOptionalId(data.assignedUid) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPartyPrivate(data) {
+      return data.keys().hasAll([
+          'agencyId', 'partyId', 'ownerUid', 'adminUids',
+          'parentMasterUid', 'mobile', 'assignedEmail', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'partyId', 'ownerUid', 'adminUids',
+          'parentMasterId', 'parentMasterUid', 'mobile', 'assignedEmail',
+          'loginId', 'loginPassword', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.partyId) &&
+        isValidId(data.ownerUid) &&
+        isValidNonEmptyStringList(data.adminUids, 10) &&
+        (!('parentMasterId' in data) || isValidOptionalId(data.parentMasterId)) &&
+        isValidOptionalId(data.parentMasterUid) &&
+        data.mobile is string && data.mobile.size() <= 30 &&
+        data.assignedEmail is string && data.assignedEmail.size() <= 120 &&
+        (!('loginId' in data) || (data.loginId is string && data.loginId.size() <= 32 && data.loginId.matches('^[a-zA-Z0-9_\\-]*$'))) &&
+        (!('loginPassword' in data) || (data.loginPassword is string && data.loginPassword.size() <= 32)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPartySheet(data) {
+      return data.keys().hasAll([
+          'agencyId', 'sheetId', 'partyId', 'partyName', 'role',
+          'ownerUid', 'adminUids', 'assignedUid', 'parentMasterId',
+          'parentMasterUid', 'date', 'entries1PM', 'entries6PM',
+          'entries8PM', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'sheetId', 'partyId', 'partyName', 'role',
+          'ownerUid', 'adminUids', 'assignedUid', 'parentMasterId',
+          'parentMasterUid', 'ancestorMasterIds', 'ancestorMasterUids',
+          'date', 'entries1PM', 'entries6PM',
+          'entries8PM', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.sheetId) &&
+        isValidId(data.partyId) &&
+        data.partyName is string && data.partyName.size() >= 1 && data.partyName.size() <= 60 &&
+        isValidRole(data.role) &&
+        isValidId(data.ownerUid) &&
+        isValidNonEmptyStringList(data.adminUids, 10) &&
+        isValidOptionalId(data.assignedUid) &&
+        isValidOptionalId(data.parentMasterId) &&
+        isValidOptionalId(data.parentMasterUid) &&
+        (!('ancestorMasterIds' in data) || isValidStringList(data.ancestorMasterIds, 10)) &&
+        (!('ancestorMasterUids' in data) || isValidStringList(data.ancestorMasterUids, 10)) &&
+        isValidIsoDate(data.date) &&
+        isValidEntryList(data.entries1PM) &&
+        isValidEntryList(data.entries6PM) &&
+        isValidEntryList(data.entries8PM) &&
+        isValidId(data.updatedByUid) &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidArchiveSnapshot(data) {
+      return data.keys().hasAll([
+          'agencyId', 'snapshotId', 'ownerUid', 'adminUids',
+          'date', 'savedAt', 'trigger', 'payload', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'snapshotId', 'ownerUid', 'adminUids',
+          'date', 'savedAt', 'trigger', 'payload', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.snapshotId) &&
+        isValidId(data.ownerUid) &&
+        isValidNonEmptyStringList(data.adminUids, 10) &&
+        isValidIsoDate(data.date) &&
+        data.savedAt is string && data.savedAt.size() >= 1 && data.savedAt.size() <= 64 &&
+        data.trigger is string && (data.trigger == 'manual' || data.trigger == 'daily-auto' || data.trigger == 'day-close') &&
+        data.payload is map &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPartyArchiveSnapshot(data) {
+      return data.keys().hasAll([
+          'agencyId', 'snapshotId', 'partyId', 'partyName',
+          'ownerUid', 'adminUids', 'assignedUid', 'parentMasterId', 'parentMasterUid',
+          'date', 'savedAt', 'trigger', 'payload', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'snapshotId', 'partyId', 'partyName',
+          'ownerUid', 'adminUids', 'assignedUid', 'parentMasterId', 'parentMasterUid',
+          'date', 'savedAt', 'trigger', 'payload', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.snapshotId) &&
+        isValidId(data.partyId) &&
+        data.partyName is string && data.partyName.size() >= 1 && data.partyName.size() <= 60 &&
+        isValidId(data.ownerUid) &&
+        isValidNonEmptyStringList(data.adminUids, 10) &&
+        isValidOptionalId(data.assignedUid) &&
+        isValidOptionalId(data.parentMasterId) &&
+        isValidOptionalId(data.parentMasterUid) &&
+        isValidIsoDate(data.date) &&
+        data.savedAt is string && data.savedAt.size() >= 1 && data.savedAt.size() <= 64 &&
+        data.trigger is string && (data.trigger == 'manual' || data.trigger == 'daily-auto' || data.trigger == 'day-close') &&
+        data.payload is map &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPublicAnnouncement(data) {
+      return data.keys().hasAll([
+          'agencyId', 'active', 'kind', 'title', 'message',
+          'ownerUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'active', 'kind', 'title', 'message',
+          'ownerUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        data.active is bool &&
+        data.kind is string && (data.kind == 'offer' || data.kind == 'urgent' || data.kind == 'notice') &&
+        data.title is string && data.title.size() <= 120 &&
+        data.message is string && data.message.size() <= 1000 &&
+        isValidId(data.ownerUid) &&
+        isValidId(data.updatedByUid) &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // COLLECTION RULES
+    // =========================================================================
+
+    // 1. /admins/{adminUid}
+    match /admins/{adminUid} {
+      allow get: if isVerifiedUser() && isValidId(adminUid) && (
+        adminUid == request.auth.uid || isBootstrapAdmin()
+      );
+      allow list: if false;
+      allow create: if isVerifiedUser() && isValidId(adminUid) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == adminUid &&
+        incoming().createdAt == request.time &&
+        isBootstrapAdmin();
+      allow update: if isVerifiedUser() && isValidId(adminUid) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        isBootstrapAdmin() &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['active']);
+      allow delete: if isVerifiedUser() && isValidId(adminUid) && isBootstrapAdmin();
+    }
+
+    // 2. /userProfiles/{uid}
+    match /userProfiles/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (
+        uid == request.auth.uid || isBootstrapAdmin()
+      );
+      allow list: if false;
+      allow create: if isSignedIn() && isValidId(uid) &&
+        isValidUserProfile(incoming()) &&
+        uid == request.auth.uid &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/agencies/$(incoming().agencyId)/members/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/agencies/$(incoming().agencyId)/members/$(request.auth.uid)).data.role == incoming().role &&
+        getAfter(/databases/$(database)/documents/agencies/$(incoming().agencyId)/members/$(request.auth.uid)).data.partyId == incoming().partyId;
+      allow update: if isSignedIn() && isValidId(uid) &&
+        isValidUserProfile(incoming()) &&
+        uid == request.auth.uid &&
+        incoming().uid == existing().uid &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/agencies/$(incoming().agencyId)/members/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/agencies/$(incoming().agencyId)/members/$(request.auth.uid)).data.role == incoming().role &&
+        getAfter(/databases/$(database)/documents/agencies/$(incoming().agencyId)/members/$(request.auth.uid)).data.partyId == incoming().partyId &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['agencyId', 'partyId', 'role', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(uid) && (
+        uid == request.auth.uid || isBootstrapAdmin()
+      );
+    }
+
+    // 3. /partyInvites/{accessKey} — Strictly unlistable secret credential/invite lookup
+    match /partyInvites/{accessKey} {
+      allow get: if isSignedIn() && isValidAccessKey(accessKey);
+      allow list: if false;
+      allow create: if isSignedIn() && isValidAccessKey(accessKey) &&
+        isValidPartyInvite(incoming()) &&
+        incoming().accessKey == accessKey &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/agencies/$(incoming().agencyId)) &&
+        existsAfter(/databases/$(database)/documents/agencies/$(incoming().agencyId)/parties/$(incoming().partyId)) &&
+        (
+          isAgencyAdmin(incoming().agencyId) ||
+          (
+            isActiveMasterMember(incoming().agencyId) &&
+            (incoming().role == 'client' || incoming().role == 'master') &&
+            incoming().parentMasterUid == request.auth.uid &&
+            incoming().parentMasterId == getMemberDoc(incoming().agencyId).partyId &&
+            incoming().ownerUid == get(/databases/$(database)/documents/agencies/$(incoming().agencyId)).data.ownerUid
+          )
+        );
+      allow update: if isSignedIn() && isValidAccessKey(accessKey) &&
+        isValidPartyInvite(incoming()) &&
+        incoming().accessKey == existing().accessKey &&
+        incoming().agencyId == existing().agencyId &&
+        incoming().partyId == existing().partyId &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            isAgencyAdmin(existing().agencyId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['partyName', 'role', 'parentMasterId', 'parentMasterUid', 'active', 'updatedAt'])
+          ) ||
+          (
+            isActiveMasterMember(existing().agencyId) &&
+            (
+              existing().parentMasterUid == request.auth.uid ||
+              existing().parentMasterId == getMemberDoc(existing().agencyId).partyId
+            ) &&
+            (existing().role == 'client' || existing().role == 'master') &&
+            (incoming().role == 'client' || incoming().role == 'master') &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['partyName', 'role', 'active', 'updatedAt'])
+          )
+        );
+      allow delete: if isSignedIn() && isValidAccessKey(accessKey) && resource != null && (
+        isAgencyAdmin(existing().agencyId) ||
+        (
+          isActiveMasterMember(existing().agencyId) && (
+            existing().parentMasterUid == request.auth.uid ||
+            existing().parentMasterId == getMemberDoc(existing().agencyId).partyId
+          )
+        )
+      );
+    }
+
+    // 3b. /publicAnnouncements/{agencyId} — Zero-PII agency advertisement / offer / urgent notice
+    // Readable by direct single-doc get on known agencyId (App, Shared Link, Master/Sub-Master portals);
+    // strictly unlistable and writable ONLY by verified Agency Admin.
+    match /publicAnnouncements/{agencyId} {
+      allow get: if isValidId(agencyId);
+      allow list: if false;
+      allow create: if isVerifiedUser() && isValidId(agencyId) &&
+        isValidPublicAnnouncement(incoming()) &&
+        incoming().agencyId == agencyId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+        incoming().ownerUid == get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid &&
+        isAgencyAdmin(agencyId);
+      allow update: if isVerifiedUser() && isValidId(agencyId) &&
+        isValidPublicAnnouncement(incoming()) &&
+        incoming().agencyId == existing().agencyId &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAgencyAdmin(agencyId) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'active', 'kind', 'title', 'message', 'updatedByUid', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedUser() && isValidId(agencyId) && isAgencyAdmin(agencyId);
+    }
+
+    // 4. /agencies/{agencyId}
+    match /agencies/{agencyId} {
+      allow get: if isSignedIn() && isValidId(agencyId) && (
+        isBootstrapAdmin() ||
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().adminUids ||
+        isActiveAgencyMember(agencyId)
+      );
+      allow list: if isVerifiedUser() && (
+        isBootstrapAdminEmail() ||
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.uid in resource.data.adminUids
+      );
+      allow create: if isVerifiedUser() && isValidId(agencyId) &&
+        isValidAgency(incoming()) &&
+        incoming().agencyId == agencyId &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().adminUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(agencyId) &&
+        isValidAgency(incoming()) &&
+        incoming().agencyId == existing().agencyId &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isAgencyAdmin(agencyId) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'adminUids', 'date', 'limitThreshold', 'sellerLimitThreshold',
+          'excludedPrizeNames', 'itemOptions',
+          'winning1PM', 'winning6PM', 'winning8PM', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedUser() && isValidId(agencyId) && (
+        isBootstrapAdmin() || existing().ownerUid == request.auth.uid
+      );
+
+      // 4a. /agencies/{agencyId}/private/{configId} (PII Isolated — Admin Only)
+      match /private/{configId} {
+        allow get: if isVerifiedUser() && isValidId(agencyId) && isValidId(configId) &&
+          isAgencyAdmin(agencyId);
+        allow list: if false;
+        allow create: if isVerifiedUser() && isValidId(agencyId) && isValidId(configId) &&
+          isValidAdminPrivateConfig(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          isAgencyAdmin(agencyId);
+        allow update: if isVerifiedUser() && isValidId(agencyId) && isValidId(configId) &&
+          isValidAdminPrivateConfig(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().updatedAt == request.time &&
+          isAgencyAdmin(agencyId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'whatsappNumber', 'autoArchiveDaily', 'pausedAutoArchiveDate', 'extraNames', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedUser() && isValidId(agencyId) && isValidId(configId) &&
+          isAgencyAdmin(agencyId);
+      }
+
+      // 4b. /agencies/{agencyId}/members/{memberUid} (Master Gate Authority)
+      match /members/{memberUid} {
+        allow get: if isSignedIn() && isValidId(agencyId) && isValidId(memberUid) && (
+          memberUid == request.auth.uid || isAgencyAdmin(agencyId)
+        );
+        allow list: if isSignedIn() && (
+          isBootstrapAdminEmail() ||
+          resource.data.ownerUid == request.auth.uid ||
+          resource.data.uid == request.auth.uid
+        );
+        allow create: if isSignedIn() && isValidId(agencyId) && isValidId(memberUid) &&
+          isValidAgencyMember(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().uid == memberUid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          (
+            (
+              // Agency owner bootstrapping their own admin member record atomically
+              isVerifiedUser() &&
+              memberUid == request.auth.uid &&
+              getAfter(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid == request.auth.uid &&
+              incoming().role == 'admin' &&
+              incoming().ownerUid == request.auth.uid &&
+              incoming().active == true
+            ) ||
+            isAgencyAdmin(agencyId) ||
+            (
+              // Verified Atomic Credential/Invite Claim (Pillar 7)
+              memberUid == request.auth.uid &&
+              incoming().active == true &&
+              exists(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)) &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.active == true &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.agencyId == agencyId &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.partyId == incoming().partyId &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.role == incoming().role &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.parentMasterId == incoming().parentMasterId &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.ownerUid == incoming().ownerUid &&
+              getAfter(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(incoming().partyId)).data.assignedUid == request.auth.uid
+            )
+          );
+        allow update: if isSignedIn() && isValidId(agencyId) && isValidId(memberUid) &&
+          isValidAgencyMember(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().uid == existing().uid &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              isAgencyAdmin(agencyId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'partyId', 'role', 'parentMasterId', 'accessKey', 'active', 'updatedAt'
+              ])
+            ) ||
+            (
+              // Master managing their sub-seller's member doc (active/role, never admin, never self)
+              isActiveMasterMember(agencyId) &&
+              memberUid != request.auth.uid &&
+              existing().parentMasterId == getMemberDoc(agencyId).partyId &&
+              (existing().role == 'client' || existing().role == 'master') &&
+              (incoming().role == 'client' || incoming().role == 'master') &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['role', 'active', 'updatedAt'])
+            ) ||
+            (
+              // Re-claim via valid credential/invite
+              memberUid == request.auth.uid &&
+              incoming().active == true &&
+              exists(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)) &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.active == true &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.agencyId == agencyId &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.partyId == incoming().partyId &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.role == incoming().role &&
+              get(/databases/$(database)/documents/partyInvites/$(incoming().accessKey)).data.parentMasterId == incoming().parentMasterId &&
+              getAfter(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(incoming().partyId)).data.assignedUid == request.auth.uid &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'partyId', 'role', 'parentMasterId', 'accessKey', 'active', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(agencyId) && isValidId(memberUid) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveMasterMember(agencyId) &&
+            resource != null &&
+            memberUid != request.auth.uid &&
+            existing().parentMasterId == getMemberDoc(agencyId).partyId &&
+            (existing().role == 'client' || existing().role == 'master')
+          )
+        );
+      }
+
+      // 4c. /agencies/{agencyId}/parties/{partyId} (Non-PII Party Accounts)
+      match /parties/{partyId} {
+        allow get: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) && (
+          isAgencyAdmin(agencyId) ||
+          (existing().assignedUid == request.auth.uid && existing().active == true && isActiveAgencyMember(agencyId)) ||
+          (
+            isActiveMasterMember(agencyId) && (
+              existing().parentMasterUid == request.auth.uid ||
+              existing().parentMasterId == getMemberDoc(agencyId).partyId ||
+              ('ancestorMasterIds' in existing() && getMemberDoc(agencyId).partyId in existing().ancestorMasterIds) ||
+              ('ancestorMasterUids' in existing() && request.auth.uid in existing().ancestorMasterUids)
+            )
+          )
+        );
+        allow list: if isSignedIn() && (
+          isBootstrapAdminEmail() ||
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.adminUids ||
+          resource.data.assignedUid == request.auth.uid ||
+          resource.data.parentMasterUid == request.auth.uid ||
+          request.auth.uid in resource.data.ancestorMasterUids ||
+          (
+            isActiveMasterMember(agencyId) && (
+              resource.data.parentMasterId == getMemberDoc(agencyId).partyId ||
+              getMemberDoc(agencyId).partyId in resource.data.ancestorMasterIds
+            )
+          )
+        );
+        allow create: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) &&
+          isValidParty(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().partyId == partyId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          (
+            isAgencyAdmin(agencyId) ||
+            (
+              isActiveMasterMember(agencyId) &&
+              (incoming().role == 'client' || incoming().role == 'master') &&
+              incoming().parentMasterUid == request.auth.uid &&
+              incoming().parentMasterId == getMemberDoc(agencyId).partyId &&
+              incoming().ownerUid == get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid &&
+              incoming().assignedUid == ''
+            )
+          );
+        allow update: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) &&
+          isValidParty(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().partyId == existing().partyId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              // Action 1: Admin full party management
+              isAgencyAdmin(agencyId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'role', 'parentMasterId', 'parentMasterUid',
+                'ancestorMasterIds', 'ancestorMasterUids', 'adminUids',
+                'rate', 'due', 'joma', 'active', 'accessKey', 'assignedUid', 'updatedAt'
+              ])
+            ) ||
+            (
+              // Action 2: Master managing their own sub-seller (multi-level chain, never admin)
+              isActiveMasterMember(agencyId) &&
+              (
+                existing().parentMasterUid == request.auth.uid ||
+                existing().parentMasterId == getMemberDoc(agencyId).partyId
+              ) &&
+              (existing().role == 'client' || existing().role == 'master') &&
+              (incoming().role == 'client' || incoming().role == 'master') &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'role', 'rate', 'due', 'joma', 'active', 'accessKey', 'assignedUid', 'updatedAt'
+              ])
+            ) ||
+            (
+              // Action 3: Atomic ID+Password Credential Claim binding assignedUid to authenticated caller
+              existing().active == true &&
+              incoming().assignedUid == request.auth.uid &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['assignedUid', 'updatedAt']) &&
+              getAfter(/databases/$(database)/documents/agencies/$(agencyId)/members/$(request.auth.uid)).data.accessKey == existing().accessKey &&
+              getAfter(/databases/$(database)/documents/agencies/$(agencyId)/members/$(request.auth.uid)).data.partyId == partyId &&
+              getAfter(/databases/$(database)/documents/agencies/$(agencyId)/members/$(request.auth.uid)).data.active == true
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveMasterMember(agencyId) &&
+            resource != null &&
+            (
+              existing().parentMasterUid == request.auth.uid ||
+              existing().parentMasterId == getMemberDoc(agencyId).partyId
+            ) &&
+            (existing().role == 'client' || existing().role == 'master')
+          )
+        );
+      }
+
+      // 4d. /agencies/{agencyId}/partyPrivate/{partyId} (PII Isolated: Mobile, Login ID & Password)
+      match /partyPrivate/{partyId} {
+        allow get: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveMasterMember(agencyId) && (
+              existing().parentMasterUid == request.auth.uid ||
+              ('parentMasterId' in existing() && existing().parentMasterId == getMemberDoc(agencyId).partyId)
+            )
+          )
+        );
+        allow list: if isSignedIn() && (
+          isBootstrapAdminEmail() ||
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.adminUids ||
+          resource.data.parentMasterUid == request.auth.uid ||
+          (
+            isActiveMasterMember(agencyId) &&
+            resource.data.parentMasterId == getMemberDoc(agencyId).partyId
+          )
+        );
+        allow create: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) &&
+          isValidPartyPrivate(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().partyId == partyId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          (
+            isAgencyAdmin(agencyId) ||
+            (
+              isActiveMasterMember(agencyId) &&
+              incoming().parentMasterUid == request.auth.uid &&
+              (!('parentMasterId' in incoming()) || incoming().parentMasterId == getMemberDoc(agencyId).partyId) &&
+              incoming().ownerUid == get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid
+            )
+          );
+        allow update: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) &&
+          isValidPartyPrivate(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().partyId == existing().partyId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              isAgencyAdmin(agencyId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'adminUids', 'parentMasterId', 'parentMasterUid', 'mobile', 'assignedEmail',
+                'loginId', 'loginPassword', 'updatedAt'
+              ])
+            ) ||
+            (
+              isActiveMasterMember(agencyId) &&
+              (
+                existing().parentMasterUid == request.auth.uid ||
+                ('parentMasterId' in existing() && existing().parentMasterId == getMemberDoc(agencyId).partyId) ||
+                (
+                  exists(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(partyId)) &&
+                  get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(partyId)).data.parentMasterId == getMemberDoc(agencyId).partyId
+                )
+              ) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'parentMasterId', 'parentMasterUid', 'mobile', 'assignedEmail',
+                'loginId', 'loginPassword', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(agencyId) && isValidId(partyId) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveMasterMember(agencyId) && resource != null && (
+              existing().parentMasterUid == request.auth.uid ||
+              ('parentMasterId' in existing() && existing().parentMasterId == getMemberDoc(agencyId).partyId) ||
+              (
+                exists(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(partyId)) &&
+                get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(partyId)).data.parentMasterId == getMemberDoc(agencyId).partyId
+              )
+            )
+          )
+        );
+      }
+
+      // 4e. /agencies/{agencyId}/sheets/{sheetId} (Per-Party Live Entry Sheets)
+      match /sheets/{sheetId} {
+        allow get: if isSignedIn() && isValidId(agencyId) && isValidId(sheetId) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveAgencyMember(agencyId) &&
+            isPartyActive(agencyId, sheetId) &&
+            get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(sheetId)).data.assignedUid == request.auth.uid
+          ) ||
+          (
+            isActiveMasterMember(agencyId) && resource != null && (
+              existing().parentMasterUid == request.auth.uid ||
+              existing().parentMasterId == getMemberDoc(agencyId).partyId ||
+              ('ancestorMasterIds' in existing() && getMemberDoc(agencyId).partyId in existing().ancestorMasterIds) ||
+              ('ancestorMasterUids' in existing() && request.auth.uid in existing().ancestorMasterUids)
+            )
+          )
+        );
+        allow list: if isSignedIn() && (
+          isBootstrapAdminEmail() ||
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.adminUids ||
+          resource.data.assignedUid == request.auth.uid ||
+          resource.data.parentMasterUid == request.auth.uid ||
+          request.auth.uid in resource.data.ancestorMasterUids ||
+          (
+            isActiveMasterMember(agencyId) && (
+              resource.data.parentMasterId == getMemberDoc(agencyId).partyId ||
+              getMemberDoc(agencyId).partyId in resource.data.ancestorMasterIds
+            )
+          )
+        );
+        allow create: if isSignedIn() && isValidId(agencyId) && isValidId(sheetId) &&
+          isValidPartySheet(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().sheetId == sheetId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          (
+            isAgencyAdmin(agencyId) ||
+            (
+              isActiveAgencyMember(agencyId) &&
+              sheetId == getMemberDoc(agencyId).partyId &&
+              incoming().partyId == sheetId &&
+              incoming().assignedUid == request.auth.uid &&
+              incoming().ownerUid == get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid &&
+              isPartyActive(agencyId, sheetId) &&
+              get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(sheetId)).data.assignedUid == request.auth.uid &&
+              (incoming().entries1PM.size() == 0 || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 778)) &&
+              (incoming().entries6PM.size() == 0 || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1078)) &&
+              (incoming().entries8PM.size() == 0 || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1198))
+            ) ||
+            (
+              isActiveMasterMember(agencyId) &&
+              incoming().partyId == sheetId &&
+              incoming().parentMasterUid == request.auth.uid &&
+              incoming().ownerUid == get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid &&
+              exists(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(sheetId)) &&
+              (
+                get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(sheetId)).data.parentMasterUid == request.auth.uid ||
+                get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(sheetId)).data.parentMasterId == getMemberDoc(agencyId).partyId
+              ) &&
+              (incoming().entries1PM.size() == 0 || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 778)) &&
+              (incoming().entries6PM.size() == 0 || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1078)) &&
+              (incoming().entries8PM.size() == 0 || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1198))
+            )
+          );
+        allow update: if isSignedIn() && isValidId(agencyId) && isValidId(sheetId) &&
+          isValidPartySheet(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().sheetId == existing().sheetId &&
+          incoming().partyId == existing().partyId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              // Action 1: Admin full sheet update (NEVER time-locked)
+              isAgencyAdmin(agencyId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'partyName', 'adminUids', 'assignedUid', 'parentMasterId', 'parentMasterUid',
+                'ancestorMasterIds', 'ancestorMasterUids',
+                'date', 'entries1PM', 'entries6PM', 'entries8PM', 'updatedByUid', 'updatedAt'
+              ])
+            ) ||
+            (
+              // Action 2: Active Party editing their own entry sheet (enforces 12:58 / 5:58 / 7:58 IST cutoffs)
+              isActiveAgencyMember(agencyId) &&
+              isPartyActive(agencyId, existing().partyId) &&
+              get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(existing().partyId)).data.assignedUid == request.auth.uid &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'assignedUid', 'date', 'entries1PM', 'entries6PM', 'entries8PM', 'updatedByUid', 'updatedAt'
+              ]) &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['assignedUid']) || incoming().assignedUid == request.auth.uid) &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['entries1PM']) || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 778)) &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['entries6PM']) || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1078)) &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['entries8PM']) || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1198))
+            ) ||
+            (
+              // Action 3: Master editing their sub-client's entry sheet (enforces 12:58 / 5:58 / 7:58 IST cutoffs)
+              isActiveMasterMember(agencyId) &&
+              (
+                existing().parentMasterUid == request.auth.uid ||
+                existing().parentMasterId == getMemberDoc(agencyId).partyId
+              ) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'partyName', 'assignedUid', 'date', 'entries1PM', 'entries6PM', 'entries8PM', 'updatedByUid', 'updatedAt'
+              ]) &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['entries1PM']) || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 778)) &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['entries6PM']) || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1078)) &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['entries8PM']) || isSessionOpenIST(get(/databases/$(database)/documents/agencies/$(agencyId)).data.date, 1198))
+            ) ||
+            (
+              // Action 4: Atomic claim binding sheet assignedUid when pre-existing sheet is claimed
+              incoming().assignedUid == request.auth.uid &&
+              getAfter(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(existing().partyId)).data.assignedUid == request.auth.uid &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['assignedUid', 'updatedByUid', 'updatedAt'])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(agencyId) && isValidId(sheetId) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveMasterMember(agencyId) && resource != null && (
+              existing().parentMasterUid == request.auth.uid ||
+              existing().parentMasterId == getMemberDoc(agencyId).partyId ||
+              (
+                exists(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(sheetId)) &&
+                get(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(sheetId)).data.parentMasterId == getMemberDoc(agencyId).partyId
+              )
+            )
+          )
+        );
+      }
+
+      // 4f. /agencies/{agencyId}/archives/{snapshotId} (Admin Only)
+      match /archives/{snapshotId} {
+        allow get: if isVerifiedUser() && isValidId(agencyId) && isValidId(snapshotId) &&
+          isAgencyAdmin(agencyId);
+        allow list: if isVerifiedUser() && (
+          isBootstrapAdminEmail() ||
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.adminUids
+        );
+        allow create: if isVerifiedUser() && isValidId(agencyId) && isValidId(snapshotId) &&
+          isValidArchiveSnapshot(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().snapshotId == snapshotId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          isAgencyAdmin(agencyId);
+        allow update: if isVerifiedUser() && isValidId(agencyId) && isValidId(snapshotId) &&
+          isValidArchiveSnapshot(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().snapshotId == existing().snapshotId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAgencyAdmin(agencyId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['adminUids', 'date', 'payload', 'updatedAt']);
+        allow delete: if isVerifiedUser() && isValidId(agencyId) && isValidId(snapshotId) &&
+          isAgencyAdmin(agencyId);
+      }
+
+      // 4g. /agencies/{agencyId}/partyArchives/{snapshotId} (Master, Sub-Master & Sub-Seller Isolated Daily Archives)
+      match /partyArchives/{snapshotId} {
+        allow get: if isSignedIn() && isValidId(agencyId) && isValidId(snapshotId) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveAgencyMember(agencyId) &&
+            isPartyActive(agencyId, existing().partyId) &&
+            getMemberDoc(agencyId).partyId == existing().partyId
+          ) ||
+          (
+            isActiveMasterMember(agencyId) && (
+              existing().parentMasterUid == request.auth.uid ||
+              existing().parentMasterId == getMemberDoc(agencyId).partyId
+            )
+          )
+        );
+        allow list: if isSignedIn() && (
+          isBootstrapAdminEmail() ||
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.adminUids ||
+          resource.data.assignedUid == request.auth.uid ||
+          (
+            isActiveAgencyMember(agencyId) &&
+            resource.data.partyId == getMemberDoc(agencyId).partyId
+          )
+        );
+        allow create: if isSignedIn() && isValidId(agencyId) && isValidId(snapshotId) &&
+          isValidPartyArchiveSnapshot(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().snapshotId == snapshotId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)/parties/$(incoming().partyId)) &&
+          (
+            isAgencyAdmin(agencyId) ||
+            (
+              isActiveAgencyMember(agencyId) &&
+              isPartyActive(agencyId, incoming().partyId) &&
+              incoming().partyId == getMemberDoc(agencyId).partyId &&
+              incoming().assignedUid == request.auth.uid &&
+              incoming().ownerUid == get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUid
+            )
+          );
+        allow update: if isSignedIn() && isValidId(agencyId) && isValidId(snapshotId) &&
+          isValidPartyArchiveSnapshot(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().snapshotId == existing().snapshotId &&
+          incoming().partyId == existing().partyId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            (
+              isAgencyAdmin(agencyId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['adminUids', 'assignedUid', 'date', 'payload', 'updatedAt'])
+            ) ||
+            (
+              isActiveAgencyMember(agencyId) &&
+              isPartyActive(agencyId, existing().partyId) &&
+              existing().partyId == getMemberDoc(agencyId).partyId &&
+              (!incoming().diff(existing()).affectedKeys().hasAny(['assignedUid']) || incoming().assignedUid == request.auth.uid) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['assignedUid', 'date', 'payload', 'updatedAt'])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(agencyId) && isValidId(snapshotId) && (
+          isAgencyAdmin(agencyId) ||
+          (
+            isActiveAgencyMember(agencyId) &&
+            resource != null &&
+            isPartyActive(agencyId, existing().partyId) &&
+            existing().partyId == getMemberDoc(agencyId).partyId
+          )
+        );
+      }
+    }
+  }
+}

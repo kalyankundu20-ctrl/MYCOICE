@@ -1,0 +1,742 @@
+var CONFIG = {
+  INPUT_SHEET_NAMES: ["1PM", "6PM", "8PM"],
+  SHEET_PREFIX_MAP: {
+    "1PM": "M",
+    "6PM": "D",
+    "8PM": "E"
+  },
+  PRIZE_LIST_SHEET: "Prize List",
+  LIMIT_PRIZE_SHEET: "Limit Prize",
+  WINNING_NUMBER_SHEET: "Winning Number",
+  SELLER_BILL_SHEET: "Seller Bill",
+  EXCLUDED_PRIZE_NAMES: ["MY CHOICE"],
+  LIMIT_THRESHOLD: 10,
+  STATUS_COLUMN: 8,
+  WHATSAPP_NUMBER: "918918692554",
+  DATA_START_ROW: 2
+};
+
+function onEdit(e) {
+  if (!e || !e.range) return;
+
+  var sheet = e.range.getSheet();
+  var sheetUpper = sheet.getName().trim().toUpperCase();
+
+  // 1. Winning Number sheet edit hone par Prize List generate karein
+  if (sheetUpper === CONFIG.WINNING_NUMBER_SHEET.toUpperCase()) {
+    generatePrizeList();
+    return;
+  }
+
+  var row = e.range.getRow();
+  if (row < CONFIG.DATA_START_ROW) return;
+
+  var col = e.range.getColumn();
+  var numRows = e.range.getNumRows();
+  var numCols = e.range.getNumColumns();
+  var lastColEdited = col + numCols - 1;
+
+  if (CONFIG.INPUT_SHEET_NAMES.indexOf(sheetUpper) === -1 || lastColEdited < 2 || col > 7) return;
+
+  // 2. Single cell edit fast handling
+  if (numRows === 1 && numCols === 1) {
+    // Agar user ne khud Column B (Name) select/edit kiya hai toh usko gayab mat karein
+    if (col === 2) return;
+
+    var rowSnap = sheet.getRange(row, 2, 1, 7).getValues()[0];
+    var currName = String(rowSnap[0] || "").trim();
+    var hasCDE = (
+      String(rowSnap[1] || "").trim() !== "" ||
+      String(rowSnap[2] || "").trim() !== "" ||
+      String(rowSnap[3] || "").trim() !== ""
+    );
+
+    // Agar C, D, ya E delete karne ke baad teeno khali ho jayein toh Name (B) clear karein
+    if (!hasCDE) {
+      if (currName !== "") {
+        sheet.getRange(row, 2).clearContent();
+      }
+      if (String(rowSnap[6] || "").trim() === "") {
+        return;
+      }
+    } else if (currName === "" && row > CONFIG.DATA_START_ROW) {
+      // Agar C, D, ya E mein naya data dala hai aur Name khali hai toh upar se naam bharein
+      var prevNames = sheet.getRange(CONFIG.DATA_START_ROW, 2, row - CONFIG.DATA_START_ROW, 1).getValues();
+      for (var p = prevNames.length - 1; p >= 0; p--) {
+        var pName = String(prevNames[p][0] || "").trim();
+        if (pName !== "") {
+          sheet.getRange(row, 2).setValue(pName);
+          break;
+        }
+      }
+      if (String(rowSnap[2] || "").trim() === "" && String(rowSnap[6] || "").trim() === "") {
+        return;
+      }
+    }
+  }
+
+  // 3. Actual data wali last row find karein (0-formula rows skip karne ke liye)
+  var sheetLastRow = sheet.getLastRow();
+  var actualDataLastRow = CONFIG.DATA_START_ROW - 1;
+  if (sheetLastRow >= CONFIG.DATA_START_ROW) {
+    var cdeVals = sheet.getRange(CONFIG.DATA_START_ROW, 3, sheetLastRow - CONFIG.DATA_START_ROW + 1, 3).getValues();
+    for (var idxA = cdeVals.length - 1; idxA >= 0; idxA--) {
+      if (
+        String(cdeVals[idxA][0] || "").trim() !== "" ||
+        String(cdeVals[idxA][1] || "").trim() !== "" ||
+        String(cdeVals[idxA][2] || "").trim() !== ""
+      ) {
+        actualDataLastRow = CONFIG.DATA_START_ROW + idxA;
+        break;
+      }
+    }
+  }
+
+  var editedLastRow = row + numRows - 1;
+  var maxSearchRow = Math.max(actualDataLastRow, editedLastRow);
+  if (maxSearchRow < CONFIG.DATA_START_ROW) return;
+
+  var sheetPrefix = CONFIG.SHEET_PREFIX_MAP[sheetUpper] || "M";
+  var totalDataRows = (maxSearchRow - CONFIG.DATA_START_ROW) + 3;
+  var allValues = sheet.getRange(1, 2, totalDataRows + 1, 7).getValues();
+  var currentH1 = String(allValues[0][6] || "");
+
+  var lastRealDataIndex = -1;
+  var lastOldStatusIndex = -1;
+
+  for (var idx = totalDataRows - 1; idx >= 0; idx--) {
+    var r = allValues[idx + 1];
+    if (lastOldStatusIndex === -1 && String(r[6] || "").trim() !== "") {
+      lastOldStatusIndex = idx;
+    }
+    if (lastRealDataIndex === -1) {
+      if (String(r[1] || "").trim() !== "" || String(r[2] || "").trim() !== "" || String(r[3] || "").trim() !== "") {
+        lastRealDataIndex = idx;
+      }
+    }
+    if (lastRealDataIndex !== -1 && lastOldStatusIndex !== -1) break;
+  }
+
+  var activeRowsCount = Math.max(lastRealDataIndex + 3, lastOldStatusIndex + 1, 1);
+  if (activeRowsCount > totalDataRows) activeRowsCount = totalDataRows;
+
+  // 4. Paste SUM: Multiple rows paste hone par H1 mein SUM dikhayein
+  if (numRows > 1) {
+    var pasteStartIdx = row - CONFIG.DATA_START_ROW;
+    var pasteEndIdx = Math.min(pasteStartIdx + numRows - 1, Math.max(0, lastRealDataIndex));
+    var pasteSum = 0;
+    for (var pIdx = pasteStartIdx; pIdx <= pasteEndIdx; pIdx++) {
+      var qVal = Number(allValues[pIdx + 1][4]) || 0;
+      if (qVal > 0) pasteSum += qVal;
+    }
+    var newH1 = pasteSum > 0 ? ("SUM: " + (Math.round(pasteSum * 100) / 100)) : "Limit Status";
+    if (currentH1 !== newH1) {
+      sheet.getRange(1, 8).setValue(newH1);
+    }
+  } else if (currentH1.indexOf("SUM:") === 0) {
+    sheet.getRange(1, 8).setValue("Limit Status");
+  }
+
+  // 5. Name Autofill & Clear Logic + Limit Calculation
+  var lastValidName = "";
+  var nameColumnOutput = new Array(activeRowsCount);
+  var namesChanged = false;
+
+  var sheetNumberTotals = new Float64Array(100000);
+  var lastRowForNumber = new Int32Array(100000);
+  lastRowForNumber.fill(-1);
+
+  var parsedRows = new Array(activeRowsCount);
+
+  for (var i = 0; i < activeRowsCount; i++) {
+    var currentSheetRow = CONFIG.DATA_START_ROW + i;
+    var rowData = allValues[i + 1];
+    var currName = String(rowData[0] || "").trim();
+    var itemStr = String(rowData[1] || "").trim();
+    var startNumStr = String(rowData[2] || "").trim();
+    var endNumStr = String(rowData[3] || "").trim();
+    var qty = Number(rowData[4]) || 0;
+    var customRange = Number(rowData[5]) || 0;
+
+    var hasRealData = (itemStr !== "" || startNumStr !== "" || endNumStr !== "");
+    if (currName !== "") {
+      lastValidName = currName;
+    }
+
+    // Sirf edited rows mein agar C,D,E clear hue hon (aur B khud edit na hua ho) tabhi B clear karein
+    var isEditedRow = (currentSheetRow >= row && currentSheetRow <= editedLastRow);
+    var nToUse = currName;
+    if (hasRealData) {
+      nToUse = (currName !== "") ? currName : lastValidName;
+    } else if (isEditedRow && lastColEdited >= 3) {
+      nToUse = "";
+    }
+
+    nameColumnOutput[i] = [nToUse];
+    if (currName !== nToUse) namesChanged = true;
+
+    if (startNumStr === "" || isNaN(Number(startNumStr))) {
+      parsedRows[i] = null;
+      continue;
+    }
+
+    if (qty <= 0) {
+      parsedRows[i] = { isInvalid: true };
+      continue;
+    }
+
+    var startNumInt = parseInt(startNumStr, 10);
+    if (startNumInt < 0 || startNumInt > 99999) {
+      parsedRows[i] = { isInvalid: true };
+      continue;
+    }
+
+    var rangeEndInt = startNumInt;
+    if (customRange > 0) {
+      rangeEndInt = startNumInt + customRange - 1;
+    } else if (endNumStr !== "" && !isNaN(Number(endNumStr))) {
+      var endVal = parseInt(endNumStr, 10);
+      if (endVal < 100) {
+        endVal = (Math.floor(startNumInt / 100) * 100) + endVal;
+      }
+      if (endVal >= startNumInt) {
+        rangeEndInt = endVal;
+      } else {
+        rangeEndInt = Math.floor(startNumInt / 100) * 100 + (endVal % 100);
+        if (rangeEndInt < startNumInt) rangeEndInt += 100;
+      }
+    }
+    if (rangeEndInt > 99999) rangeEndInt = 99999;
+
+    var totalNumbersInRow = (rangeEndInt - startNumInt) + 1;
+    if (totalNumbersInRow <= 0) totalNumbersInRow = 1;
+    var qtyPerNumber = qty / totalNumbersInRow;
+
+    for (var n = startNumInt; n <= rangeEndInt; n++) {
+      sheetNumberTotals[n] += qtyPerNumber;
+      lastRowForNumber[n] = i;
+    }
+
+    parsedRows[i] = {
+      isInvalid: false,
+      startNumInt: startNumInt,
+      rangeEndInt: rangeEndInt
+    };
+  }
+
+  if (namesChanged) {
+    sheet.getRange(CONFIG.DATA_START_ROW, 2, activeRowsCount, 1).setValues(nameColumnOutput);
+  }
+
+  // 6. Limit Status & WhatsApp Link Formatting
+  var statusOutput = new Array(activeRowsCount);
+  var statusChanged = false;
+  var sheetOverallOverLimitTotal = 0;
+  var thresholdLimit = CONFIG.LIMIT_THRESHOLD + 0.001;
+  var overLimitLinesForWa = [];
+
+  for (var j = 0; j < activeRowsCount; j++) {
+    var pRow = parsedRows[j];
+    var newStatus = "";
+
+    if (!pRow) {
+      newStatus = "";
+    } else if (pRow.isInvalid) {
+      newStatus = "⚠️ Invalid Qty/End";
+    } else {
+      var limitGroups = Object.create(null);
+      var limitKeys = [];
+      var hasEarlierOverLimitEntry = false;
+
+      for (var num = pRow.startNumInt; num <= pRow.rangeEndInt; num++) {
+        var total = sheetNumberTotals[num];
+        if (total > thresholdLimit) {
+          if (lastRowForNumber[num] === j) {
+            var roundedTotal = Math.round((total - CONFIG.LIMIT_THRESHOLD) * 100) / 100;
+            var key = String(roundedTotal);
+            if (!limitGroups[key]) {
+              limitGroups[key] = [];
+              limitKeys.push(roundedTotal);
+            }
+            limitGroups[key].push(num);
+          } else {
+            hasEarlierOverLimitEntry = true;
+          }
+        }
+      }
+
+      if (limitKeys.length > 0) {
+        limitKeys.sort(function(a, b) { return a - b; });
+        var formattedLines = [];
+        var rowGrandTotal = 0;
+
+        for (var k = 0; k < limitKeys.length; k++) {
+          var limVal = limitKeys[k];
+          var nums = limitGroups[String(limVal)];
+
+          var ranges = [];
+          var rangeStart = nums[0];
+          var prev = nums[0];
+          for (var gIdx = 1; gIdx < nums.length; gIdx++) {
+            var curr = nums[gIdx];
+            if (curr === prev + 1) {
+              prev = curr;
+            } else {
+              ranges.push([rangeStart, prev]);
+              rangeStart = curr;
+              prev = curr;
+            }
+          }
+          ranges.push([rangeStart, prev]);
+
+          for (var rIdx = 0; rIdx < ranges.length; rIdx++) {
+            var s = ranges[rIdx][0];
+            var eNum = ranges[rIdx][1];
+            var countInRange = (eNum - s + 1);
+            var lineSum = Math.round(limVal * countInRange * 100) / 100;
+            rowGrandTotal += lineSum;
+
+            var sStr = ("00000" + s).slice(-5);
+            if (s === eNum) {
+              formattedLines.push(sheetPrefix + limVal + "=" + sStr);
+            } else {
+              var eStr = ("00000" + eNum).slice(-5);
+              var rangeLabel = (sStr.slice(0, 3) === eStr.slice(0, 3))
+                ? (sStr + "-" + eStr.slice(-2))
+                : (sStr + "-" + eStr);
+              formattedLines.push(sheetPrefix + limVal + "=" + rangeLabel + "=" + lineSum);
+            }
+          }
+        }
+
+        sheetOverallOverLimitTotal += Math.round(rowGrandTotal * 100) / 100;
+        newStatus = formattedLines.join("\n");
+        overLimitLinesForWa.push(newStatus);
+      } else if (hasEarlierOverLimitEntry) {
+        newStatus = "⚠️ OK";
+      } else {
+        newStatus = "✅ OK";
+      }
+    }
+
+    statusOutput[j] = [newStatus];
+    if (String(allValues[j + 1][6] || "") !== newStatus) {
+      statusChanged = true;
+    }
+  }
+
+  var sendLinkRowNum = -1;
+  var sendLinkFormula = "";
+
+  if (lastRealDataIndex >= 0 && sheetOverallOverLimitTotal > 0) {
+    var summaryIndex = lastRealDataIndex + 1;
+    var linkIndex = lastRealDataIndex + 2;
+
+    var finalSheetTotalStr = "Total " + (Math.round(sheetOverallOverLimitTotal * 100) / 100);
+    if (String(allValues[summaryIndex + 1][6] || "") !== finalSheetTotalStr) statusChanged = true;
+
+    statusOutput[summaryIndex] = [finalSheetTotalStr];
+    statusOutput[linkIndex] = [""];
+
+    overLimitLinesForWa.push(finalSheetTotalStr);
+
+    sendLinkRowNum = CONFIG.DATA_START_ROW + linkIndex;
+    var waUrl = "https://wa.me/" + CONFIG.WHATSAPP_NUMBER + "?text=" + encodeURIComponent(overLimitLinesForWa.join("\n"));
+    sendLinkFormula = '=HYPERLINK("' + waUrl + '", "Send limit")';
+    statusChanged = true;
+  } else {
+    for (var c = Math.max(0, lastRealDataIndex + 1); c < activeRowsCount; c++) {
+      if (String(allValues[c + 1][6] || "") !== "") {
+        statusChanged = true;
+        break;
+      }
+    }
+  }
+
+  if (statusChanged) {
+    sheet.getRange(CONFIG.DATA_START_ROW, CONFIG.STATUS_COLUMN, activeRowsCount, 1).setValues(statusOutput);
+    if (sendLinkRowNum !== -1 && sendLinkFormula !== "") {
+      sheet.getRange(sendLinkRowNum, CONFIG.STATUS_COLUMN).setFormula(sendLinkFormula);
+    }
+  }
+}
+
+function generatePrizeList() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+
+  var findSheet = function(targetName) {
+    var cleanTarget = targetName.trim().toUpperCase();
+    for (var i = 0; i < sheets.length; i++) {
+      if (sheets[i].getName().trim().toUpperCase() === cleanTarget) return sheets[i];
+    }
+    return null;
+  };
+
+  var prizeSheet = findSheet(CONFIG.PRIZE_LIST_SHEET);
+  var limitPrizeSheet = findSheet(CONFIG.LIMIT_PRIZE_SHEET);
+  var winningSheet = findSheet(CONFIG.WINNING_NUMBER_SHEET);
+  var sellerSheet = findSheet(CONFIG.SELLER_BILL_SHEET);
+
+  if (!winningSheet) return;
+  if (!limitPrizeSheet) {
+    limitPrizeSheet = ss.insertSheet(CONFIG.LIMIT_PRIZE_SHEET);
+  }
+
+  if (prizeSheet) {
+    var maxPrizeRows = prizeSheet.getLastRow();
+    if (maxPrizeRows >= CONFIG.DATA_START_ROW) {
+      var clearLen = maxPrizeRows - (CONFIG.DATA_START_ROW - 1);
+      prizeSheet.getRange(CONFIG.DATA_START_ROW, 1, clearLen, 5).clearContent();
+      prizeSheet.getRange(CONFIG.DATA_START_ROW, 10, clearLen, 1).clearContent();
+    }
+  }
+
+  var maxLimitRows = limitPrizeSheet.getLastRow();
+  if (maxLimitRows >= CONFIG.DATA_START_ROW) {
+    limitPrizeSheet.getRange(CONFIG.DATA_START_ROW, 1, maxLimitRows - (CONFIG.DATA_START_ROW - 1), 7).clearContent();
+  }
+
+  var winLastRow = winningSheet.getLastRow();
+  var winLastCol = winningSheet.getLastColumn();
+  if (winLastRow < CONFIG.DATA_START_ROW || winLastCol < 1) return;
+
+  var winValues = winningSheet.getRange(1, 1, winLastRow, winLastCol).getValues();
+  var winningMap = Object.create(null);
+
+  for (var col = 0; col < winLastCol; col++) {
+    var sessionTime = String(winValues[0][col] || "").trim().toUpperCase();
+    if (!sessionTime) continue;
+
+    if (!winningMap[sessionTime]) winningMap[sessionTime] = [];
+
+    var currentRank = "";
+    for (var r = 1; r < winLastRow; r++) {
+      var cellVal = String(winValues[r][col] || "").trim();
+      if (!cellVal) continue;
+
+      var cellLower = cellVal.toLowerCase();
+      if (cellLower.indexOf("st") !== -1 || cellLower.indexOf("nd") !== -1 || cellLower.indexOf("rd") !== -1 || cellLower.indexOf("th") !== -1) {
+        currentRank = cellVal;
+        continue;
+      }
+
+      var winNum = cellVal.replace(/\D/g, "");
+      if (winNum.length < 4) continue;
+
+      var rankLower = currentRank.toLowerCase();
+      var isFirstOrSec = rankLower.indexOf("1") !== -1 || rankLower.indexOf("2") !== -1;
+
+      winningMap[sessionTime].push({
+        fullInt: isFirstOrSec ? parseInt(winNum, 10) : null,
+        win4DigitsInt: !isFirstOrSec ? parseInt(("0000" + winNum).slice(-4), 10) : -1,
+        rank: currentRank,
+        isFirstOrSecond: isFirstOrSec
+      });
+    }
+  }
+
+  var sessionWinsMap = Object.create(null);
+  var finalLimitRows = [];
+  var overallGrandTotal = 0;
+  var sheetNames = CONFIG.INPUT_SHEET_NAMES;
+  var thresholdLimit = CONFIG.LIMIT_THRESHOLD + 0.001;
+
+  for (var s = 0; s < sheetNames.length; s++) {
+    var sName = sheetNames[s];
+    var currSheet = findSheet(sName);
+    if (!currSheet) continue;
+
+    var rawLastR = currSheet.getLastRow();
+    if (rawLastR < CONFIG.DATA_START_ROW) continue;
+
+    var cdeCheck = currSheet.getRange(CONFIG.DATA_START_ROW, 3, rawLastR - CONFIG.DATA_START_ROW + 1, 3).getValues();
+    var lastR = CONFIG.DATA_START_ROW - 1;
+    for (var cIdx = cdeCheck.length - 1; cIdx >= 0; cIdx--) {
+      if (
+        String(cdeCheck[cIdx][0] || "").trim() !== "" ||
+        String(cdeCheck[cIdx][1] || "").trim() !== "" ||
+        String(cdeCheck[cIdx][2] || "").trim() !== ""
+      ) {
+        lastR = CONFIG.DATA_START_ROW + cIdx;
+        break;
+      }
+    }
+    if (lastR < CONFIG.DATA_START_ROW) continue;
+
+    var sheetPrefix = CONFIG.SHEET_PREFIX_MAP[sName.toUpperCase()] || "M";
+    var dataVals = currSheet.getRange(CONFIG.DATA_START_ROW, 1, lastR - (CONFIG.DATA_START_ROW - 1), 7).getValues();
+    var sheetNumberTotals = new Float64Array(100000);
+    var overLimitFlags = new Uint8Array(100000);
+    var overLimitNumbers = [];
+
+    for (var d = 0; d < dataVals.length; d++) {
+      var rowData = dataVals[d];
+      var startNumRaw = rowData[3];
+      if (startNumRaw === "" || startNumRaw === null) continue;
+
+      var dTime = String(rowData[0] || "").trim().toUpperCase() || sName.toUpperCase();
+      var name = String(rowData[1] || "").trim();
+      var cleanNameUpper = name.toUpperCase();
+      var item = String(rowData[2] || "").trim().toUpperCase();
+      var endNumStr = String(rowData[4] || "").trim();
+      var qty = Number(rowData[5]) || 0;
+      var customRange = Number(rowData[6]) || 0;
+
+      var startNumInt = parseInt(String(startNumRaw).trim(), 10);
+      if (isNaN(startNumInt) || startNumInt < 0 || startNumInt > 99999) continue;
+
+      var rangeEndInt = startNumInt;
+      if (customRange > 0) {
+        rangeEndInt = startNumInt + customRange - 1;
+      } else if (endNumStr !== "" && !isNaN(Number(endNumStr))) {
+        var endVal = parseInt(endNumStr, 10);
+        if (endVal < 100) endVal = (Math.floor(startNumInt / 100) * 100) + endVal;
+        if (endVal >= startNumInt) {
+          rangeEndInt = endVal;
+        } else {
+          rangeEndInt = Math.floor(startNumInt / 100) * 100 + (endVal % 100);
+          if (rangeEndInt < startNumInt) rangeEndInt += 100;
+        }
+      }
+      if (rangeEndInt > 99999) rangeEndInt = 99999;
+
+      if (qty > 0) {
+        var totalNums = (rangeEndInt - startNumInt) + 1;
+        if (totalNums <= 0) totalNums = 1;
+        var qtyPerNum = qty / totalNums;
+        for (var n = startNumInt; n <= rangeEndInt; n++) {
+          var newTot = sheetNumberTotals[n] + qtyPerNum;
+          sheetNumberTotals[n] = newTot;
+          if (newTot > thresholdLimit && overLimitFlags[n] === 0) {
+            overLimitFlags[n] = 1;
+            overLimitNumbers.push(n);
+          }
+        }
+      }
+
+      if (CONFIG.EXCLUDED_PRIZE_NAMES.indexOf(cleanNameUpper) !== -1) continue;
+
+      var sessionWins = winningMap[dTime];
+      if (!sessionWins) continue;
+
+      if (!sessionWinsMap[dTime]) sessionWinsMap[dTime] = [];
+
+      var startFirstDigit = Math.floor(startNumInt / 10000);
+      var endFirstDigit = Math.floor(rangeEndInt / 10000);
+
+      for (var w = 0; w < sessionWins.length; w++) {
+        var winObj = sessionWins[w];
+
+        if (winObj.isFirstOrSecond) {
+          if (winObj.fullInt >= startNumInt && winObj.fullInt <= rangeEndInt) {
+            sessionWinsMap[dTime].push({
+              time: dTime,
+              name: name,
+              nameKey: cleanNameUpper || "UNKNOWN",
+              number: ("00000" + winObj.fullInt).slice(-5),
+              rank: winObj.rank,
+              item: item
+            });
+          }
+        } else {
+          for (var dPrefix = startFirstDigit; dPrefix <= endFirstDigit; dPrefix++) {
+            var constructedNum = (dPrefix * 10000) + winObj.win4DigitsInt;
+            if (constructedNum >= startNumInt && constructedNum <= rangeEndInt) {
+              sessionWinsMap[dTime].push({
+                time: dTime,
+                name: name,
+                nameKey: cleanNameUpper || "UNKNOWN",
+                number: ("00000" + constructedNum).slice(-5),
+                rank: winObj.rank,
+                item: item
+              });
+            }
+          }
+        }
+      }
+    }
+
+    var sessionLimitRows = [];
+    var sessionTotal = 0;
+    var sessionMsgLines = [];
+    var sessionWinsForSheet = winningMap[sName.toUpperCase()];
+
+    if (sessionWinsForSheet && overLimitNumbers.length > 0) {
+      overLimitNumbers.sort(function(a, b) { return a - b; });
+      for (var idxOv = 0; idxOv < overLimitNumbers.length; idxOv++) {
+        var numInt = overLimitNumbers[idxOv];
+        var excessQty = Math.round((sheetNumberTotals[numInt] - CONFIG.LIMIT_THRESHOLD) * 100) / 100;
+        var numLast4Int = numInt % 10000;
+
+        for (var w2 = 0; w2 < sessionWinsForSheet.length; w2++) {
+          var winObj2 = sessionWinsForSheet[w2];
+          var isMatched = winObj2.isFirstOrSecond
+            ? (winObj2.fullInt === numInt)
+            : (winObj2.win4DigitsInt === numLast4Int);
+
+          if (isMatched) {
+            var rStr = String(winObj2.rank || "").toLowerCase();
+            var prizeRate = 0, vcRate = 0;
+            if (rStr.indexOf("1") !== -1) { prizeRate = 25000; vcRate = 2000; }
+            else if (rStr.indexOf("2") !== -1) { prizeRate = 20000; vcRate = 2000; }
+            else if (rStr.indexOf("3") !== -1) { prizeRate = 2000; vcRate = 200; }
+            else if (rStr.indexOf("4") !== -1) { prizeRate = 700; vcRate = 150; }
+            else if (rStr.indexOf("5") !== -1) { prizeRate = 300; vcRate = 70; }
+
+            var prizeAmt = Math.round(prizeRate * excessQty * 100) / 100;
+            var vcAmt = Math.round(vcRate * excessQty * 100) / 100;
+            var totalAmt = Math.round((prizeAmt + vcAmt) * 100) / 100;
+            var numFormatted = ("00000" + numInt).slice(-5);
+
+            sessionTotal += totalAmt;
+            sessionLimitRows.push([
+              sName.toUpperCase(),
+              numFormatted,
+              winObj2.rank,
+              sheetPrefix + excessQty,
+              prizeAmt,
+              vcAmt,
+              totalAmt
+            ]);
+
+            sessionMsgLines.push(sName.toUpperCase() + " " + numFormatted + " " + winObj2.rank + " " + sheetPrefix + excessQty + " = " + totalAmt);
+          }
+        }
+      }
+    }
+
+    if (sessionLimitRows.length > 0) {
+      for (var sr = 0; sr < sessionLimitRows.length; sr++) {
+        finalLimitRows.push(sessionLimitRows[sr]);
+      }
+
+      sessionTotal = Math.round(sessionTotal * 100) / 100;
+      overallGrandTotal += sessionTotal;
+
+      var sessionTotalLabel = sName.toUpperCase() + " Total " + sessionTotal;
+      sessionMsgLines.push(sessionTotalLabel);
+
+      finalLimitRows.push(["", "", "", "", "", "", sessionTotalLabel]);
+
+      var sessionWaUrl = "https://wa.me/" + CONFIG.WHATSAPP_NUMBER + "?text=" + encodeURIComponent(sessionMsgLines.join("\n"));
+      var waLinkFormula = '=HYPERLINK("' + sessionWaUrl + '", "Send ' + sName.toUpperCase() + ' prize")';
+      finalLimitRows.push(["", "", "", "", "", "", waLinkFormula]);
+      finalLimitRows.push(["", "", "", "", "", "", ""]);
+    }
+  }
+
+  if (prizeSheet) {
+    var partyMobileMap = Object.create(null);
+    if (sellerSheet && sellerSheet.getLastRow() >= 2) {
+      var sVals = sellerSheet.getRange(2, 1, sellerSheet.getLastRow() - 1, 14).getValues();
+      for (var mIdx = 0; mIdx < sVals.length; mIdx++) {
+        var partyName = String(sVals[mIdx][0] || "").trim().toUpperCase();
+        var rawPhone = String(sVals[mIdx][13] || "").replace(/\D/g, "");
+        if (partyName && partyName !== "DATE" && rawPhone.length >= 10) {
+          if (rawPhone.length === 10) rawPhone = "91" + rawPhone;
+          partyMobileMap[partyName] = rawPhone;
+        }
+      }
+    }
+
+    var prizeOutputRows = [];
+    var sellerLinkGroups = [];
+
+    for (var t = 0; t < sheetNames.length; t++) {
+      var timeKey = sheetNames[t].toUpperCase();
+      var entries = sessionWinsMap[timeKey];
+      if (!entries || entries.length === 0) continue;
+
+      if (prizeOutputRows.length > 0) {
+        prizeOutputRows.push(["", "", "", "", ""]);
+      }
+
+      var sellerOrder = [];
+      var sellerGroups = Object.create(null);
+
+      for (var e = 0; e < entries.length; e++) {
+        var itemEntry = entries[e];
+        if (!sellerGroups[itemEntry.nameKey]) {
+          sellerGroups[itemEntry.nameKey] = {
+            displayName: itemEntry.name || "Unknown",
+            nameKey: itemEntry.nameKey,
+            rows: []
+          };
+          sellerOrder.push(itemEntry.nameKey);
+        }
+        sellerGroups[itemEntry.nameKey].rows.push(itemEntry);
+      }
+
+      for (var sIdx = 0; sIdx < sellerOrder.length; sIdx++) {
+        var sGroup = sellerGroups[sellerOrder[sIdx]];
+        var startOffset = prizeOutputRows.length;
+
+        for (var rIdx = 0; rIdx < sGroup.rows.length; rIdx++) {
+          var rEntry = sGroup.rows[rIdx];
+          prizeOutputRows.push([rEntry.time, rEntry.name, rEntry.number, rEntry.rank, rEntry.item]);
+        }
+
+        sellerLinkGroups.push({
+          timeKey: timeKey,
+          displayName: sGroup.displayName,
+          nameKey: sGroup.nameKey,
+          startOffset: startOffset,
+          count: sGroup.rows.length,
+          rows: sGroup.rows
+        });
+      }
+    }
+
+    if (prizeOutputRows.length > 0) {
+      prizeSheet.getRange(CONFIG.DATA_START_ROW, 1, prizeOutputRows.length, 5).setValues(prizeOutputRows);
+      SpreadsheetApp.flush();
+
+      var calculatedTotals = prizeSheet.getRange(CONFIG.DATA_START_ROW, 9, prizeOutputRows.length, 1).getValues();
+
+      if (String(prizeSheet.getRange(1, 10).getValue() || "").trim() === "") {
+        prizeSheet.getRange(1, 10).setValue("WHATSAPP");
+      }
+
+      var waColumnFormulas = new Array(prizeOutputRows.length);
+      for (var initIdx = 0; initIdx < prizeOutputRows.length; initIdx++) {
+        waColumnFormulas[initIdx] = [""];
+      }
+
+      for (var g = 0; g < sellerLinkGroups.length; g++) {
+        var grp = sellerLinkGroups[g];
+        var waLines = ["*" + grp.timeKey + " - " + grp.displayName + " Prize List*"];
+        var sellerTotal = 0;
+
+        for (var k2 = 0; k2 < grp.count; k2++) {
+          var sheetOffset = grp.startOffset + k2;
+          var winRow = grp.rows[k2];
+          var rowTotalVal = Number(calculatedTotals[sheetOffset][0]) || 0;
+          sellerTotal = Math.round((sellerTotal + rowTotalVal) * 100) / 100;
+
+          var itemPart = winRow.item ? (" (" + winRow.item + ")") : "";
+          waLines.push(winRow.number + " | " + winRow.rank + itemPart + " = " + rowTotalVal);
+        }
+
+        waLines.push(grp.timeKey + " Total = " + sellerTotal);
+
+        var partyPhone = partyMobileMap[grp.nameKey] || "";
+        var waUrl = partyPhone
+          ? ("https://wa.me/" + partyPhone + "?text=" + encodeURIComponent(waLines.join("\n")))
+          : ("https://api.whatsapp.com/send?text=" + encodeURIComponent(waLines.join("\n")));
+
+        var linkOffset = grp.startOffset + grp.count - 1;
+        var linkLabel = "Send " + grp.timeKey + " " + grp.displayName.replace(/"/g, "");
+        waColumnFormulas[linkOffset] = ['=HYPERLINK("' + waUrl + '", "' + linkLabel + '")'];
+      }
+
+      prizeSheet.getRange(CONFIG.DATA_START_ROW, 10, prizeOutputRows.length, 1).setFormulas(waColumnFormulas);
+    }
+  }
+
+  if (finalLimitRows.length > 0) {
+    overallGrandTotal = Math.round(overallGrandTotal * 100) / 100;
+    finalLimitRows.push(["", "", "", "", "", "", "Grand Total " + overallGrandTotal]);
+    limitPrizeSheet.getRange(CONFIG.DATA_START_ROW, 1, finalLimitRows.length, 7).setValues(finalLimitRows);
+  }
+}
