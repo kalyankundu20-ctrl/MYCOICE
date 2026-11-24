@@ -355,6 +355,41 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "AdminLedgerChunk": {
+      "title": "AdminLedgerChunk",
+      "description": "Admin-only chunked backup of full 1PM, 6PM, and 8PM ledger entries (up to 800 rows per chunk, supporting 30,000+ rows safely under Firestore 1MB limit).",
+      "type": "object",
+      "properties": {
+        "agencyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "chunkId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sessionId": { "type": "string", "enum": ["1PM", "6PM", "8PM"] },
+        "chunkIndex": { "type": "number" },
+        "totalChunks": { "type": "number" },
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "revisionMs": { "type": "number" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "adminUids": { "type": "array", "description": "Bounded list (max 10) of admin UIDs." },
+        "rows": { "type": "array", "description": "Bounded list (max 1000) of TicketEntryRow objects in this chunk." },
+        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "agencyId",
+        "chunkId",
+        "sessionId",
+        "chunkIndex",
+        "totalChunks",
+        "date",
+        "revisionMs",
+        "ownerUid",
+        "adminUids",
+        "rows",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -405,6 +440,10 @@
     "/agencies/{agencyId}/partyArchives/{snapshotId}": {
       "schema": { "$ref": "#/entities/PartyArchiveSnapshot" },
       "description": "Per-party isolated daily archive snapshots for Masters, Sub-Masters, and Sub-Sellers."
+    },
+    "/agencies/{agencyId}/adminLedgerChunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/AdminLedgerChunk" },
+      "description": "Admin-only permanent chunked cloud backup of all 1PM, 6PM, and 8PM ledger rows."
     }
   }
 }

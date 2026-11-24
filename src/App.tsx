@@ -61,6 +61,7 @@ import {
   deleteSubSellerParty,
   generateEasyLoginId,
   generateEasyPassword,
+  loadAdminCloudVault,
   loadUserCloudSession,
   loginSellerWithIdPassword,
   lookupPartyInvite,
@@ -79,6 +80,9 @@ import {
   subscribeAdminSheets,
   subscribePublicAnnouncement,
   syncAdminAgencyState,
+  syncAdminArchivesCloud,
+  syncAdminLedgerChunksCloud,
+  syncAdminPrivateConfigCloud,
   syncSubSellerChainLineage,
   toggleSellerChainRole,
   toggleSellerPartyActive,
@@ -533,12 +537,22 @@ export default function App() {
   const [cloudPrivates, setCloudPrivates] = useState<CloudPartyPrivateDoc[]>([]);
   const [cloudSheets, setCloudSheets] = useState<CloudPartySheetDoc[]>([]);
   const [cloudHydrated, setCloudHydrated] = useState(false);
+  const [localIdbReady, setLocalIdbReady] = useState(false);
+  const [adminVaultHydrated, setAdminVaultHydrated] = useState(false);
+  const [vaultRetryNonce, setVaultRetryNonce] = useState(0);
   const [adminPreviewParty, setAdminPreviewParty] = useState<{
     agencyId: string;
     partyId: string;
   } | null>(null);
 
   const lastAgencySigRef = useRef<string>('');
+  const lastPrivateConfigSigRef = useRef<string>('');
+  const adminChunkSigsRef = useRef<Record<string, string>>({});
+  const adminChunkIdsRef = useRef<Set<string>>(new Set());
+  const adminArchiveSigsRef = useRef<Record<string, string>>({});
+  const adminArchiveDocIdsRef = useRef<Set<string>>(new Set());
+  const wasFreshLocalBootRef = useRef<boolean>(false);
+  const adminVaultHydratedRef = useRef<boolean>(false);
   const lastCloudSheetSigRef = useRef<Record<string, string>>({});
   const lastAdminPushSigRef = useRef<Record<string, string>>({});
   const subSheetMergedSigRef = useRef<Record<string, string>>({});
@@ -548,6 +562,7 @@ export default function App() {
   const cloudSheetsRef = useRef<CloudPartySheetDoc[]>([]);
   const cloudAgencyRef = useRef<CloudAgencyDoc | null>(null);
 
+  adminVaultHydratedRef.current = adminVaultHydrated;
   cloudPartiesRef.current = cloudParties;
   cloudPrivatesRef.current = cloudPrivates;
   cloudSheetsRef.current = cloudSheets;
@@ -1186,6 +1201,13 @@ export default function App() {
         setCloudPrivates([]);
         setCloudSheets([]);
         setCloudHydrated(false);
+        setAdminVaultHydrated(false);
+        wasFreshLocalBootRef.current = false;
+        adminChunkSigsRef.current = {};
+        adminChunkIdsRef.current = new Set();
+        adminArchiveSigsRef.current = {};
+        adminArchiveDocIdsRef.current = new Set();
+        lastPrivateConfigSigRef.current = '';
         setAuthReady(true);
         return;
       }
@@ -1239,6 +1261,9 @@ export default function App() {
       void user.getIdToken(false).catch(() => {});
       if (!cloudAgencyRef.current) {
         void hydrateCloudSessionForUser(user);
+      }
+      if (!adminVaultHydratedRef.current) {
+        setVaultRetryNonce((n) => n + 1);
       }
     };
 
@@ -1393,7 +1418,15 @@ export default function App() {
   // merge every Direct Seller & Multi-Level Chain Sub-Seller sheet live into Admin's ledger
   // (including Admin Preview entries and deep L2/L3/L4/L5+ sub-sellers).
   useEffect(() => {
-    if (cloudSession.kind !== 'admin' || !authUser || !cloudHydrated || isAdminRestoredView) return;
+    if (
+      cloudSession.kind !== 'admin' ||
+      !authUser ||
+      !cloudHydrated ||
+      !adminVaultHydrated ||
+      isAdminRestoredView
+    ) {
+      return;
+    }
     const adminUid = authUser.uid;
     const isInitialHydration = !sheetsHydratedOnceRef.current;
     sheetsHydratedOnceRef.current = true;
@@ -1577,12 +1610,319 @@ export default function App() {
       AppSounds.add();
       showToast(`Live Entry synced: ${names}`);
     }
-  }, [cloudSession, authUser, cloudHydrated, cloudParties, cloudSheets, isAdminRestoredView, setState, showToast]);
+  }, [
+    cloudSession,
+    authUser,
+    cloudHydrated,
+    adminVaultHydrated,
+    cloudParties,
+    cloudSheets,
+    isAdminRestoredView,
+    setState,
+    showToast,
+  ]);
+
+  // Permanent Admin Cloud Vault Hydration:
+  // Runs AFTER local IndexedDB recovery and BEFORE any Admin -> Cloud writes are allowed,
+  // so deleting the app, reinstalling, or opening on a new phone/domain NEVER overwrites
+  // cloud data with empty sheets and automatically restores 100% of Admin's data!
+  useEffect(() => {
+    if (cloudSession.kind !== 'admin' || !authUser || !cloudAgency || !localIdbReady) {
+      if (cloudSession.kind !== 'admin' || !authUser) {
+        setAdminVaultHydrated(false);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const ownerUid = cloudSession.ownerUid;
+    const agencyId = cloudSession.agencyId;
+
+    const hydrateAdminVault = async () => {
+      try {
+        const vault = await loadAdminCloudVault(ownerUid, agencyId);
+        if (cancelled) return;
+
+        // Seed incremental chunk & archive tracking maps from Firestore snapshot
+        adminChunkSigsRef.current = { ...vault.chunkSigs };
+        adminChunkIdsRef.current = new Set(vault.chunkIds);
+        adminArchiveSigsRef.current = { ...vault.archiveSigs };
+        adminArchiveDocIdsRef.current = new Set(vault.archiveDocIds);
+
+        const local = latestStateRef.current;
+        const localUpdatedAt = lastSavedAtRef.current;
+
+        const countFilled = (entriesObj: Record<SessionId, TicketEntryRow[]>) => {
+          let n = 0;
+          for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+            const list = entriesObj[sid] || [];
+            for (let i = 0; i < list.length; i += 1) {
+              if (!isRowBlank(list[i])) n += 1;
+            }
+          }
+          return n;
+        };
+
+        const localFilledCount = countFilled(local.entries);
+        const localHasWinning = Boolean(
+          local.winningRaw['1PM'].trim() ||
+            local.winningRaw['6PM'].trim() ||
+            local.winningRaw['8PM'].trim()
+        );
+        const localHasHistory =
+          local.history.length > 0 || (local.recycleBin?.length || 0) > 0;
+
+        const cloudFilledCount = countFilled(vault.entries);
+        const cloudHasWinning = Boolean(
+          (vault.agency?.winning1PM || '').trim() ||
+            (vault.agency?.winning6PM || '').trim() ||
+            (vault.agency?.winning8PM || '').trim()
+        );
+        const cloudHasHistory = vault.history.length > 0 || vault.recycleBin.length > 0;
+        const cloudHasAnyData =
+          cloudFilledCount > 0 ||
+          cloudHasWinning ||
+          cloudHasHistory ||
+          Boolean(vault.privateConfig?.extraNames?.length);
+
+        const isFreshLocalDevice =
+          localUpdatedAt === 0 ||
+          (localFilledCount === 0 && !localHasWinning && !localHasHistory);
+
+        const cloudIsStrictlyNewer =
+          vault.ledgerRevisionMs > localUpdatedAt + 2500 &&
+          (cloudFilledCount > 0 || cloudHasWinning);
+
+        const unionSnapshots = (primary: DaySnapshot[], secondary: DaySnapshot[]): DaySnapshot[] => {
+          const byId = new Map<string, DaySnapshot>();
+          for (const s of primary) {
+            if (s && s.id) byId.set(s.id, s);
+          }
+          for (const s of secondary) {
+            if (s && s.id && !byId.has(s.id)) byId.set(s.id, s);
+          }
+          return Array.from(byId.values()).sort((a, b) =>
+            String(b.savedAt || '').localeCompare(String(a.savedAt || ''))
+          );
+        };
+
+        if (isFreshLocalDevice && cloudHasAnyData && !isAdminRestoredViewRef.current) {
+          wasFreshLocalBootRef.current = true;
+          const agency = vault.agency;
+          const priv = vault.privateConfig;
+          const restoredDate = agency?.date || vault.ledgerDate || local.date;
+          const restoredWinning = {
+            '1PM': agency?.winning1PM ?? local.winningRaw['1PM'],
+            '6PM': agency?.winning6PM ?? local.winningRaw['6PM'],
+            '8PM': agency?.winning8PM ?? local.winningRaw['8PM'],
+          };
+          const restoredEntries: Record<SessionId, TicketEntryRow[]> = {
+            '1PM': normalizeRowsKeepOneTrailing(vault.entries['1PM']),
+            '6PM': normalizeRowsKeepOneTrailing(vault.entries['6PM']),
+            '8PM': normalizeRowsKeepOneTrailing(vault.entries['8PM']),
+          };
+          const restoredConfig: AgencyConfig = {
+            ...local.config,
+            limitThreshold:
+              typeof agency?.limitThreshold === 'number' && agency.limitThreshold >= 1
+                ? agency.limitThreshold
+                : local.config.limitThreshold,
+            sellerLimitThreshold:
+              typeof agency?.sellerLimitThreshold === 'number' && agency.sellerLimitThreshold >= 1
+                ? agency.sellerLimitThreshold
+                : local.config.sellerLimitThreshold ?? 20,
+            excludedPrizeNames:
+              Array.isArray(agency?.excludedPrizeNames) && agency.excludedPrizeNames.length > 0
+                ? agency.excludedPrizeNames
+                : local.config.excludedPrizeNames,
+            itemOptions:
+              Array.isArray(agency?.itemOptions) && agency.itemOptions.length > 0
+                ? agency.itemOptions
+                : local.config.itemOptions,
+            whatsappNumber:
+              priv && priv.whatsappNumber.trim()
+                ? priv.whatsappNumber
+                : local.config.whatsappNumber,
+            autoArchiveDaily: priv ? Boolean(priv.autoArchiveDaily) : local.config.autoArchiveDaily,
+            pausedAutoArchiveDate: priv
+              ? priv.pausedAutoArchiveDate
+              : local.config.pausedAutoArchiveDate,
+          };
+          const restoredExtraNames =
+            priv && priv.extraNames.length > 0 ? priv.extraNames : local.extraNames;
+          const restoredHistory = unionSnapshots(vault.history, local.history);
+          const restoredRecycleBin = unionSnapshots(vault.recycleBin, local.recycleBin || []);
+
+          // Pre-seed agency & private signatures so restoring doesn't bounce redundant writes
+          lastAgencySigRef.current = JSON.stringify({
+            date: restoredDate,
+            limitThreshold: restoredConfig.limitThreshold,
+            sellerLimitThreshold: restoredConfig.sellerLimitThreshold ?? 20,
+            excludedPrizeNames: restoredConfig.excludedPrizeNames,
+            itemOptions: restoredConfig.itemOptions,
+            winning1PM: restoredWinning['1PM'],
+            winning6PM: restoredWinning['6PM'],
+            winning8PM: restoredWinning['8PM'],
+          });
+          lastPrivateConfigSigRef.current = JSON.stringify({
+            whatsappNumber: restoredConfig.whatsappNumber,
+            autoArchiveDaily: restoredConfig.autoArchiveDaily,
+            pausedAutoArchiveDate: restoredConfig.pausedAutoArchiveDate || '',
+            extraNames: restoredExtraNames,
+          });
+
+          const nextRestored: AppState = {
+            ...local,
+            date: restoredDate,
+            config: restoredConfig,
+            extraNames: restoredExtraNames,
+            entries: restoredEntries,
+            winningRaw: restoredWinning,
+            history: restoredHistory,
+            recycleBin: restoredRecycleBin,
+          };
+          const ts = Math.max(Date.now(), vault.ledgerRevisionMs, vault.agencyUpdatedAtMs);
+          latestStateRef.current = nextRestored;
+          lastSavedAtRef.current = ts;
+          writeLocalStorageSafe(nextRestored, ts);
+          void writeIndexedDbEnvelope(nextRestored, ts);
+          setRawState(nextRestored);
+          AppSounds.success();
+          showToast('Cloud Backup Restored — Sab Admin Data Wapas Aa Gaya!');
+        } else if (cloudIsStrictlyNewer && !isAdminRestoredViewRef.current) {
+          const agency = vault.agency;
+          const priv = vault.privateConfig;
+          const mergedDate = agency?.date || vault.ledgerDate || local.date;
+          const mergedWinning = {
+            '1PM': agency?.winning1PM ?? local.winningRaw['1PM'],
+            '6PM': agency?.winning6PM ?? local.winningRaw['6PM'],
+            '8PM': agency?.winning8PM ?? local.winningRaw['8PM'],
+          };
+          const mergedEntries: Record<SessionId, TicketEntryRow[]> = {
+            '1PM': normalizeRowsKeepOneTrailing(vault.entries['1PM']),
+            '6PM': normalizeRowsKeepOneTrailing(vault.entries['6PM']),
+            '8PM': normalizeRowsKeepOneTrailing(vault.entries['8PM']),
+          };
+          const mergedConfig: AgencyConfig = {
+            ...local.config,
+            limitThreshold:
+              typeof agency?.limitThreshold === 'number' && agency.limitThreshold >= 1
+                ? agency.limitThreshold
+                : local.config.limitThreshold,
+            sellerLimitThreshold:
+              typeof agency?.sellerLimitThreshold === 'number' && agency.sellerLimitThreshold >= 1
+                ? agency.sellerLimitThreshold
+                : local.config.sellerLimitThreshold ?? 20,
+            excludedPrizeNames:
+              Array.isArray(agency?.excludedPrizeNames) && agency.excludedPrizeNames.length > 0
+                ? agency.excludedPrizeNames
+                : local.config.excludedPrizeNames,
+            itemOptions:
+              Array.isArray(agency?.itemOptions) && agency.itemOptions.length > 0
+                ? agency.itemOptions
+                : local.config.itemOptions,
+            whatsappNumber:
+              priv && priv.whatsappNumber.trim()
+                ? priv.whatsappNumber
+                : local.config.whatsappNumber,
+          };
+          const mergedExtraNames =
+            priv && priv.extraNames.length > 0
+              ? Array.from(new Set([...local.extraNames, ...priv.extraNames]))
+              : local.extraNames;
+          const mergedHistory = unionSnapshots(vault.history, local.history);
+          const mergedRecycleBin = unionSnapshots(vault.recycleBin, local.recycleBin || []);
+
+          lastAgencySigRef.current = JSON.stringify({
+            date: mergedDate,
+            limitThreshold: mergedConfig.limitThreshold,
+            sellerLimitThreshold: mergedConfig.sellerLimitThreshold ?? 20,
+            excludedPrizeNames: mergedConfig.excludedPrizeNames,
+            itemOptions: mergedConfig.itemOptions,
+            winning1PM: mergedWinning['1PM'],
+            winning6PM: mergedWinning['6PM'],
+            winning8PM: mergedWinning['8PM'],
+          });
+
+          const nextMerged: AppState = {
+            ...local,
+            date: mergedDate,
+            config: mergedConfig,
+            extraNames: mergedExtraNames,
+            entries: mergedEntries,
+            winningRaw: mergedWinning,
+            history: mergedHistory,
+            recycleBin: mergedRecycleBin,
+          };
+          const ts = Math.max(Date.now(), vault.ledgerRevisionMs);
+          latestStateRef.current = nextMerged;
+          lastSavedAtRef.current = ts;
+          writeLocalStorageSafe(nextMerged, ts);
+          void writeIndexedDbEnvelope(nextMerged, ts);
+          setRawState(nextMerged);
+          showToast('Latest Admin Data Synced from Cloud');
+        } else {
+          // Local has current/newer data: safely union-merge any cloud archives missing locally
+          const missingHistory = vault.history.filter(
+            (ch) => !local.history.some((lh) => lh.id === ch.id)
+          );
+          const localBin = local.recycleBin || [];
+          const missingBin = vault.recycleBin.filter(
+            (cb) =>
+              !localBin.some((lb) => lb.id === cb.id) &&
+              !local.history.some((lh) => lh.id === cb.id)
+          );
+          const missingExtra = (vault.privateConfig?.extraNames || []).filter(
+            (n) => !local.extraNames.some((ln) => ln.toUpperCase() === n.toUpperCase())
+          );
+
+          if (missingHistory.length > 0 || missingBin.length > 0 || missingExtra.length > 0) {
+            setState((prev) => ({
+              ...prev,
+              extraNames:
+                missingExtra.length > 0
+                  ? Array.from(new Set([...prev.extraNames, ...missingExtra]))
+                  : prev.extraNames,
+              history:
+                missingHistory.length > 0
+                  ? unionSnapshots(prev.history, missingHistory)
+                  : prev.history,
+              recycleBin:
+                missingBin.length > 0
+                  ? unionSnapshots(prev.recycleBin || [], missingBin)
+                  : prev.recycleBin,
+            }));
+          }
+        }
+
+        if (!cancelled) {
+          setAdminVaultHydrated(true);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCloudError(err instanceof Error ? err.message : 'Admin cloud vault load error');
+        }
+      }
+    };
+
+    void hydrateAdminVault();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudSession, authUser, cloudAgency, localIdbReady, vaultRetryNonce, setState, showToast]);
 
   // Admin -> Cloud Sync: Date, Limit Threshold, Item Options & Official Winning Numbers
-  // Strictly paused while Admin is viewing a locally restored Archive date so Master/Sub-Master live data is NEVER affected.
+  // Strictly gated on adminVaultHydrated and paused while Admin is viewing a locally restored Archive date.
   useEffect(() => {
-    if (cloudSession.kind !== 'admin' || !cloudAgency || isAdminRestoredView) return;
+    if (
+      cloudSession.kind !== 'admin' ||
+      !cloudAgency ||
+      !adminVaultHydrated ||
+      isAdminRestoredView
+    ) {
+      return;
+    }
     const sig = JSON.stringify({
       date: state.date,
       limitThreshold: state.config.limitThreshold,
@@ -1596,7 +1936,7 @@ export default function App() {
     if (sig === lastAgencySigRef.current) return;
 
     const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current) return;
+      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
       lastAgencySigRef.current = sig;
       void syncAdminAgencyState(latestStateRef.current).catch((err) => {
         setCloudError(err instanceof Error ? err.message : 'Agency sync error');
@@ -1607,6 +1947,7 @@ export default function App() {
   }, [
     cloudSession,
     cloudAgency,
+    adminVaultHydrated,
     isAdminRestoredView,
     state.date,
     state.config.limitThreshold,
@@ -1614,6 +1955,134 @@ export default function App() {
     state.config.excludedPrizeNames,
     state.config.itemOptions,
     state.winningRaw,
+  ]);
+
+  // Admin -> Cloud Vault Sync: Private Settings (WhatsApp Dispatch Number & Extra Seller Names)
+  useEffect(() => {
+    if (
+      cloudSession.kind !== 'admin' ||
+      !cloudAgency ||
+      !adminVaultHydrated ||
+      isAdminRestoredView
+    ) {
+      return;
+    }
+    const sig = JSON.stringify({
+      whatsappNumber: state.config.whatsappNumber,
+      autoArchiveDaily: state.config.autoArchiveDaily,
+      pausedAutoArchiveDate: state.config.pausedAutoArchiveDate || '',
+      extraNames: state.extraNames,
+    });
+    if (sig === lastPrivateConfigSigRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
+      lastPrivateConfigSigRef.current = sig;
+      void syncAdminPrivateConfigCloud(
+        cloudSession.ownerUid,
+        latestStateRef.current,
+        cloudSession.agencyId
+      ).catch(() => {});
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    cloudSession,
+    cloudAgency,
+    adminVaultHydrated,
+    isAdminRestoredView,
+    state.config.whatsappNumber,
+    state.config.autoArchiveDaily,
+    state.config.pausedAutoArchiveDate,
+    state.extraNames,
+  ]);
+
+  // Admin -> Cloud Vault Sync: Complete 1PM, 6PM & 8PM Ledger Backup (Chunked, Incremental, 30,000+ rows safe)
+  // Backs up EVERY row including MY CHOICE, manual/pasted entries, and unassigned rows.
+  useEffect(() => {
+    if (
+      cloudSession.kind !== 'admin' ||
+      !authUser ||
+      !cloudAgency ||
+      !adminVaultHydrated ||
+      isAdminRestoredView
+    ) {
+      return;
+    }
+    const adminUid = authUser.uid;
+    const ownerUid = cloudSession.ownerUid;
+    const agencyId = cloudSession.agencyId;
+    const adminUids = cloudAgency.adminUids;
+    const totalRows =
+      (state.entries['1PM']?.length || 0) +
+      (state.entries['6PM']?.length || 0) +
+      (state.entries['8PM']?.length || 0);
+    const debounceMs = totalRows > 3000 ? 1400 : 750;
+
+    const timer = window.setTimeout(() => {
+      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
+      const curr = latestStateRef.current;
+      const revMs = Math.max(Date.now(), lastSavedAtRef.current);
+      void syncAdminLedgerChunksCloud(
+        adminUid,
+        ownerUid,
+        adminUids,
+        curr.date,
+        curr.entries,
+        revMs,
+        adminChunkSigsRef.current,
+        adminChunkIdsRef.current,
+        agencyId
+      ).catch(() => {});
+    }, debounceMs);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    cloudSession,
+    authUser,
+    cloudAgency,
+    adminVaultHydrated,
+    isAdminRestoredView,
+    state.entries,
+    state.date,
+  ]);
+
+  // Admin -> Cloud Vault Sync: All Archive History & Recycle Bin Snapshots
+  useEffect(() => {
+    if (
+      cloudSession.kind !== 'admin' ||
+      !cloudAgency ||
+      !adminVaultHydrated ||
+      isAdminRestoredView
+    ) {
+      return;
+    }
+    const ownerUid = cloudSession.ownerUid;
+    const agencyId = cloudSession.agencyId;
+    const adminUids = cloudAgency.adminUids;
+
+    const timer = window.setTimeout(() => {
+      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
+      const curr = latestStateRef.current;
+      void syncAdminArchivesCloud(
+        ownerUid,
+        adminUids,
+        curr.history,
+        curr.recycleBin || [],
+        adminArchiveSigsRef.current,
+        adminArchiveDocIdsRef.current,
+        agencyId
+      ).catch(() => {});
+    }, 550);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    cloudSession,
+    cloudAgency,
+    adminVaultHydrated,
+    isAdminRestoredView,
+    state.history,
+    state.recycleBin,
   ]);
 
   // Admin -> Cloud Sync: Sellers (Name, Rate, Due, Joma, Mobile) & Easy Login ID/Password creation
@@ -1698,21 +2167,68 @@ export default function App() {
     }
   }, [cloudSession, authUser, extractSellerRowsFromEntries]);
 
-  // Cloud -> Local Hydration: restore any direct sellers already saved in Firestore (e.g. on a fresh browser/phone)
+  // Cloud -> Local Hydration: restore direct sellers already saved in Firestore (e.g. after app delete / fresh phone)
   useEffect(() => {
-    if (cloudSession.kind !== 'admin' || !cloudHydrated || cloudParties.length === 0) return;
+    if (
+      cloudSession.kind !== 'admin' ||
+      !cloudHydrated ||
+      !adminVaultHydrated ||
+      cloudParties.length === 0
+    ) {
+      return;
+    }
+
+    const isFreshBoot = wasFreshLocalBootRef.current;
 
     setState((prev) => {
-      const existingIds = new Set(prev.sellers.map((s) => s.id));
-      const existingNames = new Set(prev.sellers.map((s) => s.name.trim().toUpperCase()));
+      const directParties = cloudParties.filter((p) => p.role !== 'admin' && !p.parentMasterId);
+      if (directParties.length === 0) return prev;
+
+      const privByPartyId = new Map<string, CloudPartyPrivateDoc>();
+      for (const pr of cloudPrivates) {
+        privByPartyId.set(pr.partyId, pr);
+      }
+
+      let changed = false;
+      const nextSellers: Seller[] = prev.sellers.map((s) => {
+        if (!isFreshBoot) return s;
+        const up = s.name.trim().toUpperCase();
+        const match =
+          directParties.find((p) => p.partyId === s.id) ||
+          directParties.find((p) => p.name.trim().toUpperCase() === up);
+        if (!match) return s;
+        const priv = privByPartyId.get(match.partyId);
+        const nextRate = Number.isFinite(match.rate) ? match.rate : s.rate;
+        const nextDue = Number.isFinite(match.due) ? match.due : s.due;
+        const nextJoma = Number.isFinite(match.joma) ? match.joma : s.joma;
+        const nextMobile = priv?.mobile ?? s.mobile;
+        if (
+          nextRate === s.rate &&
+          nextDue === s.due &&
+          nextJoma === s.joma &&
+          nextMobile === s.mobile
+        ) {
+          return s;
+        }
+        changed = true;
+        return {
+          ...s,
+          rate: nextRate,
+          due: nextDue,
+          joma: nextJoma,
+          mobile: nextMobile,
+        };
+      });
+
+      const existingIds = new Set(nextSellers.map((s) => s.id));
+      const existingNames = new Set(nextSellers.map((s) => s.name.trim().toUpperCase()));
       const restoredFromCloud: Seller[] = [];
 
-      for (const party of cloudParties) {
-        if (party.role === 'admin' || party.parentMasterId) continue;
+      for (const party of directParties) {
         const upperName = party.name.trim().toUpperCase();
         if (!upperName) continue;
         if (existingIds.has(party.partyId) || existingNames.has(upperName)) continue;
-        const priv = cloudPrivates.find((pr) => pr.partyId === party.partyId);
+        const priv = privByPartyId.get(party.partyId);
         restoredFromCloud.push({
           id: party.partyId,
           name: upperName,
@@ -1723,13 +2239,17 @@ export default function App() {
         });
       }
 
-      if (restoredFromCloud.length === 0) return prev;
+      if (isFreshBoot) {
+        wasFreshLocalBootRef.current = false;
+      }
+
+      if (!changed && restoredFromCloud.length === 0) return prev;
       return {
         ...prev,
-        sellers: [...prev.sellers, ...restoredFromCloud],
+        sellers: [...nextSellers, ...restoredFromCloud],
       };
     });
-  }, [cloudSession, cloudHydrated, cloudParties, cloudPrivates, setState]);
+  }, [cloudSession, cloudHydrated, adminVaultHydrated, cloudParties, cloudPrivates, setState]);
 
   useEffect(() => {
     if (
@@ -1737,12 +2257,13 @@ export default function App() {
       !authUser ||
       !cloudAgency ||
       !cloudHydrated ||
+      !adminVaultHydrated ||
       isAdminRestoredView
     ) {
       return;
     }
     const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current) return;
+      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
       void syncAllSellersToCloud();
     }, 400);
     return () => window.clearTimeout(timer);
@@ -1751,6 +2272,7 @@ export default function App() {
     authUser,
     cloudAgency,
     cloudHydrated,
+    adminVaultHydrated,
     isAdminRestoredView,
     state.sellers,
     syncAllSellersToCloud,
@@ -1758,12 +2280,13 @@ export default function App() {
 
   // Admin -> Cloud Sync: Push Admin's edits for a seller's 1PM/6PM/8PM rows to that seller's sheet
   // Optimized to a single O(N) pass across all 30,000+ rows instead of scanning per seller.
-  // Strictly paused while Admin is viewing a locally restored Archive date so Master/Sub-Master live sheets are NEVER overwritten.
+  // Strictly gated on adminVaultHydrated and paused while Admin is viewing a locally restored Archive date.
   useEffect(() => {
     if (
       cloudSession.kind !== 'admin' ||
       !authUser ||
       !cloudHydrated ||
+      !adminVaultHydrated ||
       cloudParties.length === 0 ||
       isAdminRestoredView
     ) {
@@ -1852,6 +2375,7 @@ export default function App() {
     cloudSession,
     authUser,
     cloudHydrated,
+    adminVaultHydrated,
     cloudParties,
     isAdminRestoredView,
     state.entries,
@@ -1972,6 +2496,13 @@ export default function App() {
       setCloudParties([]);
       setCloudPrivates([]);
       setCloudSheets([]);
+      setAdminVaultHydrated(false);
+      wasFreshLocalBootRef.current = false;
+      adminChunkSigsRef.current = {};
+      adminChunkIdsRef.current = new Set();
+      adminArchiveSigsRef.current = {};
+      adminArchiveDocIdsRef.current = new Set();
+      lastPrivateConfigSigRef.current = '';
       setAdminPreviewParty(null);
       clearLoginQueryParams();
       if (wasSellerSession) {
@@ -2284,9 +2815,17 @@ export default function App() {
       } else if (!lsEnv && lastSavedAtRef.current > 0) {
         writeLocalStorageSafe(latestStateRef.current, lastSavedAtRef.current);
       }
+
+      if (!cancelled) {
+        setLocalIdbReady(true);
+      }
     };
 
-    void syncFromNewestStore();
+    void syncFromNewestStore().catch(() => {
+      if (!cancelled) {
+        setLocalIdbReady(true);
+      }
+    });
 
     const flushCurrent = () => {
       const ts = Math.max(Date.now(), lastSavedAtRef.current);

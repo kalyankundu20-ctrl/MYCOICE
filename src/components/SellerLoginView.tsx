@@ -1,6 +1,8 @@
 import {
   AlertCircle,
   ArrowLeft,
+  Check,
+  Copy,
   ExternalLink,
   Eye,
   EyeOff,
@@ -15,7 +17,10 @@ import {
 import { useRef, useState } from 'react';
 import {
   FIREBASE_AUTH_PROVIDERS_URL,
+  FIREBASE_AUTHORIZED_DOMAINS_URL,
+  getAuthEnvironmentInfo,
   isAnonymousAuthDisabledError,
+  isUnauthorizedDomainError,
 } from '../firebase';
 import type { CloudPublicAnnouncement } from '../services/cloudSync';
 import { AppSounds } from '../utils/sound';
@@ -47,12 +52,57 @@ export function SellerLoginView({
   const [passwordInput, setPasswordInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [adminUnlockedByLogo, setAdminUnlockedByLogo] = useState(false);
+  const [domainCopied, setDomainCopied] = useState(false);
   const logoTapRef = useRef<{ count: number; lastTs: number }>({ count: 0, lastTs: 0 });
 
   const isAnonDisabled = isAnonymousAuthDisabledError(error);
+  const isUnauthorizedDomain = isUnauthorizedDomainError(error);
+  const authEnv = getAuthEnvironmentInfo();
   const canShowAdminButton = Boolean(
     onAdminGoogleSignIn && (showAdminSignIn || (allowLogoAdminUnlock && adminUnlockedByLogo))
   );
+
+  const handleCopyDomain = async () => {
+    const host = authEnv.hostname || (typeof window !== 'undefined' ? window.location.hostname : '');
+    if (!host) return;
+    AppSounds.tap();
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(host);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = host;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setDomainCopied(true);
+      AppSounds.success();
+      window.setTimeout(() => setDomainCopied(false), 2500);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = host;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand('copy');
+        setDomainCopied(true);
+        window.setTimeout(() => setDomainCopied(false), 2500);
+      } catch {
+        // Ignore clipboard failure
+      }
+      document.body.removeChild(ta);
+    }
+  };
 
   const handleLogoTap = () => {
     if (!allowLogoAdminUnlock || !onAdminGoogleSignIn || showAdminSignIn) return;
@@ -151,6 +201,49 @@ export function SellerLoginView({
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
                 <span>{error}</span>
               </div>
+              {isUnauthorizedDomain && (
+                <div className="pt-2 border-t border-rose-200/80 space-y-2.5">
+                  <div className="text-[11px] font-semibold text-rose-950 leading-relaxed">
+                    <strong>1-Time Setup (10 sec):</strong> Pehle{' '}
+                    <strong>Copy Domain</strong> dabayein, phir{' '}
+                    <strong>Open Firebase Settings</strong> khol kar{' '}
+                    <strong>Authorized domains → Add domain</strong> me paste kar dein:
+                  </div>
+                  {authEnv.hostname && (
+                    <div className="px-2.5 py-1.5 rounded-xl bg-white border border-rose-200 font-mono-tabular text-xs font-extrabold text-slate-900 select-all break-all">
+                      {authEnv.hostname}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyDomain()}
+                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold transition-colors cursor-pointer ${
+                        domainCopied
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-900 hover:bg-slate-800 text-white'
+                      }`}
+                    >
+                      {domainCopied ? (
+                        <Check className="w-3.5 h-3.5" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                      <span>{domainCopied ? 'Domain Copied!' : 'Copy Domain'}</span>
+                    </button>
+                    <a
+                      href={FIREBASE_AUTHORIZED_DOMAINS_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => AppSounds.tap()}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-700 text-white text-xs font-extrabold hover:bg-rose-800 transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Open Firebase Settings</span>
+                    </a>
+                  </div>
+                </div>
+              )}
               {isAnonDisabled && (
                 <div className="pt-2 border-t border-rose-200/80 space-y-2">
                   <div className="text-[11px] font-semibold text-rose-950 leading-relaxed">

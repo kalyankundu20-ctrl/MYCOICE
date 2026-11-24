@@ -13,7 +13,13 @@ import {
   type Auth,
   type User,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import {
+  doc,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+  type Firestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -22,7 +28,20 @@ const FIRESTORE_DATABASE_ID =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-kkagencyledger-4009c142-a714-4d4b-9dd5-d98e312a9f6e';
 
-export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
+let firestoreInstance: Firestore;
+try {
+  firestoreInstance = initializeFirestore(
+    app,
+    {
+      experimentalAutoDetectLongPolling: true,
+    },
+    FIRESTORE_DATABASE_ID
+  );
+} catch {
+  firestoreInstance = getFirestore(app, FIRESTORE_DATABASE_ID);
+}
+
+export const db = firestoreInstance;
 
 // Explicitly prefer durable IndexedDB + LocalStorage persistence so Admin & Seller
 // logins stay permanently signed in across reloads, tab closes, and phone restarts.

@@ -62,6 +62,10 @@ service cloud.firestore {
       return arr is list && arr.size() <= 500 && (arr.size() == 0 || arr[0] is map);
     }
 
+    function isValidChunkEntryList(arr) {
+      return arr is list && arr.size() <= 1000 && (arr.size() == 0 || arr[0] is map);
+    }
+
     // Zero-DB-read bootstrap admin check (safe for allow list — Pillar 8)
     function isBootstrapAdminEmail() {
       return isVerifiedUser() &&
@@ -393,6 +397,33 @@ service cloud.firestore {
         data.title is string && data.title.size() <= 120 &&
         data.message is string && data.message.size() <= 1000 &&
         isValidId(data.ownerUid) &&
+        isValidId(data.updatedByUid) &&
+        data.updatedByUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminLedgerChunk(data) {
+      return data.keys().hasAll([
+          'agencyId', 'chunkId', 'sessionId', 'chunkIndex', 'totalChunks',
+          'date', 'revisionMs', 'ownerUid', 'adminUids', 'rows',
+          'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agencyId', 'chunkId', 'sessionId', 'chunkIndex', 'totalChunks',
+          'date', 'revisionMs', 'ownerUid', 'adminUids', 'rows',
+          'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.agencyId) &&
+        isValidId(data.chunkId) &&
+        data.sessionId is string && (data.sessionId == '1PM' || data.sessionId == '6PM' || data.sessionId == '8PM') &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex <= 100 &&
+        data.totalChunks is number && data.totalChunks >= 1 && data.totalChunks <= 100 &&
+        isValidIsoDate(data.date) &&
+        data.revisionMs is number && data.revisionMs >= 0 &&
+        isValidId(data.ownerUid) &&
+        isValidNonEmptyStringList(data.adminUids, 10) &&
+        isValidChunkEntryList(data.rows) &&
         isValidId(data.updatedByUid) &&
         data.updatedByUid == request.auth.uid &&
         data.createdAt is timestamp &&
@@ -1029,7 +1060,7 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
           isAgencyAdmin(agencyId) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['adminUids', 'date', 'payload', 'updatedAt']);
+          incoming().diff(existing()).affectedKeys().hasOnly(['adminUids', 'date', 'savedAt', 'trigger', 'payload', 'updatedAt']);
         allow delete: if isVerifiedUser() && isValidId(agencyId) && isValidId(snapshotId) &&
           isAgencyAdmin(agencyId);
       }
@@ -1108,6 +1139,39 @@ service cloud.firestore {
             existing().partyId == getMemberDoc(agencyId).partyId
           )
         );
+      }
+
+      // 4h. /agencies/{agencyId}/adminLedgerChunks/{chunkId} (Admin-Only Permanent Chunked Ledger Backup)
+      match /adminLedgerChunks/{chunkId} {
+        allow get: if isVerifiedUser() && isValidId(agencyId) && isValidId(chunkId) &&
+          isAgencyAdmin(agencyId);
+        allow list: if isVerifiedUser() && (
+          isBootstrapAdminEmail() ||
+          resource.data.ownerUid == request.auth.uid ||
+          request.auth.uid in resource.data.adminUids
+        );
+        allow create: if isVerifiedUser() && isValidId(agencyId) && isValidId(chunkId) &&
+          isValidAdminLedgerChunk(incoming()) &&
+          incoming().agencyId == agencyId &&
+          incoming().chunkId == chunkId &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/agencies/$(agencyId)) &&
+          isAgencyAdmin(agencyId);
+        allow update: if isVerifiedUser() && isValidId(agencyId) && isValidId(chunkId) &&
+          isValidAdminLedgerChunk(incoming()) &&
+          incoming().agencyId == existing().agencyId &&
+          incoming().chunkId == existing().chunkId &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAgencyAdmin(agencyId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'sessionId', 'chunkIndex', 'totalChunks', 'date', 'revisionMs',
+            'adminUids', 'rows', 'updatedByUid', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedUser() && isValidId(agencyId) && isValidId(chunkId) &&
+          isAgencyAdmin(agencyId);
       }
     }
   }

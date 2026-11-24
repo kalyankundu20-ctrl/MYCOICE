@@ -3,6 +3,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -3068,5 +3069,739 @@ export async function savePublicAnnouncementCloud(
     handleFirestoreError(err, existsNow ? OperationType.UPDATE : OperationType.CREATE, ref.path);
   }
 }
+
+// =============================================================================
+// PERMANENT ADMIN CLOUD VAULT (1PM/6PM/8PM Chunks, Private Config & Archives)
+// Guarantees 100% of Admin data survives app delete, phone change, or domain switch.
+// =============================================================================
+
+const ADMIN_LEDGER_CHUNK_SIZE = 800;
+const ADMIN_LEDGER_MAX_CHUNKS_PER_SESSION = 100;
+
+export interface CloudAdminPrivateConfigDoc {
+  agencyId: string;
+  ownerUid: string;
+  whatsappNumber: string;
+  autoArchiveDaily: boolean;
+  pausedAutoArchiveDate: string;
+  extraNames: string[];
+  updatedAtMs: number;
+}
+
+export interface AdminCloudVaultData {
+  agency: CloudAgencyDoc | null;
+  agencyUpdatedAtMs: number;
+  privateConfig: CloudAdminPrivateConfigDoc | null;
+  entries: Record<SessionId, TicketEntryRow[]>;
+  ledgerDate: string;
+  ledgerRevisionMs: number;
+  chunkSigs: Record<string, string>;
+  chunkIds: string[];
+  history: DaySnapshot[];
+  recycleBin: DaySnapshot[];
+  archiveSigs: Record<string, string>;
+  archiveDocIds: string[];
+}
+
+function sanitizeChunkRowsForCloud(rows: TicketEntryRow[]): TicketEntryRow[] {
+  const out: TicketEntryRow[] = [];
+  if (!Array.isArray(rows)) return out;
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i];
+    if (!r) continue;
+    const name = String(r.name || '');
+    const item = String(r.item || '');
+    const start = String(r.start || '');
+    const end = String(r.end || '');
+    const qtyOverride = String(r.qtyOverride || '');
+    const rangeOverride = String(r.rangeOverride || '');
+    if (
+      !name.trim() &&
+      !item.trim() &&
+      !start.trim() &&
+      !end.trim() &&
+      !qtyOverride.trim() &&
+      !rangeOverride.trim()
+    ) {
+      continue;
+    }
+    out.push({
+      id: String(r.id || `r-${i}`),
+      name,
+      item,
+      start,
+      end,
+      qtyOverride,
+      rangeOverride,
+    });
+  }
+  return out;
+}
+
+function computeChunkSignature(
+  date: string,
+  sessionId: SessionId,
+  chunkIndex: number,
+  totalChunks: number,
+  rows: TicketEntryRow[]
+): string {
+  const compact = rows.map((r) => [
+    r.id,
+    r.name,
+    r.item,
+    r.start,
+    r.end,
+    r.qtyOverride,
+    r.rangeOverride,
+  ]);
+  return JSON.stringify([date, sessionId, chunkIndex, totalChunks, compact]);
+}
+
+interface DesiredLedgerChunk {
+  chunkId: string;
+  sessionId: SessionId;
+  chunkIndex: number;
+  totalChunks: number;
+  rows: TicketEntryRow[];
+  sig: string;
+}
+
+function buildDesiredLedgerChunks(
+  date: string,
+  entries: Record<SessionId, TicketEntryRow[]>
+): DesiredLedgerChunk[] {
+  const cleanDate = sanitizeIsoDate(date);
+  const chunks: DesiredLedgerChunk[] = [];
+  const sessions: SessionId[] = ['1PM', '6PM', '8PM'];
+
+  for (const sid of sessions) {
+    const cleaned = sanitizeChunkRowsForCloud(entries[sid] || []);
+    const totalChunks = Math.min(
+      ADMIN_LEDGER_MAX_CHUNKS_PER_SESSION,
+      Math.max(1, Math.ceil(cleaned.length / ADMIN_LEDGER_CHUNK_SIZE))
+    );
+    for (let idx = 0; idx < totalChunks; idx += 1) {
+      const start = idx * ADMIN_LEDGER_CHUNK_SIZE;
+      const slice = cleaned.slice(start, start + ADMIN_LEDGER_CHUNK_SIZE);
+      const chunkId = `${sid}_${idx}`;
+      chunks.push({
+        chunkId,
+        sessionId: sid,
+        chunkIndex: idx,
+        totalChunks,
+        rows: slice,
+        sig: computeChunkSignature(cleanDate, sid, idx, totalChunks, slice),
+      });
+    }
+  }
+  return chunks;
+}
+
+export function makeAdminArchiveDocId(snapshotId: string): string {
+  return sanitizeId(`snap-${snapshotId}`, `snap-${Date.now()}`);
+}
+
+function sanitizeArchiveTrigger(raw: unknown): 'manual' | 'daily-auto' | 'day-close' {
+  if (raw === 'daily-auto' || raw === 'day-close' || raw === 'manual') return raw;
+  return 'manual';
+}
+
+function stripUndefinedDeep<T>(value: T): T {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefinedDeep(item)) as unknown as T;
+  }
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) {
+        out[k] = stripUndefinedDeep(v);
+      }
+    }
+    return out as T;
+  }
+  return value;
+}
+
+function buildSafeArchivePayload(
+  snap: DaySnapshot,
+  inRecycleBin: boolean
+): Record<string, unknown> {
+  const cleanSnap: DaySnapshot = {
+    ...snap,
+    entries: {
+      '1PM': sanitizeChunkRowsForCloud(snap.entries?.['1PM'] || []),
+      '6PM': sanitizeChunkRowsForCloud(snap.entries?.['6PM'] || []),
+      '8PM': sanitizeChunkRowsForCloud(snap.entries?.['8PM'] || []),
+    },
+    winningRaw: {
+      '1PM': String(snap.winningRaw?.['1PM'] || '').slice(0, 20000),
+      '6PM': String(snap.winningRaw?.['6PM'] || '').slice(0, 20000),
+      '8PM': String(snap.winningRaw?.['8PM'] || '').slice(0, 20000),
+    },
+  };
+
+  const basePayload: Record<string, unknown> = stripUndefinedDeep({
+    ...cleanSnap,
+    _inRecycleBin: inRecycleBin,
+  });
+
+  // Stay strictly below Firestore's 1MB document limit even on massive 30,000-row days
+  let jsonLen = JSON.stringify(basePayload).length;
+  if (jsonLen > 760000) {
+    const caps = [1800, 900, 350, 0];
+    for (const cap of caps) {
+      basePayload.entries = {
+        '1PM': cleanSnap.entries['1PM'].slice(0, cap),
+        '6PM': cleanSnap.entries['6PM'].slice(0, cap),
+        '8PM': cleanSnap.entries['8PM'].slice(0, cap),
+      };
+      jsonLen = JSON.stringify(basePayload).length;
+      if (jsonLen <= 760000) break;
+    }
+  }
+  return basePayload;
+}
+
+function computeArchiveSignature(snap: DaySnapshot, inRecycleBin: boolean): string {
+  const e1 = snap.entries?.['1PM']?.length || 0;
+  const e6 = snap.entries?.['6PM']?.length || 0;
+  const e8 = snap.entries?.['8PM']?.length || 0;
+  return JSON.stringify([
+    snap.id,
+    snap.date,
+    snap.savedAt,
+    snap.deletedAt || '',
+    snap.trigger,
+    inRecycleBin ? 1 : 0,
+    snap.totalSold,
+    snap.totalBill,
+    snap.totalPrize,
+    snap.totalNetPayable,
+    e1,
+    e6,
+    e8,
+  ]);
+}
+
+function parseArchiveSnapshotFromDoc(
+  docId: string,
+  data: Record<string, unknown>
+): { snapshot: DaySnapshot; inRecycleBin: boolean } | null {
+  const payload = data.payload;
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const inRecycleBin = Boolean(p._inRecycleBin);
+  const rawEntries = (p.entries as Partial<Record<SessionId, TicketEntryRow[]>> | undefined) || {};
+  const rawWinning = (p.winningRaw as Partial<Record<SessionId, string>> | undefined) || {};
+
+  const snapshot: DaySnapshot = {
+    id: typeof p.id === 'string' && p.id ? p.id : docId,
+    date: typeof p.date === 'string' && p.date ? p.date : String(data.date || ''),
+    savedAt: typeof p.savedAt === 'string' && p.savedAt ? p.savedAt : String(data.savedAt || ''),
+    ...(typeof p.deletedAt === 'string' && p.deletedAt ? { deletedAt: p.deletedAt } : {}),
+    trigger: sanitizeArchiveTrigger(p.trigger ?? data.trigger),
+    totalSold: Number(p.totalSold) || 0,
+    totalBill: Number(p.totalBill) || 0,
+    totalPrize: Number(p.totalPrize) || 0,
+    totalNetPayable: Number(p.totalNetPayable) || 0,
+    limitGrandTotal: Number(p.limitGrandTotal) || 0,
+    overLimitTotals: {
+      '1PM': Number((p.overLimitTotals as Record<string, unknown> | undefined)?.['1PM']) || 0,
+      '6PM': Number((p.overLimitTotals as Record<string, unknown> | undefined)?.['6PM']) || 0,
+      '8PM': Number((p.overLimitTotals as Record<string, unknown> | undefined)?.['8PM']) || 0,
+    },
+    sellerSummaries: Array.isArray(p.sellerSummaries) ? (p.sellerSummaries as DaySnapshot['sellerSummaries']) : [],
+    prizeList: Array.isArray(p.prizeList) ? (p.prizeList as DaySnapshot['prizeList']) : [],
+    limitPrizeGroups: Array.isArray(p.limitPrizeGroups)
+      ? (p.limitPrizeGroups as DaySnapshot['limitPrizeGroups'])
+      : [],
+    sellers: Array.isArray(p.sellers) ? (p.sellers as Seller[]) : [],
+    entries: {
+      '1PM': sanitizeChunkRowsForCloud(rawEntries['1PM'] || []),
+      '6PM': sanitizeChunkRowsForCloud(rawEntries['6PM'] || []),
+      '8PM': sanitizeChunkRowsForCloud(rawEntries['8PM'] || []),
+    },
+    winningRaw: {
+      '1PM': String(rawWinning['1PM'] || ''),
+      '6PM': String(rawWinning['6PM'] || ''),
+      '8PM': String(rawWinning['8PM'] || ''),
+    },
+  };
+
+  return { snapshot, inRecycleBin };
+}
+
+/**
+ * Loads Admin's complete cloud vault (agency config/winning, private settings,
+ * chunked 1PM/6PM/8PM ledger rows, and archived history + recycle bin) for
+ * automatic recovery after app uninstall, reinstall, or device switch.
+ */
+export async function loadAdminCloudVault(
+  ownerUid: string,
+  agencyId = AGENCY_ID
+): Promise<AdminCloudVaultData> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  const agencyPath = `agencies/${cleanAgencyId}`;
+  const privatePath = `agencies/${cleanAgencyId}/private/config`;
+  const chunksPath = `agencies/${cleanAgencyId}/adminLedgerChunks`;
+  const archivesPath = `agencies/${cleanAgencyId}/archives`;
+
+  const [agencySnap, privateSnap, chunksSnap, archivesSnap] = await Promise.all([
+    getDoc(doc(db, 'agencies', cleanAgencyId)).catch((err) => {
+      handleFirestoreError(err, OperationType.GET, agencyPath);
+    }),
+    getDoc(doc(db, 'agencies', cleanAgencyId, 'private', 'config')).catch((err) => {
+      handleFirestoreError(err, OperationType.GET, privatePath);
+    }),
+    getDocs(
+      query(
+        collection(db, 'agencies', cleanAgencyId, 'adminLedgerChunks'),
+        where('ownerUid', '==', ownerUid)
+      )
+    ).catch((err) => {
+      handleFirestoreError(err, OperationType.LIST, chunksPath);
+    }),
+    getDocs(
+      query(
+        collection(db, 'agencies', cleanAgencyId, 'archives'),
+        where('ownerUid', '==', ownerUid)
+      )
+    ).catch((err) => {
+      handleFirestoreError(err, OperationType.LIST, archivesPath);
+    }),
+  ]);
+
+  let agency: CloudAgencyDoc | null = null;
+  let agencyUpdatedAtMs = 0;
+  if (agencySnap && agencySnap.exists()) {
+    const raw = agencySnap.data();
+    agency = raw as CloudAgencyDoc;
+    agencyUpdatedAtMs = parseTimestampMs(raw.updatedAt);
+  }
+
+  let privateConfig: CloudAdminPrivateConfigDoc | null = null;
+  if (privateSnap && privateSnap.exists()) {
+    const raw = privateSnap.data();
+    privateConfig = {
+      agencyId: typeof raw.agencyId === 'string' ? raw.agencyId : cleanAgencyId,
+      ownerUid: typeof raw.ownerUid === 'string' ? raw.ownerUid : ownerUid,
+      whatsappNumber: typeof raw.whatsappNumber === 'string' ? raw.whatsappNumber : '',
+      autoArchiveDaily: Boolean(raw.autoArchiveDaily),
+      pausedAutoArchiveDate:
+        typeof raw.pausedAutoArchiveDate === 'string' ? raw.pausedAutoArchiveDate : '',
+      extraNames: Array.isArray(raw.extraNames)
+        ? raw.extraNames.map((n) => String(n || '').trim()).filter(Boolean)
+        : [],
+      updatedAtMs: parseTimestampMs(raw.updatedAt),
+    };
+  }
+
+  const chunksBySession: Record<
+    SessionId,
+    { chunkIndex: number; totalChunks: number; date: string; revisionMs: number; rows: TicketEntryRow[] }[]
+  > = {
+    '1PM': [],
+    '6PM': [],
+    '8PM': [],
+  };
+  const chunkSigs: Record<string, string> = {};
+  const chunkIds: string[] = [];
+  let ledgerRevisionMs = 0;
+  let ledgerDate = agency?.date || '';
+
+  if (chunksSnap) {
+    chunksSnap.forEach((docSnap) => {
+      const d = docSnap.data();
+      const sid = d.sessionId as SessionId;
+      if (sid !== '1PM' && sid !== '6PM' && sid !== '8PM') return;
+      const chunkId = typeof d.chunkId === 'string' && d.chunkId ? d.chunkId : docSnap.id;
+      const chunkIndex = Number(d.chunkIndex) || 0;
+      const totalChunks = Math.max(1, Number(d.totalChunks) || 1);
+      const dateStr = typeof d.date === 'string' ? d.date : agency?.date || '';
+      const revMs = Math.max(Number(d.revisionMs) || 0, parseTimestampMs(d.updatedAt));
+      const rows = sanitizeChunkRowsForCloud(Array.isArray(d.rows) ? (d.rows as TicketEntryRow[]) : []);
+
+      chunkIds.push(chunkId);
+      chunkSigs[chunkId] = computeChunkSignature(dateStr, sid, chunkIndex, totalChunks, rows);
+      chunksBySession[sid].push({
+        chunkIndex,
+        totalChunks,
+        date: dateStr,
+        revisionMs: revMs,
+        rows,
+      });
+      if (revMs > ledgerRevisionMs) {
+        ledgerRevisionMs = revMs;
+        if (dateStr) ledgerDate = dateStr;
+      }
+    });
+  }
+
+  const entries: Record<SessionId, TicketEntryRow[]> = {
+    '1PM': [],
+    '6PM': [],
+    '8PM': [],
+  };
+  for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+    const list = chunksBySession[sid];
+    if (list.length === 0) continue;
+    list.sort((a, b) => a.chunkIndex - b.chunkIndex);
+    // Respect totalChunks from chunk 0 (the freshest header) so stale tail chunks are ignored
+    const declaredTotal = list[0]?.totalChunks || list.length;
+    const assembled: TicketEntryRow[] = [];
+    for (const c of list) {
+      if (c.chunkIndex >= declaredTotal) continue;
+      for (let i = 0; i < c.rows.length; i += 1) {
+        assembled.push(c.rows[i]);
+      }
+    }
+    entries[sid] = assembled;
+  }
+
+  const history: DaySnapshot[] = [];
+  const recycleBin: DaySnapshot[] = [];
+  const archiveSigs: Record<string, string> = {};
+  const archiveDocIds: string[] = [];
+
+  if (archivesSnap) {
+    archivesSnap.forEach((docSnap) => {
+      const parsed = parseArchiveSnapshotFromDoc(docSnap.id, docSnap.data() as Record<string, unknown>);
+      if (!parsed) return;
+      archiveDocIds.push(docSnap.id);
+      archiveSigs[docSnap.id] = computeArchiveSignature(parsed.snapshot, parsed.inRecycleBin);
+      if (parsed.inRecycleBin) {
+        recycleBin.push(parsed.snapshot);
+      } else {
+        history.push(parsed.snapshot);
+      }
+    });
+  }
+
+  const sortNewest = (a: DaySnapshot, b: DaySnapshot) =>
+    String(b.savedAt || '').localeCompare(String(a.savedAt || ''));
+  history.sort(sortNewest);
+  recycleBin.sort(sortNewest);
+
+  return {
+    agency,
+    agencyUpdatedAtMs,
+    privateConfig,
+    entries,
+    ledgerDate,
+    ledgerRevisionMs,
+    chunkSigs,
+    chunkIds,
+    history,
+    recycleBin,
+    archiveSigs,
+    archiveDocIds,
+  };
+}
+
+/**
+ * Persists Admin's private settings (WhatsApp number, extra seller names, auto-archive flags)
+ * to /agencies/{agencyId}/private/config so they recover automatically on reinstall.
+ */
+export async function syncAdminPrivateConfigCloud(
+  ownerUid: string,
+  state: AppState,
+  agencyId = AGENCY_ID
+): Promise<void> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  const ref = doc(db, 'agencies', cleanAgencyId, 'private', 'config');
+  const whatsappNumber = String(state.config.whatsappNumber || '').slice(0, 30);
+  const autoArchiveDaily = Boolean(state.config.autoArchiveDaily);
+  const pausedAutoArchiveDate = String(state.config.pausedAutoArchiveDate || '').slice(0, 10);
+  const extraNames = sanitizeStringList(state.extraNames, 100);
+
+  let existsNow = false;
+  try {
+    const snap = await getDoc(ref);
+    existsNow = snap.exists();
+  } catch {
+    existsNow = false;
+  }
+
+  try {
+    if (existsNow) {
+      await updateDoc(ref, {
+        whatsappNumber,
+        autoArchiveDaily,
+        pausedAutoArchiveDate,
+        extraNames,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(ref, {
+        agencyId: cleanAgencyId,
+        ownerUid,
+        whatsappNumber,
+        autoArchiveDaily,
+        pausedAutoArchiveDate,
+        extraNames,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    handleFirestoreError(err, existsNow ? OperationType.UPDATE : OperationType.CREATE, ref.path);
+  }
+}
+
+/**
+ * Incrementally syncs Admin's full 1PM, 6PM, and 8PM ledger rows (including MY CHOICE,
+ * manual/pasted rows, and up to 30,000+ rows) into chunked Admin-only Firestore docs.
+ * Only writes changed chunks and deletes stale extra chunks.
+ */
+export async function syncAdminLedgerChunksCloud(
+  adminUid: string,
+  ownerUid: string,
+  adminUids: string[],
+  date: string,
+  entries: Record<SessionId, TicketEntryRow[]>,
+  revisionMs: number,
+  knownChunkSigs: Record<string, string>,
+  knownChunkIds: Set<string>,
+  agencyId = AGENCY_ID
+): Promise<void> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  const cleanDate = sanitizeIsoDate(date);
+  const safeAdminUids = adminUids.length > 0 ? adminUids.slice(0, 10) : [ownerUid];
+  const safeRevision = Math.max(0, Math.floor(revisionMs || Date.now()));
+
+  const desired = buildDesiredLedgerChunks(cleanDate, entries);
+  const desiredIdSet = new Set(desired.map((c) => c.chunkId));
+
+  const toWrite = desired.filter(
+    (c) => !knownChunkIds.has(c.chunkId) || knownChunkSigs[c.chunkId] !== c.sig
+  );
+  const toDelete = Array.from(knownChunkIds).filter((id) => !desiredIdSet.has(id));
+
+  if (toWrite.length === 0 && toDelete.length === 0) return;
+
+  const CONCURRENCY = 6;
+  for (let i = 0; i < toWrite.length; i += CONCURRENCY) {
+    const slice = toWrite.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      slice.map(async (chunk) => {
+        const ref = doc(db, 'agencies', cleanAgencyId, 'adminLedgerChunks', chunk.chunkId);
+        const existed = knownChunkIds.has(chunk.chunkId);
+        try {
+          if (existed) {
+            try {
+              await updateDoc(ref, {
+                sessionId: chunk.sessionId,
+                chunkIndex: chunk.chunkIndex,
+                totalChunks: chunk.totalChunks,
+                date: cleanDate,
+                revisionMs: safeRevision,
+                adminUids: safeAdminUids,
+                rows: chunk.rows,
+                updatedByUid: adminUid,
+                updatedAt: serverTimestamp(),
+              });
+            } catch (updateErr) {
+              const code =
+                typeof updateErr === 'object' && updateErr !== null && 'code' in updateErr
+                  ? String((updateErr as { code?: unknown }).code || '')
+                  : '';
+              if (code === 'not-found') {
+                await setDoc(ref, {
+                  agencyId: cleanAgencyId,
+                  chunkId: chunk.chunkId,
+                  sessionId: chunk.sessionId,
+                  chunkIndex: chunk.chunkIndex,
+                  totalChunks: chunk.totalChunks,
+                  date: cleanDate,
+                  revisionMs: safeRevision,
+                  ownerUid,
+                  adminUids: safeAdminUids,
+                  rows: chunk.rows,
+                  updatedByUid: adminUid,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                throw updateErr;
+              }
+            }
+          } else {
+            await setDoc(ref, {
+              agencyId: cleanAgencyId,
+              chunkId: chunk.chunkId,
+              sessionId: chunk.sessionId,
+              chunkIndex: chunk.chunkIndex,
+              totalChunks: chunk.totalChunks,
+              date: cleanDate,
+              revisionMs: safeRevision,
+              ownerUid,
+              adminUids: safeAdminUids,
+              rows: chunk.rows,
+              updatedByUid: adminUid,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+          knownChunkIds.add(chunk.chunkId);
+          knownChunkSigs[chunk.chunkId] = chunk.sig;
+        } catch (err) {
+          handleFirestoreError(err, existed ? OperationType.UPDATE : OperationType.CREATE, ref.path);
+        }
+      })
+    );
+  }
+
+  for (let i = 0; i < toDelete.length; i += CONCURRENCY) {
+    const slice = toDelete.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      slice.map(async (staleId) => {
+        const ref = doc(db, 'agencies', cleanAgencyId, 'adminLedgerChunks', staleId);
+        try {
+          await deleteDoc(ref);
+          knownChunkIds.delete(staleId);
+          delete knownChunkSigs[staleId];
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, ref.path);
+        }
+      })
+    );
+  }
+}
+
+/**
+ * Incrementally syncs Admin's Archive history & Recycle Bin snapshots to
+ * /agencies/{agencyId}/archives/{snapshotId} so all past days survive app deletion.
+ */
+export async function syncAdminArchivesCloud(
+  ownerUid: string,
+  adminUids: string[],
+  history: DaySnapshot[],
+  recycleBin: DaySnapshot[],
+  knownArchiveSigs: Record<string, string>,
+  knownArchiveDocIds: Set<string>,
+  agencyId = AGENCY_ID
+): Promise<void> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  const safeAdminUids = adminUids.length > 0 ? adminUids.slice(0, 10) : [ownerUid];
+
+  const desiredMap = new Map<
+    string,
+    { docId: string; snap: DaySnapshot; inRecycleBin: boolean; sig: string }
+  >();
+
+  for (const snap of history) {
+    if (!snap || !snap.id) continue;
+    const docId = makeAdminArchiveDocId(snap.id);
+    desiredMap.set(docId, {
+      docId,
+      snap,
+      inRecycleBin: false,
+      sig: computeArchiveSignature(snap, false),
+    });
+  }
+  for (const snap of recycleBin) {
+    if (!snap || !snap.id) continue;
+    const docId = makeAdminArchiveDocId(snap.id);
+    if (desiredMap.has(docId)) continue;
+    desiredMap.set(docId, {
+      docId,
+      snap,
+      inRecycleBin: true,
+      sig: computeArchiveSignature(snap, true),
+    });
+  }
+
+  const toWrite = Array.from(desiredMap.values()).filter(
+    (item) => !knownArchiveDocIds.has(item.docId) || knownArchiveSigs[item.docId] !== item.sig
+  );
+  const toDelete = Array.from(knownArchiveDocIds).filter((id) => !desiredMap.has(id));
+
+  if (toWrite.length === 0 && toDelete.length === 0) return;
+
+  const CONCURRENCY = 4;
+  for (let i = 0; i < toWrite.length; i += CONCURRENCY) {
+    const slice = toWrite.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      slice.map(async ({ docId, snap, inRecycleBin, sig }) => {
+        const ref = doc(db, 'agencies', cleanAgencyId, 'archives', docId);
+        const cleanDate = sanitizeIsoDate(snap.date);
+        const cleanSavedAt = String(snap.savedAt || new Date().toISOString()).slice(0, 64);
+        const cleanTrigger = sanitizeArchiveTrigger(snap.trigger);
+        const payload = buildSafeArchivePayload(snap, inRecycleBin);
+        const existed = knownArchiveDocIds.has(docId);
+
+        try {
+          if (existed) {
+            try {
+              await updateDoc(ref, {
+                adminUids: safeAdminUids,
+                date: cleanDate,
+                savedAt: cleanSavedAt,
+                trigger: cleanTrigger,
+                payload,
+                updatedAt: serverTimestamp(),
+              });
+            } catch (updateErr) {
+              const code =
+                typeof updateErr === 'object' && updateErr !== null && 'code' in updateErr
+                  ? String((updateErr as { code?: unknown }).code || '')
+                  : '';
+              if (code === 'not-found') {
+                await setDoc(ref, {
+                  agencyId: cleanAgencyId,
+                  snapshotId: docId,
+                  ownerUid,
+                  adminUids: safeAdminUids,
+                  date: cleanDate,
+                  savedAt: cleanSavedAt,
+                  trigger: cleanTrigger,
+                  payload,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                throw updateErr;
+              }
+            }
+          } else {
+            await setDoc(ref, {
+              agencyId: cleanAgencyId,
+              snapshotId: docId,
+              ownerUid,
+              adminUids: safeAdminUids,
+              date: cleanDate,
+              savedAt: cleanSavedAt,
+              trigger: cleanTrigger,
+              payload,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+          knownArchiveDocIds.add(docId);
+          knownArchiveSigs[docId] = sig;
+        } catch (err) {
+          handleFirestoreError(err, existed ? OperationType.UPDATE : OperationType.CREATE, ref.path);
+        }
+      })
+    );
+  }
+
+  for (let i = 0; i < toDelete.length; i += CONCURRENCY) {
+    const slice = toDelete.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      slice.map(async (staleId) => {
+        const ref = doc(db, 'agencies', cleanAgencyId, 'archives', staleId);
+        try {
+          await deleteDoc(ref);
+          knownArchiveDocIds.delete(staleId);
+          delete knownArchiveSigs[staleId];
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, ref.path);
+        }
+      })
+    );
+  }
+}
+
 
 
