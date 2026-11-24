@@ -56,6 +56,17 @@ function openIdb(): Promise<IDBDatabase | null> {
 export function writeLocalStorageSafe(state: AppState, updatedAt: number): void {
   if (typeof window === 'undefined') return;
 
+  // At high row counts (e.g. 5,000–30,000 rows across 1PM/6PM/8PM), synchronous JSON.stringify
+  // blocks the main thread and exceeds localStorage's ~5MB quota. IndexedDB persists the full
+  // state asynchronously with a newer updatedAt and wins on recovery!
+  const totalEntryRows =
+    (state.entries?.['1PM']?.length || 0) +
+    (state.entries?.['6PM']?.length || 0) +
+    (state.entries?.['8PM']?.length || 0);
+  if (totalEntryRows > 3500) {
+    return;
+  }
+
   const tryWrite = (candidateState: AppState): boolean => {
     try {
       const payload: PersistedEnvelope = { state: candidateState, updatedAt };

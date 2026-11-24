@@ -26,6 +26,7 @@ import {
   memo,
   type ReactNode,
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -1091,7 +1092,7 @@ export function SessionSheetView({
     }, 2800);
   }, []);
 
-  const focusField = (selector: string) => {
+  const focusField = useCallback((selector: string) => {
     const immediate = document.querySelector<HTMLInputElement>(selector);
     if (immediate) {
       immediate.focus();
@@ -1101,7 +1102,125 @@ export function SessionSheetView({
       const el = document.querySelector<HTMLInputElement>(selector);
       el?.focus();
     });
-  };
+  }, []);
+  const focusFieldStable = focusField;
+
+  const onUpdateRowRef = useRef(onUpdateRow);
+  onUpdateRowRef.current = onUpdateRow;
+  const onUpdateRowStable = useCallback(
+    (rowId: string, patch: Partial<TicketEntryRow>) => {
+      onUpdateRowRef.current(rowId, patch);
+    },
+    []
+  );
+
+  const handleInspectOverLimitRow = useCallback((row: ComputedTicketRow) => {
+    AppSounds.tap();
+    setInspectedOverLimitRow(row);
+  }, []);
+
+  const handleRequestDeleteSingleRow = useCallback((row: ComputedTicketRow) => {
+    const labelParts = [
+      row.resolvedName || row.name || 'Blank row',
+      row.item || '',
+      row.start ? (row.end ? `${row.start}-${row.end}` : row.start) : '',
+      row.qty > 0 ? `Qty ${row.qty}` : '',
+    ].filter(Boolean);
+    AppSounds.warning();
+    setPendingDeleteConfirm({
+      mode: 'single',
+      rowIds: [row.id],
+      summary: labelParts.join(' · '),
+    });
+  }, []);
+
+  const handleCellInputFocusStable = useCallback((visibleIdx: number, colIdx: number) => {
+    if (
+      suppressFocusAnchorRef.current ||
+      isHandleDraggingRef.current ||
+      isMouseDraggingRef.current
+    ) {
+      return;
+    }
+    const coord = { rowIdx: visibleIdx, colIdx };
+    rangeAnchorRef.current = coord;
+    rangeFocusRef.current = coord;
+    setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
+    setRangeAnchor(coord);
+    setRangeFocus(coord);
+  }, []);
+
+  const handleCellTouchStartStable = useCallback(
+    (visibleIdx: number, colIdx: number, e: React.TouchEvent<HTMLTableCellElement>) => {
+      lastTouchInteractionAtRef.current = performance.now();
+      const touch = e.touches[0];
+      if (!touch) return;
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      const startX = touch.clientX;
+      const startY = touch.clientY;
+      touchStartPosRef.current = { x: startX, y: startY };
+      longPressTimerRef.current = window.setTimeout(() => {
+        longPressTimerRef.current = null;
+        const coord = { rowIdx: visibleIdx, colIdx };
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        window.getSelection()?.removeAllRanges();
+        AppSounds.tap();
+        rangeAnchorRef.current = coord;
+        rangeFocusRef.current = coord;
+        setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
+        setBulkEditOpen(false);
+        setRangeAnchor(coord);
+        setRangeFocus(coord);
+      }, 360);
+    },
+    []
+  );
+
+  const handleCellMouseDownStable = useCallback(
+    (visibleIdx: number, colIdx: number, e: React.MouseEvent<HTMLTableCellElement>) => {
+      if (performance.now() - lastTouchInteractionAtRef.current < 650) return;
+      if (e.button !== 0) return;
+
+      const coord = { rowIdx: visibleIdx, colIdx };
+      if (e.shiftKey && rangeAnchorRef.current) {
+        e.preventDefault();
+        AppSounds.tap();
+        rangeFocusRef.current = coord;
+        setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
+        setRangeFocus(coord);
+        return;
+      }
+
+      const geom = captureSheetGeometry();
+      if (!geom) return;
+      dragGeometryRef.current = geom;
+      dragMetaRef.current = {
+        anchorRow: visibleIdx,
+        anchorCol: colIdx,
+        startFocusCol: colIdx,
+        startX: e.clientX,
+        startY: e.clientY,
+        grabOffsetX: 0,
+        grabOffsetY: 0,
+        singleColLock: false,
+        hasMoved: false,
+      };
+      rangeAnchorRef.current = coord;
+      rangeFocusRef.current = coord;
+      lastTouchPointRef.current = { x: e.clientX, y: e.clientY };
+      isMouseDraggingRef.current = true;
+      setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
+      setBulkEditOpen(false);
+      setRangeAnchor(coord);
+      setRangeFocus(coord);
+    },
+    [captureSheetGeometry]
+  );
 
   const handleQuickSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1163,7 +1282,8 @@ export function SessionSheetView({
     }
   }, []);
 
-  const trimmedSearch = searchQuery.trim();
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const trimmedSearch = deferredSearchQuery.trim();
   const isNumberSearch = /^\d{1,5}$/.test(trimmedSearch);
 
   const rowMatchesNumberQuery = useCallback((r: ComputedTicketRow, q: string): boolean => {
@@ -1270,7 +1390,8 @@ export function SessionSheetView({
   }, []);
 
   const isVirtualized = viewMode === 'table' && filteredRows.length > VIRTUAL_ROW_THRESHOLD;
-  const commitDelayMs = filteredRows.length > 300 ? 110 : 0;
+  const commitDelayMs =
+    filteredRows.length > 3000 ? 180 : filteredRows.length > 300 ? 110 : 0;
 
   const virtualWindow = useMemo(() => {
     if (!isVirtualized) {
@@ -1666,8 +1787,20 @@ export function SessionSheetView({
     lastCheckedIdxRef.current = visibleIdx;
   };
 
+  const handleToggleRowCheckboxRef = useRef(handleToggleRowCheckbox);
+  handleToggleRowCheckboxRef.current = handleToggleRowCheckbox;
+  const handleToggleRowCheckboxStable = useCallback(
+    (rowId: string, visibleIdx: number, shiftKey: boolean) => {
+      handleToggleRowCheckboxRef.current(rowId, visibleIdx, shiftKey);
+    },
+    []
+  );
+
   const allFilteredSelected =
-    filteredRows.length > 0 && filteredRows.every((r) => selectedRowIds.has(r.id));
+    selectedRowIds.size > 0 &&
+    filteredRows.length > 0 &&
+    selectedRowIds.size >= filteredRows.length &&
+    filteredRows.every((r) => selectedRowIds.has(r.id));
 
   const handleToggleSelectAll = () => {
     AppSounds.tap();
@@ -2064,6 +2197,15 @@ export function SessionSheetView({
     showPasteNotice(`Pasted ${parsed.length} row${parsed.length > 1 ? 's' : ''}`);
   };
 
+  const handleSmartCellPasteRef = useRef(handleSmartCellPaste);
+  handleSmartCellPasteRef.current = handleSmartCellPaste;
+  const handleSmartCellPasteStable = useCallback(
+    (e: React.ClipboardEvent<HTMLInputElement>, targetRowId?: string) => {
+      handleSmartCellPasteRef.current(e, targetRowId);
+    },
+    []
+  );
+
   const handleSheetKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const mod = e.ctrlKey || e.metaKey;
     const targetEl = e.target as HTMLElement | null;
@@ -2139,17 +2281,22 @@ export function SessionSheetView({
     }
   };
 
-  const cardRows = (() => {
-    const hasFilter = (searchQuery.trim() !== '' && !isNumberSearch) || statusFilter === 'overlimit';
+  const cardRows = useMemo(() => {
+    if (viewMode !== 'cards') return [] as ComputedTicketRow[];
+    const hasFilter = (deferredSearchQuery.trim() !== '' && !isNumberSearch) || statusFilter === 'overlimit';
     if (hasFilter) return filteredRows;
-    const populated = filteredRows.filter(
-      (r) => r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride
-    );
-    const firstEmpty = filteredRows.find(
-      (r) => !r.name && !r.item && !r.start && !r.end && !r.qtyOverride && !r.rangeOverride
-    );
+    const populated: ComputedTicketRow[] = [];
+    let firstEmpty: ComputedTicketRow | null = null;
+    for (let i = 0; i < filteredRows.length; i++) {
+      const r = filteredRows[i];
+      if (r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride) {
+        populated.push(r);
+      } else if (!firstEmpty) {
+        firstEmpty = r;
+      }
+    }
     return firstEmpty ? [...populated, firstEmpty] : populated;
-  })();
+  }, [viewMode, deferredSearchQuery, isNumberSearch, statusFilter, filteredRows]);
 
   const highlightedSet = useMemo(
     () => new Set(highlightedRowIds || []),
@@ -2178,16 +2325,27 @@ export function SessionSheetView({
     };
   }, [filteredRows, highlightedSet]);
 
-  const overLimitRowCount = computation.rows.filter(
-    (r) =>
-      r.statusType === 'overlimit' ||
-      (r.overLimitBreakdowns && r.overLimitBreakdowns.length > 0)
-  ).length;
-  const filledRowCount = computation.rows.filter(
-    (r) =>
-      (r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride) &&
-      !r.isExcludedFromCount
-  ).length;
+  const { overLimitRowCount, filledRowCount } = useMemo(() => {
+    let overLimit = 0;
+    let filled = 0;
+    const rows = computation.rows;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (
+        r.statusType === 'overlimit' ||
+        (r.overLimitBreakdowns && r.overLimitBreakdowns.length > 0)
+      ) {
+        overLimit++;
+      }
+      if (
+        (r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride) &&
+        !r.isExcludedFromCount
+      ) {
+        filled++;
+      }
+    }
+    return { overLimitRowCount: overLimit, filledRowCount: filled };
+  }, [computation.rows]);
 
   return (
     <div
@@ -2908,7 +3066,7 @@ export function SessionSheetView({
                             onCellTouchStart={handleCellTouchStartStable}
                             onCellMouseDown={handleCellMouseDownStable}
                             onCellFocus={handleCellInputFocusStable}
-                            onUpdateRow={onUpdateRow}
+                            onUpdateRow={onUpdateRowStable}
                             onSmartPaste={handleSmartCellPasteStable}
                             onFocusField={focusFieldStable}
                             onInspectOverLimit={handleInspectOverLimitRow}

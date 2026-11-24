@@ -631,36 +631,36 @@ export function MasterChainTab({
       {/* LIST-WISE SUB-SELLER BILLING TABLE (EXACT MIRROR OF AGENT'S BILL TAB) */}
       {viewMode === 'all' ? (
         <div className="kk-surface-card rounded-2xl overflow-hidden">
-          <div className="max-h-[calc(100dvh-450px)] min-h-[220px] sm:max-h-[65vh] overflow-auto overscroll-contain ledger-scroll">
+          <div className="overflow-x-auto ledger-scroll">
             <table className="w-max min-w-full sm:min-w-[860px] border-collapse text-[13px] sm:text-[14px]">
-              <thead className="sticky top-0 z-20">
+              <thead>
                 <tr className="kk-table-head text-slate-100 text-[11px] sm:text-xs font-bold uppercase tracking-[0.02em] sm:tracking-[0.04em] align-middle">
-                  <th className="bill-col-name sticky top-0 left-0 z-30 bg-[var(--kk-brand)] sm:min-w-[124px] px-2 sm:px-3 py-2 sm:py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                  <th className="bill-col-name sticky left-0 z-20 bg-[var(--kk-brand)] sm:min-w-[124px] px-2 sm:px-3 py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                     NAME
                   </th>
-                  <th className="bill-col-sess bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">MOR</th>
-                  <th className="bill-col-sess bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">DAY</th>
-                  <th className="bill-col-sess bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">EVE</th>
-                  <th className="bill-col-sold bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">SOLD</th>
-                  <th className="bill-col-bill bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">BILL</th>
-                  <th className="bill-col-fresh bg-[var(--kk-brand)] px-1.5 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">FRESH</th>
-                  <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">1PM ₹</th>
-                  <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">6PM ₹</th>
-                  <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">8PM ₹</th>
-                  <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                  <th className="bill-col-sess px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">MOR</th>
+                  <th className="bill-col-sess px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">DAY</th>
+                  <th className="bill-col-sess px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">EVE</th>
+                  <th className="bill-col-sold px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">SOLD</th>
+                  <th className="bill-col-bill px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">BILL</th>
+                  <th className="bill-col-fresh px-1.5 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">FRESH</th>
+                  <th className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">1PM ₹</th>
+                  <th className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">6PM ₹</th>
+                  <th className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">8PM ₹</th>
+                  <th className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                     JOMA<span className="hidden sm:inline"> (-)</span>
                   </th>
-                  <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                  <th className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                     DUE<span className="hidden sm:inline"> (+)</span>
                   </th>
-                  <th className="bg-[var(--kk-brand)] px-2.5 sm:px-3 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">TOTAL</th>
+                  <th className="px-2.5 sm:px-3 py-3 text-right border-r border-white/10 whitespace-nowrap">TOTAL</th>
                   {showRateMobile && (
                     <>
-                      <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-left border-r border-white/10 whitespace-nowrap">MOBILE</th>
-                      <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">RATE</th>
+                      <th className="px-2 sm:px-2.5 py-3 text-left border-r border-white/10 whitespace-nowrap">MOBILE</th>
+                      <th className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">RATE</th>
                     </>
                   )}
-                  <th className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-center whitespace-nowrap">SEND</th>
+                  <th className="px-2 sm:px-2.5 py-3 text-center whitespace-nowrap">SEND</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/80 text-slate-950 font-mono-tabular">
@@ -889,28 +889,28 @@ export function MasterChainTab({
                 )}
               </tbody>
               {subBillRows.length > 0 && (
-                <tfoot className="sticky bottom-0 z-20 shadow-[0_-2px_8px_rgba(15,36,96,0.22)]">
+                <tfoot>
                   <tr className="kk-table-head text-white text-[13px] sm:text-[14px] font-extrabold font-mono-tabular align-middle">
-                    <td className="bill-col-name sticky bottom-0 left-0 z-30 bg-[var(--kk-brand)] sm:min-w-[124px] px-2 sm:px-3 py-2 sm:py-3 font-sans text-[11.5px] sm:text-[13px] uppercase tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                    <td className="bill-col-name sticky left-0 z-10 bg-[var(--kk-brand)] sm:min-w-[124px] px-2 sm:px-3 py-3 font-sans text-[11.5px] sm:text-[13px] uppercase tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                       TOTAL ({subBillRows.length})
                     </td>
-                    <td className="bill-col-sess bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                    <td className="bill-col-sess px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.mor)}
                     </td>
-                    <td className="bill-col-sess bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                    <td className="bill-col-sess px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.day)}
                     </td>
-                    <td className="bill-col-sess bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                    <td className="bill-col-sess px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.eve)}
                     </td>
-                    <td className="bill-col-sold bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                    <td className="bill-col-sold px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.sold)}
                     </td>
-                    <td className="bill-col-bill bg-[var(--kk-brand)] px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                    <td className="bill-col-bill px-1 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.bill)}
                     </td>
                     <td
-                      className={`bill-col-fresh bg-[var(--kk-brand)] px-1.5 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap ${
+                      className={`bill-col-fresh px-1.5 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap ${
                         totals.fresh > 0
                           ? 'text-emerald-300'
                           : totals.fresh < 0
@@ -920,23 +920,23 @@ export function MasterChainTab({
                     >
                       {formatINR(totals.fresh)}
                     </td>
-                    <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right text-emerald-300 border-r border-white/10 whitespace-nowrap">
+                    <td className="px-2 sm:px-2.5 py-3 text-right text-emerald-300 border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.amt1pm)}
                     </td>
-                    <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right text-emerald-300 border-r border-white/10 whitespace-nowrap">
+                    <td className="px-2 sm:px-2.5 py-3 text-right text-emerald-300 border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.amt6pm)}
                     </td>
-                    <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right text-emerald-300 border-r border-white/10 whitespace-nowrap">
+                    <td className="px-2 sm:px-2.5 py-3 text-right text-emerald-300 border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.amt8pm)}
                     </td>
-                    <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                    <td className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.joma)}
                     </td>
-                    <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                    <td className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                       {formatINR(totals.due)}
                     </td>
                     <td
-                      className={`bg-[var(--kk-brand)] px-2.5 sm:px-3 py-2 sm:py-3 text-right text-[13.5px] sm:text-[15px] border-r border-white/10 whitespace-nowrap ${
+                      className={`px-2.5 sm:px-3 py-3 text-right text-[13.5px] sm:text-[15px] border-r border-white/10 whitespace-nowrap ${
                         totals.total > 0
                           ? 'text-emerald-300'
                           : totals.total < 0
@@ -948,15 +948,15 @@ export function MasterChainTab({
                     </td>
                     {showRateMobile && (
                       <>
-                        <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 font-sans border-r border-white/10 whitespace-nowrap">
+                        <td className="px-2 sm:px-2.5 py-3 font-sans border-r border-white/10 whitespace-nowrap">
                           MOBILE
                         </td>
-                        <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                        <td className="px-2 sm:px-2.5 py-3 text-right border-r border-white/10 whitespace-nowrap">
                           RATE
                         </td>
                       </>
                     )}
-                    <td className="bg-[var(--kk-brand)] px-2 sm:px-2.5 py-2 sm:py-3 text-center font-sans tracking-wide whitespace-nowrap">KK AGENCY</td>
+                    <td className="px-2 sm:px-2.5 py-3 text-center font-sans tracking-wide whitespace-nowrap">KK AGENCY</td>
                   </tr>
                 </tfoot>
               )}

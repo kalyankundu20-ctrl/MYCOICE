@@ -1,7 +1,7 @@
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import { Archive, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminAnnouncementModal } from './components/AdminAnnouncementModal';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { AppShell } from './components/AppShell';
@@ -405,22 +405,48 @@ export default function App() {
   const [state, setRawState] = useState<AppState>(initialRef.current.state);
   const latestStateRef = useRef<AppState>(initialRef.current.state);
   const lastSavedAtRef = useRef<number>(initialRef.current.updatedAt);
+  const persistTimerRef = useRef<number | null>(null);
 
-  const setState = useCallback((updater: AppState | ((prev: AppState) => AppState)) => {
-    setRawState((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      if (next === prev) return prev;
-      const now = Math.max(Date.now(), lastSavedAtRef.current + 1);
-      latestStateRef.current = next;
-      lastSavedAtRef.current = now;
-      writeLocalStorageSafe(next, now);
-      void writeIndexedDbEnvelope(next, now);
-      if (next.sellers !== prev.sellers && next.sellers.length > 0) {
-        writePermanentSellers(next.sellers, now);
-      }
-      return next;
-    });
+  const flushPersistNow = useCallback(() => {
+    if (persistTimerRef.current !== null) {
+      window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+    const curr = latestStateRef.current;
+    const ts = lastSavedAtRef.current;
+    writeLocalStorageSafe(curr, ts);
+    void writeIndexedDbEnvelope(curr, ts);
   }, []);
+
+  const setState = useCallback(
+    (updater: AppState | ((prev: AppState) => AppState)) => {
+      setRawState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        if (next === prev) return prev;
+        const now = Math.max(Date.now(), lastSavedAtRef.current + 1);
+        latestStateRef.current = next;
+        lastSavedAtRef.current = now;
+        if (next.sellers !== prev.sellers && next.sellers.length > 0) {
+          writePermanentSellers(next.sellers, now);
+        }
+        const totalRows =
+          (next.entries['1PM']?.length || 0) +
+          (next.entries['6PM']?.length || 0) +
+          (next.entries['8PM']?.length || 0);
+        const delayMs = totalRows > 3000 ? 650 : totalRows > 300 ? 250 : 60;
+        if (persistTimerRef.current !== null) {
+          window.clearTimeout(persistTimerRef.current);
+        }
+        persistTimerRef.current = window.setTimeout(() => {
+          persistTimerRef.current = null;
+          writeLocalStorageSafe(latestStateRef.current, lastSavedAtRef.current);
+          void writeIndexedDbEnvelope(latestStateRef.current, lastSavedAtRef.current);
+        }, delayMs);
+        return next;
+      });
+    },
+    []
+  );
 
   const [activeTab, setActiveTab] = useState<SheetTab>('Seller Bill');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1731,6 +1757,7 @@ export default function App() {
   ]);
 
   // Admin -> Cloud Sync: Push Admin's edits for a seller's 1PM/6PM/8PM rows to that seller's sheet
+  // Optimized to a single O(N) pass across all 30,000+ rows instead of scanning per seller.
   // Strictly paused while Admin is viewing a locally restored Archive date so Master/Sub-Master live sheets are NEVER overwritten.
   useEffect(() => {
     if (
@@ -1743,18 +1770,63 @@ export default function App() {
       return;
     }
     const adminUid = authUser.uid;
+    const totalRows =
+      (state.entries['1PM']?.length || 0) +
+      (state.entries['6PM']?.length || 0) +
+      (state.entries['8PM']?.length || 0);
+    const debounceMs = totalRows > 3000 ? 1100 : 450;
+
     const timer = window.setTimeout(() => {
       if (isAdminRestoredViewRef.current) return;
       const currState = latestStateRef.current;
       const existingSheetIds = new Set(cloudSheetsRef.current.map((s) => s.partyId));
+      const directParties = cloudPartiesRef.current.filter((p) => !p.parentMasterId);
+      if (directParties.length === 0) return;
 
-      for (const party of cloudPartiesRef.current) {
-        if (party.parentMasterId) continue;
-        const sliced = extractSellerRowsFromEntries(
-          currState.entries,
-          party.name,
-          party.partyId
-        );
+      // Single O(N) grouping pass per session by resolved seller name
+      const partyByUpperName = new Map<string, CloudPartyDoc>();
+      for (const party of directParties) {
+        const up = party.name.trim().toUpperCase();
+        if (up) partyByUpperName.set(up, party);
+      }
+
+      const grouped: Record<
+        string,
+        { '1PM': TicketEntryRow[]; '6PM': TicketEntryRow[]; '8PM': TicketEntryRow[] }
+      > = {};
+      for (const party of directParties) {
+        grouped[party.partyId] = { '1PM': [], '6PM': [], '8PM': [] };
+      }
+
+      for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+        const rows = currState.entries[sid] || [];
+        let lastValidName = '';
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          const currName = row.name.trim();
+          if (currName !== '') {
+            lastValidName = currName;
+          }
+          if (isRowBlank(row)) continue;
+          if (row.id.startsWith('sub::')) continue;
+          const resolvedName = currName !== '' ? currName : lastValidName;
+          if (!resolvedName) continue;
+          const party = partyByUpperName.get(resolvedName.toUpperCase());
+          if (!party) continue;
+
+          const sellerPrefix = `seller::${party.partyId}::`;
+          let cloudRowId = row.id;
+          if (row.id.startsWith(sellerPrefix)) {
+            cloudRowId = row.id.slice(sellerPrefix.length) || row.id;
+          } else {
+            cloudRowId = row.id.startsWith('admin::') ? row.id : `admin::${row.id}`;
+          }
+          grouped[party.partyId][sid].push({ ...row, id: cloudRowId, name: party.name });
+        }
+      }
+
+      for (const party of directParties) {
+        const sliced = grouped[party.partyId];
         const clean1 = sanitizeSheetEntriesForCloud(sliced['1PM'], party.name);
         const clean6 = sanitizeSheetEntriesForCloud(sliced['6PM'], party.name);
         const clean8 = sanitizeSheetEntriesForCloud(sliced['8PM'], party.name);
@@ -1773,7 +1845,7 @@ export default function App() {
           ).catch(() => {});
         }
       }
-    }, 450);
+    }, debounceMs);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -1784,7 +1856,6 @@ export default function App() {
     isAdminRestoredView,
     state.entries,
     state.date,
-    extractSellerRowsFromEntries,
   ]);
 
   // Admin Handoff & Multi-Level Lineage Backfill: keep parentMasterUid, ancestorMasterIds,
@@ -2220,8 +2291,7 @@ export default function App() {
     const flushCurrent = () => {
       const ts = Math.max(Date.now(), lastSavedAtRef.current);
       lastSavedAtRef.current = ts;
-      writeLocalStorageSafe(latestStateRef.current, ts);
-      void writeIndexedDbEnvelope(latestStateRef.current, ts);
+      flushPersistNow();
       if (latestStateRef.current.sellers.length > 0) {
         writePermanentSellers(latestStateRef.current.sellers, ts);
       }
@@ -2255,23 +2325,40 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      flushCurrent();
       window.removeEventListener('pagehide', flushCurrent);
       window.removeEventListener('beforeunload', flushCurrent);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pageshow', handlePageShow);
       window.removeEventListener('storage', handleStorage);
     };
-  }, []);
+  }, [flushPersistNow]);
 
-  // Core Lottery Calculations
+  // Core Lottery Calculations — split per session so editing 1PM NEVER recomputes 6PM or 8PM!
+  const comp1PM = useMemo(
+    () => processSessionRows(state.entries['1PM'], '1PM', state.config),
+    [state.entries['1PM'], state.config]
+  );
+  const comp6PM = useMemo(
+    () => processSessionRows(state.entries['6PM'], '6PM', state.config),
+    [state.entries['6PM'], state.config]
+  );
+  const comp8PM = useMemo(
+    () => processSessionRows(state.entries['8PM'], '8PM', state.config),
+    [state.entries['8PM'], state.config]
+  );
+
   const sessionComputations = useMemo<Record<SessionId, SessionComputation>>(
     () => ({
-      '1PM': processSessionRows(state.entries['1PM'], '1PM', state.config),
-      '6PM': processSessionRows(state.entries['6PM'], '6PM', state.config),
-      '8PM': processSessionRows(state.entries['8PM'], '8PM', state.config),
+      '1PM': comp1PM,
+      '6PM': comp6PM,
+      '8PM': comp8PM,
     }),
-    [state.entries, state.config]
+    [comp1PM, comp6PM, comp8PM]
   );
+
+  // Defer secondary bill & prize recalculations during rapid 30,000-row sheet entry so typing stays 60fps
+  const deferredSessionComputations = useDeferredValue(sessionComputations);
 
   const parsedWinning = useMemo(
     () => parseWinningNumbers(state.winningRaw),
@@ -2279,8 +2366,8 @@ export default function App() {
   );
 
   const { prizeList, limitPrizeGroups, limitGrandTotal } = useMemo(
-    () => generatePrizeAndLimitData(sessionComputations, parsedWinning, state.config),
-    [sessionComputations, parsedWinning, state.config]
+    () => generatePrizeAndLimitData(deferredSessionComputations, parsedWinning, state.config),
+    [deferredSessionComputations, parsedWinning, state.config]
   );
 
   const visibleSellersForBill = useMemo(
@@ -2289,8 +2376,14 @@ export default function App() {
   );
 
   const sellerBills = useMemo(
-    () => computeSellerBills(visibleSellersForBill, sessionComputations, prizeList, state.date),
-    [visibleSellersForBill, sessionComputations, prizeList, state.date]
+    () =>
+      computeSellerBills(
+        visibleSellersForBill,
+        deferredSessionComputations,
+        prizeList,
+        state.date
+      ),
+    [visibleSellersForBill, deferredSessionComputations, prizeList, state.date]
   );
 
   const availableNames = useMemo(() => {
@@ -3006,10 +3099,11 @@ export default function App() {
 
   // Session Sheet Entry Handlers (Undo/Redo, Edit, Paste, Delete, Clear)
   const pushUndoSnapshot = (sessionId: SessionId, rowsSnapshot: TicketEntryRow[]) => {
+    const maxDepth = rowsSnapshot.length > 5000 ? 7 : 24;
     setSessionHistory((prev) => ({
       ...prev,
       [sessionId]: {
-        undo: [...prev[sessionId].undo.slice(-24), rowsSnapshot],
+        undo: [...prev[sessionId].undo.slice(-maxDepth), rowsSnapshot],
         redo: [],
       },
     }));
@@ -3020,12 +3114,13 @@ export default function App() {
     if (hist.undo.length === 0) return;
     const previousRows = hist.undo[hist.undo.length - 1];
     const currentRows = state.entries[sessionId];
+    const maxDepth = currentRows.length > 5000 ? 7 : 24;
 
     setSessionHistory((prev) => ({
       ...prev,
       [sessionId]: {
         undo: prev[sessionId].undo.slice(0, -1),
-        redo: [...prev[sessionId].redo.slice(-24), currentRows],
+        redo: [...prev[sessionId].redo.slice(-maxDepth), currentRows],
       },
     }));
     commitSessionRows(sessionId, previousRows);
@@ -3036,11 +3131,12 @@ export default function App() {
     if (hist.redo.length === 0) return;
     const nextRows = hist.redo[hist.redo.length - 1];
     const currentRows = state.entries[sessionId];
+    const maxDepth = currentRows.length > 5000 ? 7 : 24;
 
     setSessionHistory((prev) => ({
       ...prev,
       [sessionId]: {
-        undo: [...prev[sessionId].undo.slice(-24), currentRows],
+        undo: [...prev[sessionId].undo.slice(-maxDepth), currentRows],
         redo: prev[sessionId].redo.slice(0, -1),
       },
     }));
@@ -3058,28 +3154,53 @@ export default function App() {
       !last || last.sessionId !== sessionId || last.rowId !== rowId || now - last.ts > 1500;
     lastRowEditUndoRef.current = { sessionId, rowId, ts: now };
 
-    const currentRows = state.entries[sessionId];
+    const currentRows = latestStateRef.current.entries[sessionId];
     if (shouldPushUndo) {
       pushUndoSnapshot(sessionId, currentRows);
     }
 
-    const updatedRows = currentRows.map((r) => {
-      if (r.id !== rowId) return r;
-      const merged = { ...r, ...patch };
-      // Mirror Apps Script onEdit: if Item, Start, and End are all cleared (and Name wasn't edited directly), clear Name too
-      const editedCDE = 'item' in patch || 'start' in patch || 'end' in patch;
-      if (editedCDE && !('name' in patch)) {
-        const hasCDE =
-          merged.item.trim() !== '' ||
-          merged.start.trim() !== '' ||
-          merged.end.trim() !== '';
-        if (!hasCDE && merged.name.trim() !== '') {
-          return { ...merged, name: '' };
+    const idx = currentRows.findIndex((r) => r.id === rowId);
+    if (idx === -1) return;
+
+    const target = currentRows[idx];
+    let merged = { ...target, ...patch };
+    // Mirror Apps Script onEdit: if Item, Start, and End are all cleared (and Name wasn't edited directly), clear Name too
+    const editedCDE = 'item' in patch || 'start' in patch || 'end' in patch;
+    if (editedCDE && !('name' in patch)) {
+      const hasCDE =
+        merged.item.trim() !== '' ||
+        merged.start.trim() !== '' ||
+        merged.end.trim() !== '';
+      if (!hasCDE && merged.name.trim() !== '') {
+        merged = { ...merged, name: '' };
+      }
+    }
+    merged = sanitizeRowQtyOverride(merged);
+
+    const nextRows = currentRows.slice();
+    if (isRowBlank(merged)) {
+      if (idx === nextRows.length - 1) {
+        nextRows[idx] = merged;
+      } else {
+        nextRows.splice(idx, 1);
+        if (nextRows.length === 0 || !isRowBlank(nextRows[nextRows.length - 1])) {
+          nextRows.push(createEmptyRow());
         }
       }
-      return merged;
-    });
-    commitSessionRows(sessionId, updatedRows);
+    } else {
+      nextRows[idx] = merged;
+      if (idx === nextRows.length - 1) {
+        nextRows.push(createEmptyRow());
+      }
+    }
+
+    setState((prev) => ({
+      ...prev,
+      entries: {
+        ...prev.entries,
+        [sessionId]: nextRows,
+      },
+    }));
   };
 
   const handleDeleteSessionRow = (sessionId: SessionId, rowId: string) => {
