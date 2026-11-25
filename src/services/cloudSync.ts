@@ -2714,8 +2714,11 @@ export interface CloudPartyArchiveDoc {
 
 const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-function sanitizePartyArchiveEntryRows(rows: TicketEntryRow[] | undefined): TicketEntryRow[] {
-  if (!Array.isArray(rows)) return [];
+function sanitizePartyArchiveEntryRows(
+  rows: TicketEntryRow[] | undefined,
+  maxRows = 600
+): TicketEntryRow[] {
+  if (!Array.isArray(rows) || maxRows <= 0) return [];
   const out: TicketEntryRow[] = [];
   for (const r of rows) {
     if (!r || typeof r !== 'object') continue;
@@ -2733,10 +2736,12 @@ function sanitizePartyArchiveEntryRows(rows: TicketEntryRow[] | undefined): Tick
       qtyOverride,
       rangeOverride,
     });
-    if (out.length >= 600) break;
+    if (out.length >= maxRows) break;
   }
   return out;
 }
+
+const MAX_PARTY_ARCHIVE_PAYLOAD_BYTES = 740_000;
 
 function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cleanDate: string): DaySnapshot {
   const summaries = (snapshot.sellerSummaries || []).slice(0, 120).map((s) => ({
@@ -2752,7 +2757,7 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
     due: Number(s.due) || 0,
     total: Number(s.total) || 0,
   }));
-  const prizes = (snapshot.prizeList || []).slice(0, 300).map((p) => ({
+  const allPrizes = (snapshot.prizeList || []).slice(0, 300).map((p) => ({
     id: String(p.id || '').slice(0, 64),
     time: (p.time === '6PM' || p.time === '8PM' ? p.time : '1PM') as SessionId,
     name: String(p.name || '').slice(0, 60),
@@ -2772,11 +2777,6 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
     due: Number(s.due) || 0,
     joma: Number(s.joma) || 0,
   }));
-  const entries: Record<SessionId, TicketEntryRow[]> = {
-    '1PM': sanitizePartyArchiveEntryRows(snapshot.entries?.['1PM']),
-    '6PM': sanitizePartyArchiveEntryRows(snapshot.entries?.['6PM']),
-    '8PM': sanitizePartyArchiveEntryRows(snapshot.entries?.['8PM']),
-  };
   const winningRaw = {
     '1PM': String(snapshot.winningRaw?.['1PM'] || '').slice(0, 6000),
     '6PM': String(snapshot.winningRaw?.['6PM'] || '').slice(0, 6000),
@@ -2797,14 +2797,16 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
         total: Number(snapshot.adminAccountSummary.total) || 0,
       }
     : undefined;
-  return {
+
+  const basePayload = {
     id: cleanId,
     date: cleanDate,
     savedAt: String(snapshot.savedAt || new Date().toISOString()).slice(0, 64),
-    trigger:
+    trigger: (
       snapshot.trigger === 'day-close' || snapshot.trigger === 'daily-auto'
         ? snapshot.trigger
-        : 'manual',
+        : 'manual'
+    ) as DaySnapshot['trigger'],
     totalSold: Number(snapshot.totalSold) || 0,
     totalBill: Number(snapshot.totalBill) || 0,
     totalPrize: Number(snapshot.totalPrize) || 0,
@@ -2817,11 +2819,32 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
     },
     sellerSummaries: summaries,
     ...(adminAccountSummary ? { adminAccountSummary } : {}),
-    prizeList: prizes,
-    limitPrizeGroups: [],
+    limitPrizeGroups: [] as DaySnapshot['limitPrizeGroups'],
     sellers,
-    entries,
     winningRaw,
+  };
+
+  // Guarantee payload stays safely below Firestore's 1 MiB document limit even for heavy Masters (e.g. 6,000+ tickets)
+  const entryCaps = [600, 350, 150, 50, 0];
+  for (const cap of entryCaps) {
+    const candidate: DaySnapshot = {
+      ...basePayload,
+      prizeList: allPrizes,
+      entries: {
+        '1PM': sanitizePartyArchiveEntryRows(snapshot.entries?.['1PM'], cap),
+        '6PM': sanitizePartyArchiveEntryRows(snapshot.entries?.['6PM'], cap),
+        '8PM': sanitizePartyArchiveEntryRows(snapshot.entries?.['8PM'], cap),
+      },
+    };
+    if (JSON.stringify(candidate).length <= MAX_PARTY_ARCHIVE_PAYLOAD_BYTES) {
+      return candidate;
+    }
+  }
+
+  return {
+    ...basePayload,
+    prizeList: allPrizes.slice(0, 120),
+    entries: { '1PM': [], '6PM': [], '8PM': [] },
   };
 }
 
@@ -2845,19 +2868,24 @@ export async function savePartyArchiveCloud(
       ? snapshot.trigger
       : 'manual';
   const payload = sanitizePartyArchivePayload(snapshot, snapshotId, cleanDate);
-  const adminUids =
+  const cleanAgencyId = (party.agencyId || AGENCY_ID).trim() || AGENCY_ID;
+  const cleanOwnerUid = (party.ownerUid || actorUid).trim();
+  const rawAdminUids =
     Array.isArray(party.adminUids) && party.adminUids.length > 0
-      ? party.adminUids.slice(0, 10)
-      : [party.ownerUid];
+      ? party.adminUids
+      : [cleanOwnerUid];
+  const adminUids = Array.from(
+    new Set([cleanOwnerUid, ...rawAdminUids].filter((u) => typeof u === 'string' && u.trim().length > 0))
+  ).slice(0, 10);
 
-  const ref = doc(db, 'agencies', party.agencyId, 'partyArchives', snapshotId);
+  const ref = doc(db, 'agencies', cleanAgencyId, 'partyArchives', snapshotId);
   try {
     await setDoc(ref, {
-      agencyId: party.agencyId,
+      agencyId: cleanAgencyId,
       snapshotId,
       partyId: party.partyId,
       partyName: (party.name || 'SELLER').trim().slice(0, 60) || 'SELLER',
-      ownerUid: party.ownerUid,
+      ownerUid: cleanOwnerUid,
       adminUids,
       assignedUid: isAdminActor ? party.assignedUid || '' : actorUid,
       parentMasterId: party.parentMasterId || '',
@@ -3446,6 +3474,25 @@ async function syncSingleAdminArchiveAgainstExisting(
         }
       }
 
+      if (updatedSummaries.length === 0) {
+        const netBal = round2((updatedOwnSeller.due || 0) - (updatedOwnSeller.joma || 0));
+        updatedSummaries = [
+          {
+            name: updatedOwnSeller.name,
+            mor: 0,
+            day: 0,
+            eve: 0,
+            sold: 0,
+            bill: 0,
+            prizeTotal: 0,
+            fresh: 0,
+            joma: updatedOwnSeller.joma || 0,
+            due: updatedOwnSeller.due || 0,
+            total: netBal,
+          },
+        ];
+      }
+
       const totalSold = round2(updatedSummaries.reduce((a, b) => a + b.sold, 0));
       const totalBill = round2(updatedSummaries.reduce((a, b) => a + b.bill, 0));
       const totalPrize = round2(updatedSummaries.reduce((a, b) => a + b.prizeTotal, 0));
@@ -3526,15 +3573,14 @@ async function syncSingleAdminArchiveAgainstExisting(
           handleFirestoreError(err, OperationType.UPDATE, ref.path);
         }
       }
-    } else if (createMissing && isTopLevel && (adminSummary || adminSeller)) {
-      const { payload, hasData } = buildUpdatedPayloadForParty(undefined);
-      if (hasData) {
-        try {
-          await savePartyArchiveCloud(ownerUid, party, payload, true);
-          syncedCount++;
-        } catch (err) {
-          console.error('[KK Agency] Could not create missing partyArchive:', party.name, err);
-        }
+    } else if (createMissing) {
+      // Backfill missing archive for EVERY active Master, Sub-Master, Direct Seller & Sub-Seller
+      const { payload } = buildUpdatedPayloadForParty(undefined);
+      try {
+        await savePartyArchiveCloud(ownerUid, party, payload, true);
+        syncedCount++;
+      } catch (err) {
+        console.error('[KK Agency] Could not create missing partyArchive:', party.name, err);
       }
     }
   }

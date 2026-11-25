@@ -693,11 +693,22 @@ export default function App() {
   const gsheetAuthPausedRef = useRef(false);
   const gsheetSilentTriedRef = useRef(false);
   const lastGsheetSigRef = useRef<string>('');
-  const prevGsheetCountsRef = useRef<Record<SessionId, number>>({
-    '1PM': 0,
-    '6PM': 0,
-    '8PM': 0,
-  });
+  const prevGsheetCountsRef = useRef<Record<SessionId, number>>((() => {
+    try {
+      const raw = window.localStorage.getItem('kk_agency_gsheet_prev_counts_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          '1PM': Number(parsed?.['1PM']) || 0,
+          '6PM': Number(parsed?.['6PM']) || 0,
+          '8PM': Number(parsed?.['8PM']) || 0,
+        };
+      }
+    } catch {
+      // ignore storage read error
+    }
+    return { '1PM': 0, '6PM': 0, '8PM': 0 };
+  })());
   const gsheetConfigRef = useRef(gsheetConfig);
   gsheetConfigRef.current = gsheetConfig;
 
@@ -719,7 +730,8 @@ export default function App() {
       entriesBySession: Record<SessionId, TicketEntryRow[]>,
       sellerNames: string[],
       tabMapping: Record<SessionId, string>,
-      silentToast = false
+      silentToast = false,
+      manualTrigger = false
     ) => {
       const sessions: SessionId[] = ['1PM', '6PM', '8PM'];
       const mappedSessions = sessions.filter((sid) => Boolean((tabMapping[sid] || '').trim()));
@@ -754,7 +766,13 @@ export default function App() {
         const incomingEmpty = normalizedIncoming[sid].length === 0;
         const hadGsheetInState = actualCurrentGsheet[sid].length > 0;
         const hadGsheetPreviously = prevCountsSnapshot[sid] > 0;
-        if (incomingEmpty && (hadGsheetInState || hadGsheetPreviously)) {
+        const hasAdminNonMobileRows = (currEntries[sid] || []).some(
+          (r) => !isRowBlank(r) && !r.id.startsWith('seller::') && !r.id.startsWith('sub::')
+        );
+        if (
+          incomingEmpty &&
+          (hadGsheetInState || hadGsheetPreviously || (manualTrigger && hasAdminNonMobileRows))
+        ) {
           clearedSessions.push(sid);
         }
       }
@@ -766,6 +784,14 @@ export default function App() {
       lastGsheetSigRef.current = sig;
       for (const sid of mappedSessions) {
         prevGsheetCountsRef.current[sid] = normalizedIncoming[sid].length;
+      }
+      try {
+        window.localStorage.setItem(
+          'kk_agency_gsheet_prev_counts_v1',
+          JSON.stringify(prevGsheetCountsRef.current)
+        );
+      } catch {
+        // ignore storage write error
       }
 
       const clearedSet = new Set<SessionId>(clearedSessions);
@@ -929,7 +955,8 @@ export default function App() {
           result.entriesBySession,
           result.sellerNames,
           cfg.tabMapping,
-          !manualTrigger && lastGsheetSigRef.current === ''
+          !manualTrigger && lastGsheetSigRef.current === '',
+          manualTrigger
         );
         if (manualTrigger && !changed) {
           const total =
@@ -1541,6 +1568,8 @@ export default function App() {
       return;
     }
     const adminUid = authUser.uid;
+    const currentLiveDate = latestStateRef.current.date;
+    const emptySig = serializeSheetEntries([], [], []);
     const isInitialHydration = !sheetsHydratedOnceRef.current;
     sheetsHydratedOnceRef.current = true;
 
@@ -1550,14 +1579,33 @@ export default function App() {
       rootMasterName: string;
       isSubSheet: boolean;
     }[] = [];
+    const staleSheetsToClear: CloudPartySheetDoc[] = [];
 
     for (const sheet of cloudSheets) {
+      const isSubSheet = Boolean(sheet.parentMasterId);
+
+      // CRITICAL GUARD: NEVER merge stale previous-day Seller/Sub-Seller sheets into today's live date!
+      // Instead, clear that stale sheet in Firestore and strip any lingering stale rows from today's ledger.
+      if (sheet.date && currentLiveDate && sheet.date < currentLiveDate) {
+        staleSheetsToClear.push(sheet);
+        if (isSubSheet) {
+          const rootMaster =
+            resolveTopLevelMasterParty(sheet.partyId, cloudParties) ||
+            cloudParties.find((p) => p.partyId === sheet.parentMasterId);
+          const effectiveSellerName = (rootMaster?.name || sheet.partyName).trim();
+          subSheetMergedSigRef.current[sheet.partyId] = `${effectiveSellerName.toUpperCase()}::${emptySig}`;
+        } else {
+          lastCloudSheetSigRef.current[sheet.partyId] = emptySig;
+          lastAdminPushSigRef.current[sheet.partyId] = emptySig;
+        }
+        continue;
+      }
+
       const sig = serializeSheetEntries(
         sheet.entries1PM || [],
         sheet.entries6PM || [],
         sheet.entries8PM || []
       );
-      const isSubSheet = Boolean(sheet.parentMasterId);
 
       if (isSubSheet) {
         const rootMaster =
@@ -1602,6 +1650,59 @@ export default function App() {
         } else if (prevSig === undefined) {
           lastCloudSheetSigRef.current[sheet.partyId] = sig;
         }
+      }
+    }
+
+    // Proactively wipe any stale previous-day cloud sheets in Firestore & strip their stale rows from today's ledger
+    if (staleSheetsToClear.length > 0) {
+      const partyById = new Map(cloudParties.map((p) => [p.partyId, p] as const));
+      const stalePartyIds = new Set(staleSheetsToClear.map((s) => s.partyId));
+
+      setState((prev) => {
+        let removedAny = false;
+        const stripStale = (rows: TicketEntryRow[]): TicketEntryRow[] => {
+          const kept = rows.filter((r) => {
+            if (isRowBlank(r)) return false;
+            if (r.id.startsWith('seller::')) {
+              const pid = r.id.split('::')[1] || '';
+              if (stalePartyIds.has(pid)) {
+                removedAny = true;
+                return false;
+              }
+            }
+            if (r.id.startsWith('sub::')) {
+              const pid = r.id.split('::')[1] || '';
+              if (stalePartyIds.has(pid)) {
+                removedAny = true;
+                return false;
+              }
+            }
+            return true;
+          });
+          return normalizeRowsKeepOneTrailing(kept);
+        };
+        const next1 = stripStale(prev.entries['1PM'] || []);
+        const next6 = stripStale(prev.entries['6PM'] || []);
+        const next8 = stripStale(prev.entries['8PM'] || []);
+        if (!removedAny) return prev;
+        return {
+          ...prev,
+          entries: { '1PM': next1, '6PM': next6, '8PM': next8 },
+        };
+      });
+
+      for (const staleSheet of staleSheetsToClear) {
+        const party = partyById.get(staleSheet.partyId);
+        if (!party) continue;
+        void pushAdminSheetRowsForParty(
+          adminUid,
+          party,
+          currentLiveDate,
+          [],
+          [],
+          [],
+          true
+        ).catch(() => {});
       }
     }
 
@@ -1736,6 +1837,7 @@ export default function App() {
     cloudParties,
     cloudSheets,
     isAdminRestoredView,
+    state.date,
     setState,
     showToast,
   ]);
@@ -1807,7 +1909,18 @@ export default function App() {
           localUpdatedAt === 0 ||
           (localFilledCount === 0 && !localHasWinning && !localHasHistory);
 
+        // Guard against resurrecting yesterday's cloud ledger chunks onto a newer local live date (e.g. right after Close Day)
+        const vaultLedgerIsOlderThanLocal = Boolean(
+          vault.ledgerDate && local.date && vault.ledgerDate < local.date
+        );
+        const vaultAgencyDate = vault.agency?.date || '';
+        const vaultLedgerIsOlderThanAgency = Boolean(
+          vault.ledgerDate && vaultAgencyDate && vault.ledgerDate < vaultAgencyDate
+        );
+
         const cloudIsStrictlyNewer =
+          !vaultLedgerIsOlderThanLocal &&
+          !vaultLedgerIsOlderThanAgency &&
           vault.ledgerRevisionMs > localUpdatedAt + 2500 &&
           (cloudFilledCount > 0 || cloudHasWinning);
 
@@ -1834,11 +1947,18 @@ export default function App() {
             '6PM': agency?.winning6PM ?? local.winningRaw['6PM'],
             '8PM': agency?.winning8PM ?? local.winningRaw['8PM'],
           };
-          const restoredEntries: Record<SessionId, TicketEntryRow[]> = {
-            '1PM': normalizeRowsKeepOneTrailing(vault.entries['1PM']),
-            '6PM': normalizeRowsKeepOneTrailing(vault.entries['6PM']),
-            '8PM': normalizeRowsKeepOneTrailing(vault.entries['8PM']),
-          };
+          const useVaultEntries = !vaultLedgerIsOlderThanAgency && !vaultLedgerIsOlderThanLocal;
+          const restoredEntries: Record<SessionId, TicketEntryRow[]> = useVaultEntries
+            ? {
+                '1PM': normalizeRowsKeepOneTrailing(vault.entries['1PM']),
+                '6PM': normalizeRowsKeepOneTrailing(vault.entries['6PM']),
+                '8PM': normalizeRowsKeepOneTrailing(vault.entries['8PM']),
+              }
+            : {
+                '1PM': createBlankRows(1),
+                '6PM': createBlankRows(1),
+                '8PM': createBlankRows(1),
+              };
           const restoredConfig: AgencyConfig = {
             ...local.config,
             limitThreshold:
@@ -3622,7 +3742,7 @@ export default function App() {
         recentUnique,
         cloudPartiesRef.current,
         latestStateRef.current.config,
-        false
+        true
       ).catch((err) => {
         // Allow retry on next state change if offline
         reconciledHistorySigRef.current = '';
@@ -3880,10 +4000,24 @@ export default function App() {
       history: preserveSavedSnapshots([snapshot, ...prev.history]).slice(0, 180),
     }));
 
-    if (cloudSession.kind === 'admin' && authUser) {
-      const adminUid = authUser.uid;
-      const ownerUid = cloudSession.ownerUid;
+    // Reset Google Sheet sync tracking for the fresh new date
+    lastGsheetSigRef.current = '';
+    prevGsheetCountsRef.current = { '1PM': 0, '6PM': 0, '8PM': 0 };
+    try {
+      window.localStorage.setItem(
+        'kk_agency_gsheet_prev_counts_v1',
+        JSON.stringify({ '1PM': 0, '6PM': 0, '8PM': 0 })
+      );
+    } catch {
+      // ignore storage error
+    }
+
+    const activeActorUid = authUser?.uid || auth.currentUser?.uid || '';
+    if (cloudSession.kind === 'admin' && activeActorUid) {
+      const adminUid = activeActorUid;
+      const ownerUid = cloudAgencyRef.current?.ownerUid || cloudSession.ownerUid;
       const agencyId = cloudSession.agencyId;
+      const adminUids = cloudAgencyRef.current?.adminUids || [ownerUid];
 
       // Immediately push nextDate + cleared winning numbers to /agencies/kk-main
       // so every Master, Sub-Master & Sub-Seller rolls over cleanly right away.
@@ -3901,8 +4035,52 @@ export default function App() {
         console.error('[KK Agency] Day Close agency rollover sync failed:', err);
       });
 
+      // Immediately flush cleared live ledger chunks + newly closed Admin archive to Cloud Vault
+      // (no debounce delay so a quick reload/switch can NEVER resurrect yesterday's ledger!)
+      const rolloverRevMs = Math.max(Date.now(), lastSavedAtRef.current);
+      void syncAdminLedgerChunksCloud(
+        adminUid,
+        ownerUid,
+        adminUids,
+        nextDate,
+        nextAgencyState.entries,
+        rolloverRevMs,
+        adminChunkSigsRef.current,
+        adminChunkIdsRef.current,
+        agencyId
+      ).catch((err) => {
+        console.error('[KK Agency] Day Close live ledger clear sync failed:', err);
+      });
+      void syncAdminArchivesCloud(
+        ownerUid,
+        adminUids,
+        nextAgencyState.history,
+        nextAgencyState.recycleBin || [],
+        adminArchiveSigsRef.current,
+        adminArchiveDocIdsRef.current,
+        agencyId
+      ).catch((err) => {
+        console.error('[KK Agency] Day Close Admin archive cloud sync failed:', err);
+      });
+
       const initialParties = [...cloudPartiesRef.current];
       const initialSheets = [...cloudSheetsRef.current];
+      const emptySig = serializeSheetEntries([], [], []);
+
+      // Pre-mark ALL known party sheets to emptySig synchronously so no in-flight snapshot
+      // can re-merge yesterday's rows into nextDate while Day Close writes are running.
+      for (const party of initialParties) {
+        if (party.role === 'admin') continue;
+        lastCloudSheetSigRef.current[party.partyId] = emptySig;
+        lastAdminPushSigRef.current[party.partyId] = emptySig;
+        if (party.parentMasterId) {
+          const rootMaster =
+            resolveTopLevelMasterParty(party.partyId, initialParties) ||
+            initialParties.find((p) => p.partyId === party.parentMasterId);
+          const effectiveSellerName = (rootMaster?.name || party.name).trim();
+          subSheetMergedSigRef.current[party.partyId] = `${effectiveSellerName.toUpperCase()}::${emptySig}`;
+        }
+      }
 
       showToast(
         `Closing ${formatDateDDMM(closedDate)} — Admin + sab Master/Sub-Seller archive ho raha hai...`,
@@ -3926,7 +4104,6 @@ export default function App() {
 
         const activeParties = allParties.filter((p) => p.active && p.role !== 'admin');
         const existingSheetIds = new Set(allSheets.map((s) => s.partyId));
-        const emptySig = serializeSheetEntries([], [], []);
         const billByName = new Map(
           closedSellerBills.map((b) => [b.name.trim().toUpperCase(), b] as const)
         );
@@ -4250,6 +4427,16 @@ export default function App() {
               }
             }
 
+            // If none of a Master's sub-sellers had activity on this date while Admin has a real bill for this Master,
+            // mirror Admin's summary into partySummaries so the Master's Archive card shows their actual Sold/Bill/Total.
+            const subsHaveActivity = partySummaries.some(
+              (s) => s.sold > 0 || s.bill !== 0 || s.prizeTotal !== 0 || s.due !== 0 || s.joma !== 0
+            );
+            if (!subsHaveActivity && adminAccountSummary) {
+              partySummaries.length = 0;
+              partySummaries.push(adminAccountSummary);
+            }
+
             // Add any deeper descendant sellers so restored sheet names resolve accurately
             for (const dp of descendantParties) {
               if (!partyArchiveSellers.some((s) => s.id === dp.partyId)) {
@@ -4404,85 +4591,115 @@ export default function App() {
           partyArchiveJobs.push({ party, snap: partySnap });
         }
 
-        // Step 1: Save archive snapshots for EVERY active Master, Sub-Master, Direct Seller & Sub-Seller
+        // All closed sheet data is now snapshotted in memory inside `partyArchiveJobs` —
+        // Run Step 1 (save archives), Step 2 (carry forward sub-balances), AND Step 3 (clear ALL live sheets
+        // for active AND any inactive parties with an existing sheet doc) right away so live sheets clear
+        // immediately without waiting behind slow archive writes!
         const CONCURRENCY = 6;
         let savedCount = 0;
         let failedCount = 0;
-        for (let i = 0; i < partyArchiveJobs.length; i += CONCURRENCY) {
-          const slice = partyArchiveJobs.slice(i, i + CONCURRENCY);
-          await Promise.all(
-            slice.map(async ({ party, snap }) => {
-              try {
-                await savePartyArchiveCloud(adminUid, party, snap, true);
-                savedCount += 1;
-              } catch (firstErr) {
+
+        const saveArchivesTask = (async () => {
+          for (let i = 0; i < partyArchiveJobs.length; i += CONCURRENCY) {
+            const slice = partyArchiveJobs.slice(i, i + CONCURRENCY);
+            await Promise.all(
+              slice.map(async ({ party, snap }) => {
                 try {
                   await savePartyArchiveCloud(adminUid, party, snap, true);
                   savedCount += 1;
-                } catch (retryErr) {
-                  failedCount += 1;
-                  console.error(
-                    '[KK Agency] Failed to archive party on Day Close:',
-                    party.name,
-                    party.partyId,
-                    retryErr || firstErr
-                  );
+                } catch (firstErr) {
+                  try {
+                    await savePartyArchiveCloud(adminUid, party, snap, true);
+                    savedCount += 1;
+                  } catch (retryErr) {
+                    failedCount += 1;
+                    console.error(
+                      '[KK Agency] Failed to archive party on Day Close:',
+                      party.name,
+                      party.partyId,
+                      retryErr || firstErr
+                    );
+                  }
                 }
-              }
-            })
-          );
-        }
+              })
+            );
+          }
+        })();
 
-        // Step 2: Carry forward every Sub-Seller's +Total -> Due and -Total -> Joma under Masters & Sub-Masters
-        const carryItems = Array.from(carriedSubBalances.values());
-        for (let i = 0; i < carryItems.length; i += CONCURRENCY) {
-          const slice = carryItems.slice(i, i + CONCURRENCY);
-          await Promise.all(
-            slice.map(async (item) => {
-              try {
-                await updateSubSellerParty(item.party, undefined, {
-                  due: item.due,
-                  joma: item.joma,
-                });
-              } catch (err) {
-                console.error('[KK Agency] Sub-seller balance carry-forward failed:', item.party.name, err);
-              }
-            })
-          );
-        }
+        const carrySubBalancesTask = (async () => {
+          const carryItems = Array.from(carriedSubBalances.values());
+          for (let i = 0; i < carryItems.length; i += CONCURRENCY) {
+            const slice = carryItems.slice(i, i + CONCURRENCY);
+            await Promise.all(
+              slice.map(async (item) => {
+                try {
+                  await updateSubSellerParty(item.party, undefined, {
+                    due: item.due,
+                    joma: item.joma,
+                  });
+                } catch (err) {
+                  console.error('[KK Agency] Sub-seller balance carry-forward failed:', item.party.name, err);
+                }
+              })
+            );
+          }
+        })();
 
-        // Step 3: Clear all Master, Sub-Master & Sub-Seller live sheets for the fresh nextDate
-        for (let i = 0; i < activeParties.length; i += CONCURRENCY) {
-          const slice = activeParties.slice(i, i + CONCURRENCY);
-          await Promise.all(
-            slice.map(async (party) => {
-              lastCloudSheetSigRef.current[party.partyId] = emptySig;
-              lastAdminPushSigRef.current[party.partyId] = emptySig;
-              if (party.parentMasterId) {
-                const rootMaster =
-                  resolveTopLevelMasterParty(party.partyId, allParties) ||
-                  allParties.find((p) => p.partyId === party.parentMasterId);
-                const effectiveSellerName = (rootMaster?.name || party.name).trim();
-                subSheetMergedSigRef.current[party.partyId] = `${effectiveSellerName.toUpperCase()}::${emptySig}`;
-              }
-              try {
-                await pushAdminSheetRowsForParty(
-                  adminUid,
-                  party,
-                  nextDate,
-                  [],
-                  [],
-                  [],
-                  existingSheetIds.has(party.partyId)
-                );
-              } catch (err) {
-                console.error('[KK Agency] Could not clear party sheet on Day Close:', party.name, err);
-              }
-            })
-          );
-        }
+        const partiesToClearSheets = allParties.filter(
+          (p) => p.role !== 'admin' && (p.active || existingSheetIds.has(p.partyId))
+        );
+        const clearSheetsTask = (async () => {
+          for (let i = 0; i < partiesToClearSheets.length; i += CONCURRENCY) {
+            const slice = partiesToClearSheets.slice(i, i + CONCURRENCY);
+            await Promise.all(
+              slice.map(async (party) => {
+                lastCloudSheetSigRef.current[party.partyId] = emptySig;
+                lastAdminPushSigRef.current[party.partyId] = emptySig;
+                if (party.parentMasterId) {
+                  const rootMaster =
+                    resolveTopLevelMasterParty(party.partyId, allParties) ||
+                    allParties.find((p) => p.partyId === party.parentMasterId);
+                  const effectiveSellerName = (rootMaster?.name || party.name).trim();
+                  subSheetMergedSigRef.current[party.partyId] = `${effectiveSellerName.toUpperCase()}::${emptySig}`;
+                }
+                try {
+                  await pushAdminSheetRowsForParty(
+                    adminUid,
+                    party,
+                    nextDate,
+                    [],
+                    [],
+                    [],
+                    existingSheetIds.has(party.partyId)
+                  );
+                } catch (firstErr) {
+                  try {
+                    await pushAdminSheetRowsForParty(
+                      adminUid,
+                      party,
+                      nextDate,
+                      [],
+                      [],
+                      [],
+                      existingSheetIds.has(party.partyId)
+                    );
+                  } catch (retryErr) {
+                    console.error(
+                      '[KK Agency] Could not clear party sheet on Day Close:',
+                      party.name,
+                      retryErr || firstErr
+                    );
+                  }
+                }
+              })
+            );
+          }
+        })();
+
+        await Promise.all([saveArchivesTask, carrySubBalancesTask, clearSheetsTask]);
 
         if (failedCount > 0) {
+          reconciledHistorySigRef.current = '';
           showToast(
             `Archived ${formatDateDDMM(closedDate)} (Admin + ${savedCount} IDs, ${failedCount} retry needed — Archive tab me "Sync IDs" dabayein)`,
             6000

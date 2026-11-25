@@ -323,7 +323,32 @@ export function SellerPortalApp({
 
     const unsub = subscribeSellerPortal(agencyId, partyId, {
       onAgency: (docData) => {
+        const prevDate = agencyRef.current?.date || '';
+        const nextDate = docData?.date || '';
         setAgency(docData);
+        // When Admin closes day and rolls to a newer date, immediately discard any pending previous-day edits
+        // and reset local live rows so yesterday's data is NEVER written back onto today's sheet.
+        if (prevDate && nextDate && nextDate > prevDate) {
+          if (pendingSaveTimerRef.current !== null) {
+            window.clearTimeout(pendingSaveTimerRef.current);
+            pendingSaveTimerRef.current = null;
+          }
+          if (autoRetryTimerRef.current !== null) {
+            window.clearTimeout(autoRetryTimerRef.current);
+            autoRetryTimerRef.current = null;
+          }
+          dirtyLocalRef.current = false;
+          pendingDirtySessionsRef.current.clear();
+          const emptySig = serializeSheetEntries([], [], []);
+          lastSerializedRef.current = emptySig;
+          setEntries({
+            '1PM': createBlankRows(1),
+            '6PM': createBlankRows(1),
+            '8PM': createBlankRows(1),
+          });
+          setSyncState('synced');
+          setSyncErrorMsg('');
+        }
       },
       onParty: (partyDoc) => {
         setParty(partyDoc);
@@ -336,10 +361,22 @@ export function SellerPortalApp({
         // Skip overwriting while seller has an unsaved local keystroke pending debounce
         if (dirtyLocalRef.current && sheetDoc.updatedByUid === uid) return;
 
+        // Ignore stale previous-day sheets once Admin has rolled the agency to a newer live date
+        const liveAgencyDate = agencyRef.current?.date || '';
+        const isStaleSheet = Boolean(
+          sheetDoc.date && liveAgencyDate && sheetDoc.date < liveAgencyDate
+        );
+
         const sName = partyRef.current?.name || sheetDoc.partyName || '';
-        const next1 = normalizeSellerRows(sheetDoc.entries1PM || [], sName);
-        const next6 = normalizeSellerRows(sheetDoc.entries6PM || [], sName);
-        const next8 = normalizeSellerRows(sheetDoc.entries8PM || [], sName);
+        const next1 = isStaleSheet
+          ? createBlankRows(1)
+          : normalizeSellerRows(sheetDoc.entries1PM || [], sName);
+        const next6 = isStaleSheet
+          ? createBlankRows(1)
+          : normalizeSellerRows(sheetDoc.entries6PM || [], sName);
+        const next8 = isStaleSheet
+          ? createBlankRows(1)
+          : normalizeSellerRows(sheetDoc.entries8PM || [], sName);
         const sig = serializeSheetEntries(
           sanitizeSheetEntriesForCloud(next1, sName),
           sanitizeSheetEntriesForCloud(next6, sName),
@@ -413,9 +450,16 @@ export function SellerPortalApp({
         onAllChainParties: setAllChainParties,
         onSubPrivates: setSubPrivates,
         onSubSheets: (incomingSheets) => {
-          setSubSheets(incomingSheets);
+          const liveAgencyDate = agencyRef.current?.date || '';
+          const freshSheets = incomingSheets.map((sh) => {
+            if (sh.date && liveAgencyDate && sh.date < liveAgencyDate) {
+              return { ...sh, entries1PM: [], entries6PM: [], entries8PM: [] };
+            }
+            return sh;
+          });
+          setSubSheets(freshSheets);
           const changedNames: string[] = [];
-          for (const sh of incomingSheets) {
+          for (const sh of freshSheets) {
             const sig = serializeSheetEntries(
               sh.entries1PM || [],
               sh.entries6PM || [],
