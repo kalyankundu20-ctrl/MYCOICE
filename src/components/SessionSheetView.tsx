@@ -686,6 +686,8 @@ export function SessionSheetView({
   const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIdx, setActiveMatchIdx] = useState(0);
+  const [searchShowContext, setSearchShowContext] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'overlimit'>('all');
   const [confirmClear, setConfirmClear] = useState(false);
   const [inspectedOverLimitRow, setInspectedOverLimitRow] =
@@ -1307,7 +1309,7 @@ export function SessionSheetView({
     return false;
   }, []);
 
-  const filteredRows = useMemo(
+  const baseFilteredRows = useMemo(
     () =>
       computation.rows.filter((r) => {
         if (
@@ -1317,8 +1319,8 @@ export function SessionSheetView({
         ) {
           return false;
         }
-        // On numeric search (e.g. 86307), keep ALL surrounding rows (upar & niche) visible
-        // and scroll the matched number directly to the first visible row!
+        // On numeric search (e.g. 25127), keep all rows available so matches can be pinned
+        // right at the top AND full upar/niche context remains one tap away.
         if (!trimmedSearch || isNumberSearch) return true;
         const q = trimmedSearch.toLowerCase();
         const textMatch =
@@ -1334,39 +1336,72 @@ export function SessionSheetView({
     [computation.rows, statusFilter, trimmedSearch, isNumberSearch]
   );
 
-  const matchedRowIndices = useMemo(() => {
+  const baseMatchedRowIndices = useMemo(() => {
     if (!isNumberSearch) return [] as number[];
     const q = trimmedSearch.toLowerCase();
     const indices: number[] = [];
-    for (let i = 0; i < filteredRows.length; i++) {
-      if (rowMatchesNumberQuery(filteredRows[i], q)) {
+    for (let i = 0; i < baseFilteredRows.length; i++) {
+      if (rowMatchesNumberQuery(baseFilteredRows[i], q)) {
         indices.push(i);
       }
     }
     return indices;
-  }, [isNumberSearch, trimmedSearch, filteredRows, rowMatchesNumberQuery]);
+  }, [isNumberSearch, trimmedSearch, baseFilteredRows, rowMatchesNumberQuery]);
+
+  const safeMatchIdx =
+    baseMatchedRowIndices.length > 0 ? Math.min(activeMatchIdx, baseMatchedRowIndices.length - 1) : 0;
+  const activeMatchOriginalIdx =
+    baseMatchedRowIndices.length > 0 ? baseMatchedRowIndices[safeMatchIdx] : -1;
+  const activeMatchedRowId =
+    activeMatchOriginalIdx >= 0 ? baseFilteredRows[activeMatchOriginalIdx]?.id ?? null : null;
+  const aboveMatchCount = activeMatchOriginalIdx >= 0 ? activeMatchOriginalIdx : 0;
+  const belowMatchCount =
+    activeMatchOriginalIdx >= 0
+      ? Math.max(0, baseFilteredRows.length - 1 - activeMatchOriginalIdx)
+      : 0;
 
   const matchedRowIdSet = useMemo(() => {
     const set = new Set<string>();
-    for (const idx of matchedRowIndices) {
-      const row = filteredRows[idx];
+    for (const idx of baseMatchedRowIndices) {
+      const row = baseFilteredRows[idx];
       if (row) set.add(row.id);
     }
     return set;
-  }, [matchedRowIndices, filteredRows]);
+  }, [baseMatchedRowIndices, baseFilteredRows]);
 
-  const safeMatchIdx =
-    matchedRowIndices.length > 0 ? Math.min(activeMatchIdx, matchedRowIndices.length - 1) : 0;
-  const activeMatchVisibleIdx =
-    matchedRowIndices.length > 0 ? matchedRowIndices[safeMatchIdx] : -1;
-  const activeMatchedRowId =
-    activeMatchVisibleIdx >= 0 ? filteredRows[activeMatchVisibleIdx]?.id ?? null : null;
-  const aboveMatchCount = activeMatchVisibleIdx >= 0 ? activeMatchVisibleIdx : 0;
-  const belowMatchCount =
-    activeMatchVisibleIdx >= 0 ? Math.max(0, filteredRows.length - 1 - activeMatchVisibleIdx) : 0;
+  const isPinnedSearchTop =
+    isNumberSearch && baseMatchedRowIndices.length > 0 && !searchShowContext;
+
+  // When a searched number is found, place ALL matching rows right at the TOP of the table/cards
+  // (with the active match first) so it is immediately visible under the header without scrolling.
+  const filteredRows = useMemo(() => {
+    if (!isPinnedSearchTop) return baseFilteredRows;
+    const matchedOrdered: ComputedTicketRow[] = [];
+    for (let offset = 0; offset < baseMatchedRowIndices.length; offset++) {
+      const origIdx = baseMatchedRowIndices[(safeMatchIdx + offset) % baseMatchedRowIndices.length];
+      const row = baseFilteredRows[origIdx];
+      if (row) matchedOrdered.push(row);
+    }
+    const rest: ComputedTicketRow[] = [];
+    for (let i = 0; i < baseFilteredRows.length; i++) {
+      const row = baseFilteredRows[i];
+      if (!matchedRowIdSet.has(row.id)) {
+        rest.push(row);
+      }
+    }
+    return [...matchedOrdered, ...rest];
+  }, [isPinnedSearchTop, baseFilteredRows, baseMatchedRowIndices, safeMatchIdx, matchedRowIdSet]);
+
+  const matchedRowIndices = baseMatchedRowIndices;
+  const activeMatchVisibleIdx = isPinnedSearchTop
+    ? baseMatchedRowIndices.length > 0
+      ? 0
+      : -1
+    : activeMatchOriginalIdx;
 
   useEffect(() => {
     setActiveMatchIdx(0);
+    setSearchShowContext(false);
   }, [trimmedSearch, statusFilter]);
 
   const getOuterScrollRoot = useCallback((): HTMLElement | null => {
@@ -1521,8 +1556,10 @@ export function SessionSheetView({
   );
 
   const scrollMatchedRowIntoPosition = useCallback(
-    (peekAboveRows = 0, smooth = false) => {
+    (peekAboveRows = 0, smooth = false, targetIndexOverride?: number) => {
       if (!isNumberSearch || !activeMatchedRowId) return;
+      const targetVisibleIdx =
+        targetIndexOverride !== undefined ? targetIndexOverride : activeMatchVisibleIdx;
       if (viewMode === 'table') {
         const scrollRoot = getOuterScrollRoot();
         const tbodyEl = tbodyRef.current;
@@ -1555,44 +1592,53 @@ export function SessionSheetView({
           return true;
         };
 
-        if (!alignExactRow() && activeMatchVisibleIdx >= 0) {
+        if (targetVisibleIdx >= 0) {
           const maxIdx = Math.max(0, filteredRows.length - 1);
-          const nextStart = Math.max(0, activeMatchVisibleIdx - VIRTUAL_OVERSCAN);
-          const nextEnd = Math.min(maxIdx, activeMatchVisibleIdx + 36);
-          const next = { startIdx: nextStart, endIdx: nextEnd };
-          virtualRangeRef.current = next;
-          setVirtualRange(next);
-
-          const theadH = theadRef.current ? theadRef.current.offsetHeight : 38;
-          const containerRect = containerEl.getBoundingClientRect();
-          if (scrollRoot) {
-            const rootRect = scrollRoot.getBoundingClientRect();
-            const tbodyOrigin = containerRect.top - rootRect.top + scrollRoot.scrollTop + theadH;
-            const estimatedTop = Math.max(
-              0,
-              tbodyOrigin +
-                (activeMatchVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
-                12
-            );
-            scrollRoot.scrollTop = estimatedTop;
-          } else {
-            const tbodyOrigin = containerRect.top + window.scrollY + theadH;
-            const estimatedTop = Math.max(
-              0,
-              tbodyOrigin +
-                (activeMatchVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
-                12
-            );
-            window.scrollTo(0, estimatedTop);
+          const nextStart = Math.max(0, targetVisibleIdx - VIRTUAL_OVERSCAN);
+          const nextEnd = Math.min(maxIdx, targetVisibleIdx + 36);
+          if (
+            targetVisibleIdx < virtualRangeRef.current.startIdx ||
+            targetVisibleIdx > virtualRangeRef.current.endIdx
+          ) {
+            const next = { startIdx: nextStart, endIdx: nextEnd };
+            virtualRangeRef.current = next;
+            setVirtualRange(next);
           }
 
-          window.requestAnimationFrame(() => {
-            alignExactRow();
-          });
+          if (!alignExactRow()) {
+            const theadH = theadRef.current ? theadRef.current.offsetHeight : 38;
+            const containerRect = containerEl.getBoundingClientRect();
+            if (scrollRoot) {
+              const rootRect = scrollRoot.getBoundingClientRect();
+              const tbodyOrigin = containerRect.top - rootRect.top + scrollRoot.scrollTop + theadH;
+              const estimatedTop = Math.max(
+                0,
+                tbodyOrigin +
+                  (targetVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
+                  12
+              );
+              scrollRoot.scrollTop = estimatedTop;
+            } else {
+              const tbodyOrigin = containerRect.top + window.scrollY + theadH;
+              const estimatedTop = Math.max(
+                0,
+                tbodyOrigin +
+                  (targetVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
+                  12
+              );
+              window.scrollTo(0, estimatedTop);
+            }
+
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                alignExactRow();
+              });
+            });
+          }
         }
       } else {
-        if (activeMatchVisibleIdx >= visibleCardsLimit) {
-          setVisibleCardsLimit(activeMatchVisibleIdx + 40);
+        if (targetVisibleIdx >= visibleCardsLimit) {
+          setVisibleCardsLimit(targetVisibleIdx + 40);
         }
         window.requestAnimationFrame(() => {
           const cardEl = cardListRef.current?.querySelector<HTMLElement>(
@@ -1614,13 +1660,34 @@ export function SessionSheetView({
     ]
   );
 
+  // When matches are pinned at the top of the table, ensure virtualWindow includes index 0 immediately
   useEffect(() => {
-    if (!isNumberSearch || !activeMatchedRowId) return;
+    if (!isPinnedSearchTop) return;
+    const nextEnd = Math.min(Math.max(0, filteredRows.length - 1), 60);
+    if (virtualRangeRef.current.startIdx !== 0) {
+      const next = { startIdx: 0, endIdx: nextEnd };
+      virtualRangeRef.current = next;
+      setVirtualRange(next);
+    }
+  }, [isPinnedSearchTop, activeMatchedRowId, filteredRows.length]);
+
+  // When user switches to context view (showing upar/niche surrounding rows), scroll the match cleanly to the top
+  useEffect(() => {
+    if (!isNumberSearch || !activeMatchedRowId || !searchShowContext) return;
     const raf = window.requestAnimationFrame(() => {
-      scrollMatchedRowIntoPosition(0, false);
+      window.requestAnimationFrame(() => {
+        scrollMatchedRowIntoPosition(2, false, activeMatchOriginalIdx);
+      });
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [isNumberSearch, activeMatchedRowId, viewMode, trimmedSearch, scrollMatchedRowIntoPosition]);
+  }, [
+    isNumberSearch,
+    activeMatchedRowId,
+    searchShowContext,
+    activeMatchOriginalIdx,
+    viewMode,
+    scrollMatchedRowIntoPosition,
+  ]);
 
   // Normalized rectangular cell selection bounds (when >= 2 cells or Shift/Drag selected)
   const cellRangeBounds = useMemo(() => {
@@ -2696,16 +2763,20 @@ export function SessionSheetView({
           <div className="relative flex-1 min-w-0 sm:flex-initial sm:w-48">
             <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
+              ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && isNumberSearch && matchedRowIndices.length > 0) {
                   e.preventDefault();
+                  searchInputRef.current?.blur();
                   if (matchedRowIndices.length > 1) {
                     setActiveMatchIdx((prev) => (prev + 1) % matchedRowIndices.length);
+                  } else if (searchShowContext) {
+                    scrollMatchedRowIntoPosition(2, true, activeMatchOriginalIdx);
                   } else {
-                    scrollMatchedRowIntoPosition(0, true);
+                    scrollMatchedRowIntoPosition(0, true, 0);
                   }
                 }
               }}
@@ -2917,10 +2988,16 @@ export function SessionSheetView({
                   type="button"
                   onClick={() => {
                     AppSounds.tap();
-                    scrollMatchedRowIntoPosition(0, true);
+                    searchInputRef.current?.blur();
+                    if (searchShowContext) {
+                      setSearchShowContext(false);
+                      scrollSheetToEdge('top');
+                    } else {
+                      scrollMatchedRowIntoPosition(0, true, 0);
+                    }
                   }}
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500 text-white font-mono-tabular font-black text-[11px] cursor-pointer"
-                  title="Jump searched number to first row"
+                  title="Show searched number at top"
                 >
                   <span>{trimmedSearch}</span>
                   {matchedRowIndices.length > 1 && (
@@ -2930,22 +3007,32 @@ export function SessionSheetView({
                   )}
                 </button>
                 <span className="text-[11px] font-semibold text-amber-900/85 truncate">
-                  Row #{activeMatchVisibleIdx + 1} · ↑{aboveMatchCount} upar · ↓{belowMatchCount} niche
+                  Row #{activeMatchOriginalIdx + 1} · ↑{aboveMatchCount} upar · ↓{belowMatchCount} niche
                 </span>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                {aboveMatchCount > 0 && viewMode === 'table' && (
+                {viewMode === 'table' && (aboveMatchCount > 0 || searchShowContext) && (
                   <button
                     type="button"
                     onClick={() => {
                       AppSounds.tap();
-                      scrollMatchedRowIntoPosition(2, true);
+                      searchInputRef.current?.blur();
+                      if (searchShowContext) {
+                        setSearchShowContext(false);
+                        scrollSheetToEdge('top');
+                      } else {
+                        setSearchShowContext(true);
+                      }
                     }}
                     className="h-7 px-2 inline-flex items-center gap-0.5 rounded-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 text-[11px] font-extrabold cursor-pointer"
-                    title="Upar ke 2 numbers bhi saath dekhein"
+                    title={
+                      searchShowContext
+                        ? 'Matched number ko top par dekhein'
+                        : 'Upar aur niche ke rows ke saath dekhein'
+                    }
                   >
                     <ChevronUp className="w-3.5 h-3.5" />
-                    <span>Upar</span>
+                    <span>{searchShowContext ? 'Top Pe' : 'Upar'}</span>
                   </button>
                 )}
                 {matchedRowIndices.length > 1 && (
