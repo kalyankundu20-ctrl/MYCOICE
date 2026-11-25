@@ -281,6 +281,13 @@ export function SellerPortalApp({
 
     const unsubArchives = subscribePartyArchives(agencyId, partyId, (cloudSnaps) => {
       setPartyArchives(cloudSnaps);
+      setRestoredSnapshot((curr) => {
+        if (!curr) return null;
+        const fresh =
+          cloudSnaps.find((s) => s.id === curr.id) ||
+          cloudSnaps.find((s) => s.date === curr.date);
+        return fresh || curr;
+      });
       try {
         window.localStorage.setItem(archiveStorageKey, JSON.stringify(cloudSnaps));
       } catch {
@@ -2416,6 +2423,7 @@ export function SellerPortalApp({
                   onPermanentDeleteFromBin={handlePermanentDeletePartyFromBin}
                   onEmptyRecycleBin={handleEmptyPartyRecycleBin}
                   title={`${party.name} — Daily Archive (${partyArchives.length})`}
+                  partyOwnerName={party.name}
                   subtitle={
                     isMasterSeller && subParties.length > 0
                       ? 'Har din ka Bill, 1PM/6PM/8PM Sheet, Sub-Sellers aur Prize snapshot safe rehta hai (30 days history). Restore dabakar kisi bhi purane din ka poora details dekh sakte hain.'

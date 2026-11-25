@@ -26,6 +26,7 @@ interface ArchiveViewProps {
   hideRestore?: boolean;
   hideLimitPrize?: boolean;
   readOnly?: boolean;
+  partyOwnerName?: string;
 }
 
 export function ArchiveView({
@@ -46,6 +47,7 @@ export function ArchiveView({
   hideRestore = false,
   hideLimitPrize = false,
   readOnly = false,
+  partyOwnerName,
 }: ArchiveViewProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedNames, setSelectedNames] = useState<Set<string> | null>(null);
@@ -358,6 +360,35 @@ export function ArchiveView({
                         />
                       )}
                     </div>
+
+                    {(() => {
+                      if (!partyOwnerName) return null;
+                      const ownerUpper = partyOwnerName.trim().toUpperCase();
+                      const alreadyInSummaries = sellerSummaries.some(
+                        (s) => s.name.trim().toUpperCase() === ownerUpper
+                      );
+                      if (alreadyInSummaries) return null;
+                      const ownSeller = (snap.sellers || []).find(
+                        (s) => s.name.trim().toUpperCase() === ownerUpper
+                      );
+                      if (!ownSeller) return null;
+                      return (
+                        <div className="bg-indigo-50/90 border border-indigo-200 rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-indigo-950">
+                          <span className="uppercase tracking-wide">
+                            Admin Account · {ownSeller.name}
+                          </span>
+                          <div className="flex flex-wrap items-center gap-3 font-mono-tabular">
+                            <span>Rate: ₹{formatINR(ownSeller.rate)}</span>
+                            <span className="text-sky-800">
+                              Joma: ₹{formatINR(ownSeller.joma)}
+                            </span>
+                            <span className="text-amber-800">
+                              Due: ₹{formatINR(ownSeller.due)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {sellerSummaries.length > 0 && (
                       <>

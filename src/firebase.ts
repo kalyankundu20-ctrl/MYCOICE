@@ -33,7 +33,7 @@ try {
   firestoreInstance = initializeFirestore(
     app,
     {
-      experimentalAutoDetectLongPolling: true,
+      experimentalForceLongPolling: true,
     },
     FIRESTORE_DATABASE_ID
   );
@@ -455,11 +455,20 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-async function testConnection() {
+async function testConnection(attempt = 0) {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
+      if (attempt < 1) {
+        window.setTimeout(() => {
+          void testConnection(attempt + 1);
+        }, 2500);
+        return;
+      }
       console.error('Please check your Firebase configuration.');
     }
   }

@@ -83,9 +83,11 @@ import {
   syncAdminArchivesCloud,
   syncAdminLedgerChunksCloud,
   syncAdminPrivateConfigCloud,
+  syncAdminRestoredArchiveToPartiesCloud,
   syncSubSellerChainLineage,
   toggleSellerChainRole,
   toggleSellerPartyActive,
+  updatePartyBalancesAdminCloud,
   updatePartyLoginCredentials,
   updateSubSellerParty,
 } from './services/cloudSync';
@@ -571,11 +573,18 @@ export default function App() {
   const skipAutoRolloverDateRef = useRef<string | null>(null);
 
   // Admin-only Restored Archive Mode (persisted locally so page reload NEVER overwrites
-  // live Master / Sub-Master cloud date, sheets, or Due/Joma with an old restored date).
+  // live Master / Sub-Master cloud date or live sheets with an old restored date,
+  // while Admin edits on the restored date auto-sync to all Master/Sub-Master archives
+  // and cleanly cascade Due/Joma balances to the live current day).
   type AdminRestoredArchiveMode = {
     restoredDate: string;
+    restoredSnapId?: string;
+    restoredTrigger?: DaySnapshot['trigger'];
+    restoredOriginalTotals?: Record<string, number>;
     liveDate: string;
     liveBackup: DaySnapshot;
+    liveOriginalSellers?: Seller[];
+    intermediateOriginalHistory?: DaySnapshot[];
   };
   const ADMIN_RESTORED_MODE_KEY = 'kk-admin-restored-archive-mode:v1';
   const [adminRestoredMode, setAdminRestoredMode] = useState<AdminRestoredArchiveMode | null>(() => {
@@ -594,10 +603,15 @@ export default function App() {
   const isAdminRestoredView = Boolean(adminRestoredMode);
   const isAdminRestoredViewRef = useRef<boolean>(isAdminRestoredView);
   isAdminRestoredViewRef.current = isAdminRestoredView;
+  const adminRestoredModeRef = useRef<AdminRestoredArchiveMode | null>(adminRestoredMode);
+  adminRestoredModeRef.current = adminRestoredMode;
+  const lastRestoredEditSigRef = useRef<string>('');
+  const [restoredSyncState, setRestoredSyncState] = useState<'idle' | 'syncing' | 'synced'>('idle');
 
   const updateAdminRestoredMode = useCallback(
     (next: AdminRestoredArchiveMode | null) => {
       isAdminRestoredViewRef.current = Boolean(next);
+      adminRestoredModeRef.current = next;
       setAdminRestoredMode(next);
       try {
         if (next) {
@@ -3023,13 +3037,414 @@ export default function App() {
       };
     });
 
+  const applyCarryForwardDelta = useCallback(
+    (
+      currentDue: number,
+      currentJoma: number,
+      oldPrevTotal: number,
+      newPrevTotal: number
+    ): { due: number; joma: number } => {
+      const oldCarriedDue = oldPrevTotal > 0 ? round2(oldPrevTotal) : 0;
+      const oldCarriedJoma = oldPrevTotal < 0 ? round2(Math.abs(oldPrevTotal)) : 0;
+      const newCarriedDue = newPrevTotal > 0 ? round2(newPrevTotal) : 0;
+      const newCarriedJoma = newPrevTotal < 0 ? round2(Math.abs(newPrevTotal)) : 0;
+
+      const deltaDue = round2(newCarriedDue - oldCarriedDue);
+      const deltaJoma = round2(newCarriedJoma - oldCarriedJoma);
+
+      let nextDue = round2((Number(currentDue) || 0) + deltaDue);
+      let nextJoma = round2((Number(currentJoma) || 0) + deltaJoma);
+
+      if (nextDue < 0) {
+        nextJoma = round2(nextJoma + Math.abs(nextDue));
+        nextDue = 0;
+      }
+      if (nextJoma < 0) {
+        nextDue = round2(nextDue + Math.abs(nextJoma));
+        nextJoma = 0;
+      }
+      return { due: nextDue, joma: nextJoma };
+    },
+    []
+  );
+
+  const buildExactSnapshotFromState = useCallback(
+    (
+      curState: AppState,
+      trigger: DaySnapshot['trigger'],
+      preserveId?: string,
+      preserveSavedAt?: string
+    ): DaySnapshot => {
+      const comps: Record<SessionId, SessionComputation> = {
+        '1PM': processSessionRows(curState.entries['1PM'] || [], '1PM', curState.config),
+        '6PM': processSessionRows(curState.entries['6PM'] || [], '6PM', curState.config),
+        '8PM': processSessionRows(curState.entries['8PM'] || [], '8PM', curState.config),
+      };
+      const winMap = parseWinningNumbers(curState.winningRaw);
+      const pData = generatePrizeAndLimitData(comps, winMap, curState.config);
+      const bills = computeSellerBills(curState.sellers, comps, pData.prizeList, curState.date);
+      const totalSold = round2(bills.reduce((a, b) => a + b.sold, 0));
+      const totalBill = round2(bills.reduce((a, b) => a + b.bill, 0));
+      const totalPrize = round2(bills.reduce((a, b) => a + b.prizeTotal, 0));
+      const totalNetPayable = round2(bills.reduce((a, b) => a + b.total, 0));
+
+      return {
+        id: preserveId || `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        date: curState.date,
+        savedAt: preserveSavedAt || new Date().toISOString(),
+        trigger,
+        totalSold,
+        totalBill,
+        totalPrize,
+        totalNetPayable,
+        limitGrandTotal: pData.limitGrandTotal,
+        overLimitTotals: {
+          '1PM': comps['1PM'].overLimitTotal,
+          '6PM': comps['6PM'].overLimitTotal,
+          '8PM': comps['8PM'].overLimitTotal,
+        },
+        sellerSummaries: bills.map((b) => ({
+          name: b.name,
+          mor: b.mor,
+          day: b.day,
+          eve: b.eve,
+          sold: b.sold,
+          bill: b.bill,
+          prizeTotal: b.prizeTotal,
+          fresh: b.fresh,
+          joma: b.joma,
+          due: b.due,
+          total: b.total,
+        })),
+        prizeList: pData.prizeList,
+        limitPrizeGroups: pData.limitPrizeGroups,
+        sellers: curState.sellers,
+        entries: curState.entries,
+        winningRaw: curState.winningRaw,
+      };
+    },
+    []
+  );
+
+  const serializeRestoredWorkingSig = useCallback((curState: AppState): string => {
+    const sellersSig = curState.sellers
+      .map((s) => `${s.id}|${s.name.trim().toUpperCase()}|${s.rate}|${s.due}|${s.joma}`)
+      .join(';');
+    const winSig = `${curState.winningRaw['1PM'] || ''}|${curState.winningRaw['6PM'] || ''}|${curState.winningRaw['8PM'] || ''}`;
+    const entriesSig = (['1PM', '6PM', '8PM'] as SessionId[])
+      .map((sid) =>
+        (curState.entries[sid] || [])
+          .filter((r) => !isRowBlank(r))
+          .map((r) => `${r.id}:${r.name}:${r.item}:${r.start}:${r.end}:${r.qtyOverride}`)
+          .join(',')
+      )
+      .join('||');
+    return `${curState.date}##${sellersSig}##${winSig}##${entriesSig}`;
+  }, []);
+
+  const cascadeRestoredEdit = useCallback(
+    (
+      editedRestoredSnap: DaySnapshot,
+      mode: AdminRestoredArchiveMode,
+      currentHistory: DaySnapshot[]
+    ): {
+      nextHistory: DaySnapshot[];
+      updatedLiveSellers: Seller[];
+      cascadedSnapshots: DaySnapshot[];
+    } => {
+      const nextHistory = [...currentHistory];
+      const existingRestoredIdx = nextHistory.findIndex(
+        (h) =>
+          (mode.restoredSnapId && h.id === mode.restoredSnapId) ||
+          h.date === editedRestoredSnap.date
+      );
+      const existingBaselineSnap =
+        existingRestoredIdx !== -1 ? nextHistory[existingRestoredIdx] : undefined;
+
+      // Baseline pre-edit totals on restoredDate
+      const baselinePrevTotals: Record<string, number> = {};
+      if (mode.restoredOriginalTotals) {
+        Object.assign(baselinePrevTotals, mode.restoredOriginalTotals);
+      } else if (existingBaselineSnap) {
+        for (const sum of existingBaselineSnap.sellerSummaries || []) {
+          const k = (sum.name || '').trim().toUpperCase();
+          if (k) baselinePrevTotals[k] = round2(sum.total);
+        }
+      }
+
+      // New edited totals on restoredDate
+      let prevOldTotals: Record<string, number> = { ...baselinePrevTotals };
+      let prevNewTotals: Record<string, number> = {};
+      for (const sum of editedRestoredSnap.sellerSummaries || []) {
+        const k = (sum.name || '').trim().toUpperCase();
+        if (k) prevNewTotals[k] = round2(sum.total);
+      }
+
+      if (existingRestoredIdx !== -1) {
+        nextHistory[existingRestoredIdx] = editedRestoredSnap;
+      } else {
+        nextHistory.unshift(editedRestoredSnap);
+      }
+
+      const cascadedSnapshots: DaySnapshot[] = [editedRestoredSnap];
+
+      // Cascade through any intermediate archived dates strictly between restoredDate and liveDate
+      const intermediateOriginals = (
+        mode.intermediateOriginalHistory && mode.intermediateOriginalHistory.length > 0
+          ? mode.intermediateOriginalHistory
+          : currentHistory.filter(
+              (h) => h.date > editedRestoredSnap.date && h.date < mode.liveDate
+            )
+      )
+        .slice()
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      for (const origInter of intermediateOriginals) {
+        const nextOldTotals: Record<string, number> = {};
+        const nextNewTotals: Record<string, number> = {};
+
+        const updatedInterSellers = (origInter.sellers || []).map((s) => {
+          const k = (s.name || '').trim().toUpperCase();
+          const oldPrev = prevOldTotals[k] ?? 0;
+          const newPrev = prevNewTotals[k] ?? 0;
+          if (Math.abs(newPrev - oldPrev) < 0.001) return s;
+          const { due, joma } = applyCarryForwardDelta(s.due, s.joma, oldPrev, newPrev);
+          return { ...s, due, joma };
+        });
+
+        const updatedInterSummaries = (origInter.sellerSummaries || []).map((sum) => {
+          const k = (sum.name || '').trim().toUpperCase();
+          const oldTotal = round2(sum.total);
+          if (k) nextOldTotals[k] = oldTotal;
+          const oldPrev = prevOldTotals[k] ?? 0;
+          const newPrev = prevNewTotals[k] ?? 0;
+          if (Math.abs(newPrev - oldPrev) < 0.001) {
+            if (k) nextNewTotals[k] = oldTotal;
+            return sum;
+          }
+          const { due, joma } = applyCarryForwardDelta(sum.due, sum.joma, oldPrev, newPrev);
+          const newTotal = round2(sum.fresh + due - joma);
+          if (k) nextNewTotals[k] = newTotal;
+          return { ...sum, due, joma, total: newTotal };
+        });
+
+        const updatedInterSnap: DaySnapshot = {
+          ...origInter,
+          sellers: updatedInterSellers,
+          sellerSummaries: updatedInterSummaries,
+          totalNetPayable: round2(updatedInterSummaries.reduce((a, b) => a + b.total, 0)),
+        };
+
+        const idx = nextHistory.findIndex(
+          (h) => h.id === origInter.id || h.date === origInter.date
+        );
+        if (idx !== -1) {
+          nextHistory[idx] = updatedInterSnap;
+        }
+        cascadedSnapshots.push(updatedInterSnap);
+        prevOldTotals = nextOldTotals;
+        prevNewTotals = nextNewTotals;
+      }
+
+      // Finally cascade carried-forward Due/Joma into Current Day (liveDate) sellers without touching live entries
+      const baseLiveSellers = mode.liveOriginalSellers || mode.liveBackup.sellers || [];
+      const updatedLiveSellers = baseLiveSellers.map((s) => {
+        const k = (s.name || '').trim().toUpperCase();
+        const oldPrev = prevOldTotals[k] ?? 0;
+        const newPrev = prevNewTotals[k] ?? 0;
+        if (Math.abs(newPrev - oldPrev) < 0.001) return s;
+        const { due, joma } = applyCarryForwardDelta(s.due, s.joma, oldPrev, newPrev);
+        return { ...s, due, joma };
+      });
+
+      return {
+        nextHistory: preserveSavedSnapshots(nextHistory).slice(0, 180),
+        updatedLiveSellers,
+        cascadedSnapshots,
+      };
+    },
+    [applyCarryForwardDelta]
+  );
+
+  const pushRestoredCascadeToCloud = useCallback(
+    async (
+      nextHistory: DaySnapshot[],
+      recycleBin: DaySnapshot[],
+      cascadedSnapshots: DaySnapshot[],
+      updatedLiveSellers: Seller[],
+      configSnapshot: AgencyConfig
+    ) => {
+      if (cloudSession.kind !== 'admin' || !authUser || !cloudAgencyRef.current) return;
+      const agencyId = cloudSession.agencyId;
+      const ownerUid = cloudSession.ownerUid;
+      const adminUids = cloudAgencyRef.current.adminUids;
+
+      setRestoredSyncState('syncing');
+      try {
+        // 1. Save Admin's updated archive history to Admin Cloud Vault
+        await syncAdminArchivesCloud(
+          ownerUid,
+          adminUids,
+          nextHistory,
+          recycleBin,
+          adminArchiveSigsRef.current,
+          adminArchiveDocIdsRef.current,
+          agencyId
+        ).catch(() => {});
+
+        // 2. Propagate every edited/cascaded archive date to ALL Master, Sub-Master & Seller partyArchives
+        for (const snap of cascadedSnapshots) {
+          await syncAdminRestoredArchiveToPartiesCloud(
+            agencyId,
+            ownerUid,
+            snap.date,
+            snap,
+            cloudPartiesRef.current,
+            configSnapshot
+          ).catch(() => {});
+        }
+
+        // 3. Update affected top-level Masters / Sellers' LIVE Current Day Due & Joma in Firestore
+        //    (strictly due & joma only — current day date, sheets & winning numbers remain untouched!)
+        const liveByUpper = new Map<string, Seller>();
+        for (const s of updatedLiveSellers) {
+          const k = (s.name || '').trim().toUpperCase();
+          if (k) liveByUpper.set(k, s);
+        }
+        const directParties = cloudPartiesRef.current.filter(
+          (p) => p.active && !p.parentMasterId && p.role !== 'admin'
+        );
+        for (const party of directParties) {
+          const k = (party.name || '').trim().toUpperCase();
+          const target = liveByUpper.get(k);
+          if (!target) continue;
+          const nextDue = round2(target.due || 0);
+          const nextJoma = round2(target.joma || 0);
+          if (
+            Math.abs((party.due || 0) - nextDue) < 0.001 &&
+            Math.abs((party.joma || 0) - nextJoma) < 0.001
+          ) {
+            continue;
+          }
+          await updatePartyBalancesAdminCloud(agencyId, party.partyId, nextDue, nextJoma).catch(
+            () => {}
+          );
+        }
+
+        setRestoredSyncState('synced');
+      } catch {
+        setRestoredSyncState('idle');
+      }
+    },
+    [cloudSession, authUser]
+  );
+
+  // Admin-only Restored Archive Auto-Sync:
+  // Whenever Admin edits Joma, Due, Rate, Entries, or Winning numbers on a restored date (e.g. 24/11),
+  // automatically update Admin Archive, every Master/Sub-Master/Seller's Archive for that date,
+  // AND cleanly cascade the carry-forward Due/Joma adjustment to Current Day (liveDate) without touching live entries!
+  useEffect(() => {
+    if (!adminRestoredMode || state.date !== adminRestoredMode.restoredDate) return;
+
+    const sig = serializeRestoredWorkingSig(state);
+    if (!lastRestoredEditSigRef.current) {
+      lastRestoredEditSigRef.current = sig;
+      return;
+    }
+    if (sig === lastRestoredEditSigRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      const mode = adminRestoredModeRef.current;
+      const cur = latestStateRef.current;
+      if (!mode || cur.date !== mode.restoredDate) return;
+
+      const latestSig = serializeRestoredWorkingSig(cur);
+      if (latestSig === lastRestoredEditSigRef.current) return;
+      lastRestoredEditSigRef.current = latestSig;
+
+      const existingSnap = cur.history.find(
+        (h) => (mode.restoredSnapId && h.id === mode.restoredSnapId) || h.date === mode.restoredDate
+      );
+      const editedSnap = buildExactSnapshotFromState(
+        cur,
+        mode.restoredTrigger || existingSnap?.trigger || 'manual',
+        mode.restoredSnapId || existingSnap?.id,
+        existingSnap?.savedAt
+      );
+
+      const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
+        editedSnap,
+        mode,
+        cur.history
+      );
+
+      // Persist updated liveBackup.sellers in restored mode so reload/Back-to-Live has exact current-day Due/Joma
+      updateAdminRestoredMode({
+        ...mode,
+        restoredSnapId: editedSnap.id,
+        liveBackup: {
+          ...mode.liveBackup,
+          sellers: updatedLiveSellers,
+        },
+      });
+
+      setState((prev) => ({
+        ...prev,
+        history: nextHistory,
+      }));
+
+      void pushRestoredCascadeToCloud(
+        nextHistory,
+        cur.recycleBin || [],
+        cascadedSnapshots,
+        updatedLiveSellers,
+        cur.config
+      );
+    }, 650);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    adminRestoredMode,
+    state.date,
+    state.sellers,
+    state.entries,
+    state.winningRaw,
+    serializeRestoredWorkingSig,
+    buildExactSnapshotFromState,
+    cascadeRestoredEdit,
+    updateAdminRestoredMode,
+    pushRestoredCascadeToCloud,
+    setState,
+  ]);
+
   const handleExitAdminRestoredMode = () => {
     if (!adminRestoredMode) return;
     AppSounds.tap();
-    const { liveBackup, liveDate } = adminRestoredMode;
-    const editedRestoredSnap = buildCurrentSnapshot('manual');
+    const mode = adminRestoredModeRef.current || adminRestoredMode;
+    const { liveBackup, liveDate } = mode;
+    const cur = latestStateRef.current;
+    const existingSnap = cur.history.find(
+      (h) => (mode.restoredSnapId && h.id === mode.restoredSnapId) || h.date === mode.restoredDate
+    );
+    const editedRestoredSnap = buildExactSnapshotFromState(
+      cur,
+      mode.restoredTrigger || existingSnap?.trigger || 'manual',
+      mode.restoredSnapId || existingSnap?.id,
+      existingSnap?.savedAt
+    );
+    const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
+      editedRestoredSnap,
+      mode,
+      cur.history
+    );
+
+    const latestSig = serializeRestoredWorkingSig(cur);
+    const hadUnsyncedEdit =
+      Boolean(lastRestoredEditSigRef.current) && latestSig !== lastRestoredEditSigRef.current;
 
     // Clear restored flag FIRST so cloud live sync can resume cleanly on the live date
+    lastRestoredEditSigRef.current = '';
+    setRestoredSyncState('idle');
     updateAdminRestoredMode(null);
     const today = getTodayIsoDate();
     skipAutoRolloverDateRef.current = liveDate < today ? liveDate : null;
@@ -3043,19 +3458,13 @@ export default function App() {
     sheetsHydratedOnceRef.current = false;
 
     setState((prev) => {
-      const nextHistory = [...prev.history];
-      const restoredIdx = nextHistory.findIndex((h) => h.date === editedRestoredSnap.date);
-      if (restoredIdx !== -1) {
-        nextHistory[restoredIdx] = editedRestoredSnap;
-      }
-
       const preservedCurrentSellers = prev.sellers.map((s) => ({
         ...s,
         due: 0,
         joma: 0,
       }));
       const mergedLiveSellers = mergeWithPermanentSellers(
-        liveBackup.sellers,
+        updatedLiveSellers,
         preservedCurrentSellers
       );
 
@@ -3073,9 +3482,19 @@ export default function App() {
           '8PM': normalizeRowsKeepOneTrailing(liveBackup.entries['8PM'] || []),
         },
         winningRaw: liveBackup.winningRaw,
-        history: preserveSavedSnapshots(nextHistory).slice(0, 180),
+        history: nextHistory,
       };
     });
+
+    if (hadUnsyncedEdit) {
+      void pushRestoredCascadeToCloud(
+        nextHistory,
+        cur.recycleBin || [],
+        cascadedSnapshots,
+        updatedLiveSellers,
+        cur.config
+      );
+    }
 
     setRecentlyPastedIds({ '1PM': [], '6PM': [], '8PM': [] });
     setSessionHistory({
@@ -3083,7 +3502,9 @@ export default function App() {
       '6PM': { undo: [], redo: [] },
       '8PM': { undo: [], redo: [] },
     });
-    showToast(`Back to Live (${formatDateDDMM(liveDate)}) · Master/Sub-Master live sync resumed`);
+    showToast(
+      `Back to Live (${formatDateDDMM(liveDate)}) · Archive & Current Day Due/Joma synced`
+    );
   };
 
   const performArchiveAndRollover = (
@@ -3510,21 +3931,85 @@ export default function App() {
       state.sellers.some((s) => s.due !== 0 || s.joma !== 0);
 
     const currentDayBackup =
-      switchingDates && hasWorkingDayData ? buildCurrentSnapshot('manual') : null;
+      !adminRestoredMode && switchingDates && hasWorkingDayData
+        ? buildExactSnapshotFromState(latestStateRef.current, 'manual')
+        : null;
 
-    // Enter (or stay in) Admin-only Restored Archive mode BEFORE mutating state so
-    // NO cloud sync effect pushes this restored date/entries/due/joma to Master or Sub-Master!
+    // Build baseline totals for the target archive date so edits cascade idempotently
+    const buildTotalsMap = (targetSnap: DaySnapshot): Record<string, number> => {
+      const map: Record<string, number> = {};
+      for (const sum of targetSnap.sellerSummaries || []) {
+        const k = (sum.name || '').trim().toUpperCase();
+        if (k) map[k] = round2(sum.total);
+      }
+      return map;
+    };
+
+    // Reset edit sig so initial load of the restored date does not trigger a spurious sync
+    lastRestoredEditSigRef.current = '';
+    setRestoredSyncState('idle');
+
+    // Enter (or switch within) Admin-only Restored Archive mode BEFORE mutating state so
+    // NO live cloud sync effect overwrites Master or Sub-Master current-day sheets/date!
     if (!adminRestoredMode) {
-      const liveSnapshot = buildCurrentSnapshot('manual');
+      const liveSnapshot = buildExactSnapshotFromState(latestStateRef.current, 'manual');
+      const intermediates = state.history.filter(
+        (h) => h.date > snap.date && h.date < state.date
+      );
       updateAdminRestoredMode({
         restoredDate: snap.date,
+        restoredSnapId: snap.id,
+        restoredTrigger: snap.trigger,
+        restoredOriginalTotals: buildTotalsMap(snap),
         liveDate: state.date,
         liveBackup: liveSnapshot,
+        liveOriginalSellers: liveSnapshot.sellers,
+        intermediateOriginalHistory: intermediates,
       });
     } else {
+      // Flush any unsynced edits from the previously viewed restored date before switching
+      const cur = latestStateRef.current;
+      const prevExisting = cur.history.find(
+        (h) =>
+          (adminRestoredMode.restoredSnapId && h.id === adminRestoredMode.restoredSnapId) ||
+          h.date === adminRestoredMode.restoredDate
+      );
+      const editedPrevSnap = buildExactSnapshotFromState(
+        cur,
+        adminRestoredMode.restoredTrigger || prevExisting?.trigger || 'manual',
+        adminRestoredMode.restoredSnapId || prevExisting?.id,
+        prevExisting?.savedAt
+      );
+      const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
+        editedPrevSnap,
+        adminRestoredMode,
+        cur.history
+      );
+      void pushRestoredCascadeToCloud(
+        nextHistory,
+        cur.recycleBin || [],
+        cascadedSnapshots,
+        updatedLiveSellers,
+        cur.config
+      );
+
+      const refreshedTarget =
+        nextHistory.find((h) => h.id === snap.id || h.date === snap.date) || snap;
+      const intermediates = nextHistory.filter(
+        (h) => h.date > refreshedTarget.date && h.date < adminRestoredMode.liveDate
+      );
       updateAdminRestoredMode({
         ...adminRestoredMode,
-        restoredDate: snap.date,
+        restoredDate: refreshedTarget.date,
+        restoredSnapId: refreshedTarget.id,
+        restoredTrigger: refreshedTarget.trigger,
+        restoredOriginalTotals: buildTotalsMap(refreshedTarget),
+        liveBackup: {
+          ...adminRestoredMode.liveBackup,
+          sellers: updatedLiveSellers,
+        },
+        liveOriginalSellers: updatedLiveSellers,
+        intermediateOriginalHistory: intermediates,
       });
     }
 
@@ -3575,8 +4060,8 @@ export default function App() {
     });
     setActiveTab('Seller Bill');
     showToast(
-      `Restored ${formatDateDDMM(snap.date)} (Sirf Admin view · Master/Sub-Master live data unchanged)`,
-      5000
+      `Restored ${formatDateDDMM(snap.date)} · Admin edits auto-sync All Master/Sub-Master Archives & Live Due/Joma`,
+      5200
     );
   };
 
@@ -4121,8 +4606,19 @@ export default function App() {
                 Restored Archive · {formatDateDDMM(state.date)}
               </span>
               <span className="text-indigo-800 font-medium">
-                {' '}· Sirf Admin view (Master / Sub-Master live data safe)
+                {' '}· Admin edits auto-sync All Master/Sub-Master Archives &amp; Live{' '}
+                {formatDateDDMM(adminRestoredMode.liveDate)} Due/Joma
               </span>
+              {restoredSyncState === 'syncing' && (
+                <span className="ml-2 text-[11px] font-bold text-indigo-700">
+                  Syncing...
+                </span>
+              )}
+              {restoredSyncState === 'synced' && (
+                <span className="ml-2 text-[11px] font-bold text-emerald-700">
+                  All Synced ✓
+                </span>
+              )}
             </div>
           </div>
           <button

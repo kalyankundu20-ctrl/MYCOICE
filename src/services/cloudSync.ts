@@ -14,7 +14,25 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
-import { AppState, DaySnapshot, Seller, SellerBillRow, SessionId, TicketEntryRow } from '../types/ledger';
+import {
+  computeSellerBills,
+  generatePrizeAndLimitData,
+  parseWinningNumbers,
+  processSessionRows,
+  round2,
+} from '../engine/calculations';
+import {
+  AgencyConfig,
+  AppState,
+  ArchivedSellerSummary,
+  DaySnapshot,
+  PrizeListRow,
+  Seller,
+  SellerBillRow,
+  SessionComputation,
+  SessionId,
+  TicketEntryRow,
+} from '../types/ledger';
 
 export const AGENCY_ID = 'kk-main';
 export const BOOTSTRAP_ADMIN_EMAIL = 'kalyankundu20@gmail.com';
@@ -2881,6 +2899,542 @@ export function subscribePartyArchives(
       // Keep local cached archives visible if offline or permission refresh pending
     }
   );
+}
+
+/**
+ * Admin-only lightweight balance update on a party's current-day live document
+ * (updates ONLY due, joma, updatedAt so live entries/date/winning remain 100% untouched).
+ */
+export async function updatePartyBalancesAdminCloud(
+  agencyId: string,
+  partyId: string,
+  due: number,
+  joma: number
+): Promise<void> {
+  const safeDue = Math.max(-100000000, Math.min(100000000, round2(Number(due) || 0)));
+  const safeJoma = Math.max(-100000000, Math.min(100000000, round2(Number(joma) || 0)));
+  const ref = doc(db, 'agencies', agencyId, 'parties', partyId);
+  try {
+    await updateDoc(ref, {
+      due: safeDue,
+      joma: safeJoma,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, ref.path);
+  }
+}
+
+function isTicketEntryRowBlank(r: TicketEntryRow | undefined | null): boolean {
+  if (!r) return true;
+  return (
+    !String(r.name || '').trim() &&
+    !String(r.item || '').trim() &&
+    !String(r.start || '').trim() &&
+    !String(r.end || '').trim() &&
+    !String(r.qtyOverride || '').trim()
+  );
+}
+
+/**
+ * Propagates Admin's edits on a restored archive date (e.g. Joma, Due, Rate, Entries, Winning Numbers)
+ * to EVERY active Master, Sub-Master, Direct Seller, and Sub-Seller's `partyArchives` for that date.
+ * - Updates existing `partyArchives` docs in-place (preserving each Master's sub-seller chain).
+ * - Creates missing `partyArchives` docs if a party has data for that date.
+ */
+export async function syncAdminRestoredArchiveToPartiesCloud(
+  agencyId: string,
+  ownerUid: string,
+  restoredDate: string,
+  editedAdminSnap: DaySnapshot,
+  parties: CloudPartyDoc[],
+  config: AgencyConfig
+): Promise<number> {
+  const cleanDate = sanitizeIsoDate(restoredDate);
+  const activeParties = parties.filter((p) => p.active && p.role !== 'admin');
+  if (activeParties.length === 0) return 0;
+
+  // Query all partyArchives for this agency owned by ownerUid (single-field index, rule-safe)
+  const q = query(
+    collection(db, 'agencies', agencyId, 'partyArchives'),
+    where('ownerUid', '==', ownerUid)
+  );
+  const existingByPartyId = new Map<string, Array<{ docId: string; data: CloudPartyArchiveDoc }>>();
+  try {
+    const snap = await getDocs(q);
+    for (const d of snap.docs) {
+      const data = d.data() as CloudPartyArchiveDoc;
+      if (!data || !data.partyId) continue;
+      const docDate = data.date || data.payload?.date || '';
+      if (docDate !== cleanDate) continue;
+      const list = existingByPartyId.get(data.partyId) || [];
+      list.push({ docId: d.id, data });
+      existingByPartyId.set(data.partyId, list);
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyArchives`);
+  }
+
+  // Fast lookups from Admin's freshly edited restored snapshot
+  const adminSummaryByName = new Map<string, ArchivedSellerSummary>();
+  for (const sum of editedAdminSnap.sellerSummaries || []) {
+    const key = (sum.name || '').trim().toUpperCase();
+    if (key) adminSummaryByName.set(key, sum);
+  }
+  const adminSellerByName = new Map<string, Seller>();
+  for (const s of editedAdminSnap.sellers || []) {
+    const key = (s.name || '').trim().toUpperCase();
+    if (key) adminSellerByName.set(key, s);
+  }
+  const adminPrizesByName = new Map<string, PrizeListRow[]>();
+  for (const pr of editedAdminSnap.prizeList || []) {
+    const key = (pr.name || '').trim().toUpperCase();
+    if (!key) continue;
+    const list = adminPrizesByName.get(key) || [];
+    list.push(pr);
+    adminPrizesByName.set(key, list);
+  }
+
+  const topOwnRowsByName = new Map<string, Record<SessionId, TicketEntryRow[]>>();
+  const subRowsByPartyId = new Map<string, Record<SessionId, TicketEntryRow[]>>();
+  const ensureBucket = (
+    map: Map<string, Record<SessionId, TicketEntryRow[]>>,
+    key: string
+  ): Record<SessionId, TicketEntryRow[]> => {
+    let b = map.get(key);
+    if (!b) {
+      b = { '1PM': [], '6PM': [], '8PM': [] };
+      map.set(key, b);
+    }
+    return b;
+  };
+
+  for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+    const rows = editedAdminSnap.entries?.[sid] || [];
+    let lastResolved = '';
+    for (const r of rows) {
+      if (isTicketEntryRowBlank(r)) continue;
+      const explicit = (r.name || '').trim();
+      const resolved = explicit || lastResolved;
+      if (explicit) lastResolved = explicit;
+      if (r.id && r.id.startsWith('sub::')) {
+        const parts = r.id.split('::');
+        const subPid = parts[1] || '';
+        const origId = parts.slice(2).join('::') || r.id;
+        if (subPid) {
+          ensureBucket(subRowsByPartyId, subPid)[sid].push({
+            ...r,
+            id: origId,
+          });
+        }
+      } else if (resolved) {
+        ensureBucket(topOwnRowsByName, resolved.toUpperCase())[sid].push({
+          ...r,
+          name: resolved,
+        });
+      }
+    }
+  }
+
+  const winningRaw: Record<SessionId, string> = {
+    '1PM': editedAdminSnap.winningRaw?.['1PM'] || '',
+    '6PM': editedAdminSnap.winningRaw?.['6PM'] || '',
+    '8PM': editedAdminSnap.winningRaw?.['8PM'] || '',
+  };
+  const parsedWinning = parseWinningNumbers(winningRaw);
+
+  const directChildrenByParentId = new Map<string, CloudPartyDoc[]>();
+  for (const p of activeParties) {
+    if (!p.parentMasterId) continue;
+    const list = directChildrenByParentId.get(p.parentMasterId) || [];
+    list.push(p);
+    directChildrenByParentId.set(p.parentMasterId, list);
+  }
+
+  const getDescendants = (rootPartyId: string): CloudPartyDoc[] => {
+    const result: CloudPartyDoc[] = [];
+    const seen = new Set<string>([rootPartyId]);
+    const qIds = [rootPartyId];
+    while (qIds.length > 0) {
+      const cur = qIds.shift()!;
+      for (const child of directChildrenByParentId.get(cur) || []) {
+        if (seen.has(child.partyId)) continue;
+        seen.add(child.partyId);
+        result.push(child);
+        qIds.push(child.partyId);
+      }
+    }
+    return result;
+  };
+
+  let syncedCount = 0;
+
+  for (const party of activeParties) {
+    const partyUpper = (party.name || '').trim().toUpperCase();
+    const isTopLevel = !party.parentMasterId;
+    const directSubs = directChildrenByParentId.get(party.partyId) || [];
+    const descendants = party.role === 'master' ? getDescendants(party.partyId) : [];
+    const existingDocs = existingByPartyId.get(party.partyId) || [];
+
+    const adminSeller = isTopLevel ? adminSellerByName.get(partyUpper) : undefined;
+    const adminSummary = isTopLevel ? adminSummaryByName.get(partyUpper) : undefined;
+    const adminPrizes = isTopLevel ? adminPrizesByName.get(partyUpper) || [] : [];
+
+    const buildUpdatedPayloadForParty = (
+      existingSnap?: DaySnapshot
+    ): { payload: DaySnapshot; hasData: boolean } => {
+      const snapId =
+        existingSnap?.id ||
+        `snap-${party.partyId.slice(0, 14)}-${cleanDate.replace(/-/g, '')}`;
+
+      // Split existing snapshot entries into own vs sub::partyId:: buckets
+      const existingOwnEntries: Record<SessionId, TicketEntryRow[]> = {
+        '1PM': [],
+        '6PM': [],
+        '8PM': [],
+      };
+      const existingSubEntriesByPid = new Map<string, Record<SessionId, TicketEntryRow[]>>();
+      if (existingSnap?.entries) {
+        for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+          for (const r of existingSnap.entries[sid] || []) {
+            if (isTicketEntryRowBlank(r)) continue;
+            if (r.id && r.id.startsWith('sub::')) {
+              const parts = r.id.split('::');
+              const subPid = parts[1] || '';
+              const origId = parts.slice(2).join('::') || r.id;
+              if (subPid) {
+                ensureBucket(existingSubEntriesByPid, subPid)[sid].push({
+                  ...r,
+                  id: origId,
+                });
+              }
+            } else {
+              existingOwnEntries[sid].push(r);
+            }
+          }
+        }
+      }
+
+      // 1. Build party's own entries
+      const ownEntries: Record<SessionId, TicketEntryRow[]> = {
+        '1PM': [],
+        '6PM': [],
+        '8PM': [],
+      };
+      for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+        if (isTopLevel) {
+          const fromAdmin = topOwnRowsByName.get(partyUpper)?.[sid] || [];
+          ownEntries[sid] = fromAdmin.map((r) => ({ ...r, name: party.name }));
+        } else {
+          const fromAdminSub = subRowsByPartyId.get(party.partyId)?.[sid];
+          if (fromAdminSub && fromAdminSub.length > 0) {
+            ownEntries[sid] = fromAdminSub.map((r) => ({ ...r, name: party.name }));
+          } else {
+            ownEntries[sid] = existingOwnEntries[sid].map((r) => ({ ...r, name: party.name }));
+          }
+        }
+      }
+
+      // 2. Build merged entries (own + descendants tagged sub::dpId::)
+      const descendantEntriesByPid = new Map<string, Record<SessionId, TicketEntryRow[]>>();
+      for (const dp of descendants) {
+        const fromAdminSub = subRowsByPartyId.get(dp.partyId);
+        const fromExisting = existingSubEntriesByPid.get(dp.partyId);
+        const chosen: Record<SessionId, TicketEntryRow[]> = {
+          '1PM':
+            fromAdminSub && fromAdminSub['1PM'].length > 0
+              ? fromAdminSub['1PM']
+              : fromExisting?.['1PM'] || [],
+          '6PM':
+            fromAdminSub && fromAdminSub['6PM'].length > 0
+              ? fromAdminSub['6PM']
+              : fromExisting?.['6PM'] || [],
+          '8PM':
+            fromAdminSub && fromAdminSub['8PM'].length > 0
+              ? fromAdminSub['8PM']
+              : fromExisting?.['8PM'] || [],
+        };
+        descendantEntriesByPid.set(dp.partyId, chosen);
+      }
+
+      const mergedEntries: Record<SessionId, TicketEntryRow[]> = {
+        '1PM': [...ownEntries['1PM']],
+        '6PM': [...ownEntries['6PM']],
+        '8PM': [...ownEntries['8PM']],
+      };
+      const handledSubIds = new Set<string>();
+      for (const dp of descendants) {
+        handledSubIds.add(dp.partyId);
+        const bucket = descendantEntriesByPid.get(dp.partyId);
+        if (!bucket) continue;
+        for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+          for (const r of bucket[sid]) {
+            mergedEntries[sid].push({
+              ...r,
+              id: `sub::${dp.partyId}::${r.id}`,
+              name: dp.name,
+            });
+          }
+        }
+      }
+      // Preserve any historical sub:: entries for removed sub-sellers
+      for (const [subPid, bucket] of existingSubEntriesByPid.entries()) {
+        if (handledSubIds.has(subPid)) continue;
+        for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+          for (const r of bucket[sid]) {
+            mergedEntries[sid].push({
+              ...r,
+              id: `sub::${subPid}::${r.id}`,
+            });
+          }
+        }
+      }
+
+      // 3. Build updated sellers array (own party updated from Admin's restored edit; sub-sellers preserved)
+      const existingOwnSeller = (existingSnap?.sellers || []).find(
+        (s) => s.id === party.partyId || (s.name || '').trim().toUpperCase() === partyUpper
+      );
+      const updatedOwnSeller: Seller = {
+        id: party.partyId,
+        name: party.name,
+        mobile: '',
+        rate: adminSeller
+          ? adminSeller.rate
+          : existingOwnSeller
+            ? existingOwnSeller.rate
+            : party.rate,
+        due: adminSeller
+          ? adminSeller.due
+          : existingOwnSeller
+            ? existingOwnSeller.due
+            : party.due,
+        joma: adminSeller
+          ? adminSeller.joma
+          : existingOwnSeller
+            ? existingOwnSeller.joma
+            : party.joma,
+      };
+
+      const updatedSellers: Seller[] = [updatedOwnSeller];
+      const seenSellerIds = new Set<string>([party.partyId]);
+      const existingSubSellerMap = new Map<string, Seller>();
+      for (const s of existingSnap?.sellers || []) {
+        if (!s || s.id === party.partyId || (s.name || '').trim().toUpperCase() === partyUpper) {
+          continue;
+        }
+        existingSubSellerMap.set(s.id, s);
+      }
+      for (const dp of descendants) {
+        if (seenSellerIds.has(dp.partyId)) continue;
+        seenSellerIds.add(dp.partyId);
+        const prevSub = existingSubSellerMap.get(dp.partyId);
+        updatedSellers.push({
+          id: dp.partyId,
+          name: dp.name,
+          mobile: '',
+          rate: prevSub ? prevSub.rate : dp.rate,
+          due: prevSub ? prevSub.due : dp.due,
+          joma: prevSub ? prevSub.joma : dp.joma,
+        });
+      }
+      for (const [sidKey, prevSub] of existingSubSellerMap.entries()) {
+        if (seenSellerIds.has(sidKey)) continue;
+        seenSellerIds.add(sidKey);
+        updatedSellers.push(prevSub);
+      }
+
+      // 4. Build updated sellerSummaries & prizeList
+      let updatedSummaries: ArchivedSellerSummary[] = [];
+      let updatedPrizes: PrizeListRow[] = [];
+
+      if (party.role === 'master' && directSubs.length > 0) {
+        // Master / Sub-Master with Sub-Sellers: recompute sub-seller bills + own prizes against updated winning numbers
+        const ownComps: Record<SessionId, SessionComputation> = {
+          '1PM': processSessionRows(ownEntries['1PM'], '1PM', config),
+          '6PM': processSessionRows(ownEntries['6PM'], '6PM', config),
+          '8PM': processSessionRows(ownEntries['8PM'], '8PM', config),
+        };
+        const ownPrizeData = generatePrizeAndLimitData(ownComps, parsedWinning, config);
+        updatedPrizes.push(...ownPrizeData.prizeList);
+
+        for (const sp of directSubs) {
+          const spBranchIds = new Set<string>([sp.partyId]);
+          const spDescendants = getDescendants(sp.partyId);
+          for (const d of spDescendants) spBranchIds.add(d.partyId);
+
+          const collectBranchRows = (sid: SessionId): TicketEntryRow[] => {
+            const out: TicketEntryRow[] = [];
+            for (const bid of spBranchIds) {
+              const bucket = descendantEntriesByPid.get(bid);
+              for (const r of bucket?.[sid] || []) {
+                out.push({
+                  ...r,
+                  id: `branch::${bid}::${r.id}`,
+                  name: sp.name,
+                });
+              }
+            }
+            return out;
+          };
+
+          const spComps: Record<SessionId, SessionComputation> = {
+            '1PM': processSessionRows(collectBranchRows('1PM'), '1PM', config),
+            '6PM': processSessionRows(collectBranchRows('6PM'), '6PM', config),
+            '8PM': processSessionRows(collectBranchRows('8PM'), '8PM', config),
+          };
+          const spPrizeData = generatePrizeAndLimitData(spComps, parsedWinning, config);
+          updatedPrizes.push(...spPrizeData.prizeList);
+
+          const spSeller =
+            updatedSellers.find((s) => s.id === sp.partyId) || {
+              id: sp.partyId,
+              name: sp.name,
+              mobile: '',
+              rate: sp.rate,
+              due: sp.due,
+              joma: sp.joma,
+            };
+          const [spBill] = computeSellerBills([spSeller], spComps, spPrizeData.prizeList, cleanDate);
+          if (spBill) {
+            updatedSummaries.push({
+              name: spBill.name,
+              mor: spBill.mor,
+              day: spBill.day,
+              eve: spBill.eve,
+              sold: spBill.sold,
+              bill: spBill.bill,
+              prizeTotal: spBill.prizeTotal,
+              fresh: spBill.fresh,
+              joma: spBill.joma,
+              due: spBill.due,
+              total: spBill.total,
+            });
+          }
+        }
+
+        // If no sub-seller had any activity on this date and Admin has a summary for this Master, show Master's Admin summary
+        const subsHaveActivity = updatedSummaries.some(
+          (s) => s.sold > 0 || s.bill !== 0 || s.prizeTotal !== 0 || s.due !== 0 || s.joma !== 0
+        );
+        if (!subsHaveActivity && adminSummary) {
+          updatedSummaries = [adminSummary];
+          if (adminPrizes.length > 0) {
+            updatedPrizes = adminPrizes;
+          }
+        }
+      } else if (isTopLevel && adminSummary) {
+        // Top-level Direct Seller or Master without sub-sellers: mirror Admin's exact edited summary & prizes
+        updatedSummaries = [adminSummary];
+        updatedPrizes = adminPrizes;
+      } else {
+        // Sub-Seller / Leaf party: recompute own bill with updated entries + winning numbers
+        const ownComps: Record<SessionId, SessionComputation> = {
+          '1PM': processSessionRows(ownEntries['1PM'], '1PM', config),
+          '6PM': processSessionRows(ownEntries['6PM'], '6PM', config),
+          '8PM': processSessionRows(ownEntries['8PM'], '8PM', config),
+        };
+        const ownPrizeData = generatePrizeAndLimitData(ownComps, parsedWinning, config);
+        updatedPrizes = ownPrizeData.prizeList;
+        const [ownBill] = computeSellerBills([updatedOwnSeller], ownComps, updatedPrizes, cleanDate);
+        if (ownBill) {
+          updatedSummaries = [
+            {
+              name: ownBill.name,
+              mor: ownBill.mor,
+              day: ownBill.day,
+              eve: ownBill.eve,
+              sold: ownBill.sold,
+              bill: ownBill.bill,
+              prizeTotal: ownBill.prizeTotal,
+              fresh: ownBill.fresh,
+              joma: ownBill.joma,
+              due: ownBill.due,
+              total: ownBill.total,
+            },
+          ];
+        }
+      }
+
+      const totalSold = round2(updatedSummaries.reduce((a, b) => a + b.sold, 0));
+      const totalBill = round2(updatedSummaries.reduce((a, b) => a + b.bill, 0));
+      const totalPrize = round2(updatedSummaries.reduce((a, b) => a + b.prizeTotal, 0));
+      const totalNetPayable = round2(updatedSummaries.reduce((a, b) => a + b.total, 0));
+
+      const hasData =
+        updatedOwnSeller.due !== 0 ||
+        updatedOwnSeller.joma !== 0 ||
+        updatedSummaries.some(
+          (s) => s.sold > 0 || s.bill !== 0 || s.prizeTotal !== 0 || s.due !== 0 || s.joma !== 0
+        ) ||
+        mergedEntries['1PM'].length > 0 ||
+        mergedEntries['6PM'].length > 0 ||
+        mergedEntries['8PM'].length > 0;
+
+      const rawSnap: DaySnapshot = {
+        id: snapId,
+        date: cleanDate,
+        savedAt: existingSnap?.savedAt || editedAdminSnap.savedAt || new Date().toISOString(),
+        trigger: existingSnap?.trigger || editedAdminSnap.trigger || 'manual',
+        totalSold,
+        totalBill,
+        totalPrize,
+        totalNetPayable,
+        limitGrandTotal: 0,
+        overLimitTotals: { '1PM': 0, '6PM': 0, '8PM': 0 },
+        sellerSummaries: updatedSummaries,
+        prizeList: updatedPrizes,
+        limitPrizeGroups: [],
+        sellers: updatedSellers,
+        entries: mergedEntries,
+        winningRaw,
+      };
+
+      return {
+        payload: sanitizePartyArchivePayload(rawSnap, snapId, cleanDate),
+        hasData,
+      };
+    };
+
+    if (existingDocs.length > 0) {
+      for (const item of existingDocs) {
+        const existingSnap: DaySnapshot = {
+          ...item.data.payload,
+          id: item.data.snapshotId || item.docId,
+          date: item.data.date || cleanDate,
+          savedAt: item.data.savedAt || item.data.payload.savedAt,
+          trigger: item.data.trigger || item.data.payload.trigger || 'manual',
+        };
+        const { payload } = buildUpdatedPayloadForParty(existingSnap);
+        const prevSig = JSON.stringify(item.data.payload);
+        const nextSig = JSON.stringify(payload);
+        if (prevSig === nextSig) continue;
+
+        const ref = doc(db, 'agencies', agencyId, 'partyArchives', item.docId);
+        try {
+          await updateDoc(ref, {
+            payload,
+            updatedAt: serverTimestamp(),
+          });
+          syncedCount++;
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, ref.path);
+        }
+      }
+    } else if (isTopLevel && (adminSummary || adminSeller)) {
+      // Party had no archive doc yet for this date — create one if they have data
+      const { payload, hasData } = buildUpdatedPayloadForParty(undefined);
+      if (hasData) {
+        try {
+          await savePartyArchiveCloud(ownerUid, party, payload, true);
+          syncedCount++;
+        } catch {
+          // Best-effort creation for parties without an existing archive doc
+        }
+      }
+    }
+  }
+
+  return syncedCount;
 }
 
 export async function carryForwardSubSellerBalancesCloud(
