@@ -1640,6 +1640,35 @@ export function subscribeAdminSheets(
 }
 
 /**
+ * One-shot fetch of all agency parties & live sheets (used as a safety net during Day Close
+ * if live listeners haven't populated yet).
+ */
+export async function fetchAdminPartiesAndSheetsOnce(
+  ownerUid: string,
+  agencyId = AGENCY_ID
+): Promise<{ parties: CloudPartyDoc[]; sheets: CloudPartySheetDoc[] }> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  const [partiesSnap, sheetsSnap] = await Promise.all([
+    getDocs(
+      query(
+        collection(db, 'agencies', cleanAgencyId, 'parties'),
+        where('ownerUid', '==', ownerUid)
+      )
+    ),
+    getDocs(
+      query(
+        collection(db, 'agencies', cleanAgencyId, 'sheets'),
+        where('ownerUid', '==', ownerUid)
+      )
+    ),
+  ]);
+  return {
+    parties: partiesSnap.docs.map((d) => d.data() as CloudPartyDoc),
+    sheets: sheetsSnap.docs.map((d) => d.data() as CloudPartySheetDoc),
+  };
+}
+
+/**
  * Seller real-time single-document subscriptions (strictly isolated to own party & live agency winning numbers).
  */
 export function subscribeSellerPortal(
