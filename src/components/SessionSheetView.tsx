@@ -85,9 +85,10 @@ interface OverlayBoxRect {
   height: number;
 }
 
-const VIRTUAL_ROW_THRESHOLD = 80;
+const VIRTUAL_ROW_THRESHOLD = 45;
 const DEFAULT_VIRTUAL_ROW_HEIGHT = 44;
-const VIRTUAL_OVERSCAN = 16;
+const VIRTUAL_OVERSCAN = 14;
+const VIRTUAL_STEP_ROWS = 5;
 
 function findRowMetric(rows: RowMetric[], rowIdx: number): RowMetric | undefined {
   if (rows.length === 0) return undefined;
@@ -342,7 +343,7 @@ const VirtualSheetTableRow = memo(function VirtualSheetTableRow({
     <tr
       data-row-id={row.id}
       data-row-idx={visibleIdx}
-      className={`transition-colors ${
+      className={`${
         isActiveSearchMatch
           ? 'bg-amber-100/95 ring-2 ring-inset ring-amber-500'
           : isOtherSearchMatch
@@ -716,9 +717,13 @@ export function SessionSheetView({
   const isMouseDraggingRef = useRef(false);
   const isHandleDraggingRef = useRef(false);
   const [isTouchDragging, setIsTouchDragging] = useState(false);
-  // Virtualization state for super-fast 15,000+ row rendering
-  const [virtualScrollTop, setVirtualScrollTop] = useState(0);
-  const [virtualViewportHeight, setVirtualViewportHeight] = useState(560);
+  // Virtualization state driven by the outer page scroller (zero frozen boxes, quantized for 0-re-render smooth scrolling)
+  const [virtualRange, setVirtualRange] = useState<{ startIdx: number; endIdx: number }>({
+    startIdx: 0,
+    endIdx: 60,
+  });
+  const virtualRangeRef = useRef<{ startIdx: number; endIdx: number }>(virtualRange);
+  virtualRangeRef.current = virtualRange;
   const [visibleCardsLimit, setVisibleCardsLimit] = useState(80);
   const scrollRafRef = useRef<number | null>(null);
   const suppressFocusAnchorRef = useRef(false);
@@ -974,21 +979,13 @@ export function SessionSheetView({
       }
 
       if (scrollDelta !== 0) {
-        const innerTableScroll = tableScrollRef.current;
-        if (
-          innerTableScroll &&
-          innerTableScroll.scrollHeight > innerTableScroll.clientHeight + 4
-        ) {
-          innerTableScroll.scrollTop += scrollDelta;
+        const scrollRoot = tableContainerRef.current?.closest(
+          '[data-kk-scroll-root="true"]'
+        ) as HTMLElement | null;
+        if (scrollRoot) {
+          scrollRoot.scrollTop += scrollDelta;
         } else {
-          const scrollRoot = tableContainerRef.current?.closest(
-            '[data-kk-scroll-root="true"]'
-          ) as HTMLElement | null;
-          if (scrollRoot) {
-            scrollRoot.scrollTop += scrollDelta;
-          } else {
-            window.scrollBy(0, scrollDelta);
-          }
+          window.scrollBy(0, scrollDelta);
         }
         dragRaf = window.requestAnimationFrame(stepDragFrame);
       }
@@ -1372,26 +1369,91 @@ export function SessionSheetView({
     setActiveMatchIdx(0);
   }, [trimmedSearch, statusFilter]);
 
-  // Reset virtualization scroll and Cards window when switching sessions or filters
-  useEffect(() => {
-    setVisibleCardsLimit(80);
-    setVirtualScrollTop(0);
-    if (tableScrollRef.current) {
-      tableScrollRef.current.scrollTop = 0;
-    }
-  }, [sessionId, statusFilter]);
-
-  useEffect(() => {
-    return () => {
-      if (scrollRafRef.current !== null) {
-        window.cancelAnimationFrame(scrollRafRef.current);
-      }
-    };
+  const getOuterScrollRoot = useCallback((): HTMLElement | null => {
+    return (
+      (tableContainerRef.current?.closest('[data-kk-scroll-root="true"]') as HTMLElement | null) ||
+      (document.querySelector('[data-kk-scroll-root="true"]') as HTMLElement | null)
+    );
   }, []);
 
   const isVirtualized = viewMode === 'table' && filteredRows.length > VIRTUAL_ROW_THRESHOLD;
   const commitDelayMs =
     filteredRows.length > 3000 ? 180 : filteredRows.length > 300 ? 110 : 0;
+
+  const syncOuterVirtualWindow = useCallback(() => {
+    const total = filteredRows.length;
+    if (total === 0) return;
+    const container = tableContainerRef.current;
+    const scrollRoot = getOuterScrollRoot();
+    if (!container) return;
+
+    const rootTop = scrollRoot ? scrollRoot.getBoundingClientRect().top : 0;
+    const viewportH = scrollRoot ? scrollRoot.clientHeight : window.innerHeight;
+    const theadH = theadRef.current ? theadRef.current.offsetHeight : 38;
+    const tbodyTopInViewport = container.getBoundingClientRect().top + theadH - rootTop;
+
+    const visibleTopInBody = Math.max(0, -tbodyTopInViewport);
+    const visibleBottomInBody = Math.max(0, viewportH - tbodyTopInViewport);
+    const rowH = DEFAULT_VIRTUAL_ROW_HEIGHT;
+    const maxIdx = total - 1;
+
+    const rawStart = Math.floor(visibleTopInBody / rowH) - VIRTUAL_OVERSCAN;
+    const quantizedStart = Math.max(
+      0,
+      Math.floor(rawStart / VIRTUAL_STEP_ROWS) * VIRTUAL_STEP_ROWS
+    );
+    const startIdx = Math.min(maxIdx, quantizedStart);
+
+    const rawEnd = Math.ceil(visibleBottomInBody / rowH) + VIRTUAL_OVERSCAN;
+    const quantizedEnd = Math.ceil(rawEnd / VIRTUAL_STEP_ROWS) * VIRTUAL_STEP_ROWS;
+    const minWindowEnd = startIdx + Math.ceil((viewportH || 640) / rowH) + VIRTUAL_OVERSCAN;
+    const endIdx = Math.min(maxIdx, Math.max(minWindowEnd, quantizedEnd));
+
+    const prev = virtualRangeRef.current;
+    if (prev.startIdx !== startIdx || prev.endIdx !== endIdx) {
+      const next = { startIdx, endIdx };
+      virtualRangeRef.current = next;
+      setVirtualRange(next);
+    }
+  }, [filteredRows.length, getOuterScrollRoot]);
+
+  // Reset virtualization window and Cards window when switching sessions or filters
+  useEffect(() => {
+    setVisibleCardsLimit(80);
+    const initialEnd = Math.min(Math.max(0, filteredRows.length - 1), 60);
+    const next = { startIdx: 0, endIdx: initialEnd };
+    virtualRangeRef.current = next;
+    setVirtualRange(next);
+  }, [sessionId, statusFilter]);
+
+  // Drive virtualization directly from the outer page scroller (passive listener + RAF, zero inner scroll trap)
+  useEffect(() => {
+    if (!isVirtualized) return;
+
+    syncOuterVirtualWindow();
+
+    const scrollRoot = getOuterScrollRoot();
+    const scrollTarget: HTMLElement | Window = scrollRoot || window;
+
+    const onScrollOrResize = () => {
+      if (scrollRafRef.current !== null) return;
+      scrollRafRef.current = window.requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        syncOuterVirtualWindow();
+      });
+    };
+
+    scrollTarget.addEventListener('scroll', onScrollOrResize, { passive: true });
+    window.addEventListener('resize', onScrollOrResize, { passive: true });
+    return () => {
+      scrollTarget.removeEventListener('scroll', onScrollOrResize);
+      window.removeEventListener('resize', onScrollOrResize);
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, [isVirtualized, getOuterScrollRoot, syncOuterVirtualWindow]);
 
   const virtualWindow = useMemo(() => {
     if (!isVirtualized) {
@@ -1402,42 +1464,50 @@ export function SessionSheetView({
         bottomSpacerPx: 0,
       };
     }
+    const maxIdx = Math.max(0, filteredRows.length - 1);
+    const startIdx = Math.max(0, Math.min(maxIdx, virtualRange.startIdx));
+    const endIdx = Math.max(startIdx, Math.min(maxIdx, virtualRange.endIdx));
     const rowH = DEFAULT_VIRTUAL_ROW_HEIGHT;
-    const rawStart = Math.floor(virtualScrollTop / rowH) - VIRTUAL_OVERSCAN;
-    const startIdx = Math.max(0, Math.min(filteredRows.length - 1, rawStart));
-    const visibleCount = Math.ceil((virtualViewportHeight || 560) / rowH) + VIRTUAL_OVERSCAN * 2;
-    const endIdx = Math.min(filteredRows.length - 1, startIdx + visibleCount);
     const topSpacerPx = startIdx * rowH;
-    const bottomSpacerPx = Math.max(0, (filteredRows.length - 1 - endIdx) * rowH);
+    const bottomSpacerPx = Math.max(0, (maxIdx - endIdx) * rowH);
     return { startIdx, endIdx, topSpacerPx, bottomSpacerPx };
-  }, [isVirtualized, filteredRows.length, virtualScrollTop, virtualViewportHeight]);
-
-  const handleTableScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const nextTop = el.scrollTop;
-    const nextHeight = el.clientHeight || 560;
-    if (scrollRafRef.current !== null) return;
-    scrollRafRef.current = window.requestAnimationFrame(() => {
-      scrollRafRef.current = null;
-      setVirtualScrollTop(nextTop);
-      setVirtualViewportHeight((prev) => (Math.abs(prev - nextHeight) > 8 ? nextHeight : prev));
-    });
-  }, []);
+  }, [isVirtualized, filteredRows.length, virtualRange.startIdx, virtualRange.endIdx]);
 
   const scrollSheetToEdge = useCallback(
     (edge: 'top' | 'bottom') => {
-      const el = tableScrollRef.current;
-      if (!el) return;
+      const scrollRoot = getOuterScrollRoot();
       if (edge === 'top') {
-        el.scrollTo({ top: 0, behavior: 'auto' });
-        setVirtualScrollTop(0);
+        if (scrollRoot) {
+          scrollRoot.scrollTo({ top: 0, behavior: 'auto' });
+        } else {
+          window.scrollTo({ top: 0, behavior: 'auto' });
+        }
+        const next = { startIdx: 0, endIdx: Math.min(Math.max(0, filteredRows.length - 1), 60) };
+        virtualRangeRef.current = next;
+        setVirtualRange(next);
       } else {
-        const targetTop = Math.max(0, filteredRows.length * DEFAULT_VIRTUAL_ROW_HEIGHT);
-        el.scrollTo({ top: targetTop, behavior: 'auto' });
-        setVirtualScrollTop(Math.max(0, el.scrollHeight - el.clientHeight));
+        const maxIdx = Math.max(0, filteredRows.length - 1);
+        const startIdx = Math.max(0, maxIdx - 50);
+        const next = { startIdx, endIdx: maxIdx };
+        virtualRangeRef.current = next;
+        setVirtualRange(next);
+        window.requestAnimationFrame(() => {
+          if (scrollRoot) {
+            scrollRoot.scrollTo({
+              top: Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight),
+              behavior: 'auto',
+            });
+          } else {
+            window.scrollTo({
+              top: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+              behavior: 'auto',
+            });
+          }
+          syncOuterVirtualWindow();
+        });
       }
     },
-    [filteredRows.length]
+    [filteredRows.length, getOuterScrollRoot, syncOuterVirtualWindow]
   );
 
   const nameOptionNodes = useMemo(
@@ -1454,40 +1524,68 @@ export function SessionSheetView({
     (peekAboveRows = 0, smooth = false) => {
       if (!isNumberSearch || !activeMatchedRowId) return;
       if (viewMode === 'table') {
-        const scrollEl = tableScrollRef.current;
+        const scrollRoot = getOuterScrollRoot();
         const tbodyEl = tbodyRef.current;
-        if (!scrollEl || !tbodyEl) return;
+        const containerEl = tableContainerRef.current;
+        if (!tbodyEl || !containerEl) return;
 
         const alignExactRow = () => {
           const tr = tbodyEl.querySelector<HTMLTableRowElement>(
             `tr[data-row-id="${activeMatchedRowId}"]`
           );
           if (!tr) return false;
-          const theadHeight = theadRef.current?.getBoundingClientRect().height ?? 0;
-          const scrollRect = scrollEl.getBoundingClientRect();
           const trRect = tr.getBoundingClientRect();
-          const rowHeight = Math.max(trRect.height, 40);
-          const targetTop =
-            trRect.top -
-            scrollRect.top +
-            scrollEl.scrollTop -
-            theadHeight -
-            peekAboveRows * rowHeight;
-          scrollEl.scrollTo({
-            top: Math.max(0, targetTop),
-            behavior: smooth ? 'smooth' : 'auto',
-          });
-          setVirtualScrollTop(Math.max(0, targetTop));
+          const rowHeight = Math.max(trRect.height, DEFAULT_VIRTUAL_ROW_HEIGHT);
+          if (scrollRoot) {
+            const rootRect = scrollRoot.getBoundingClientRect();
+            const targetTop =
+              trRect.top - rootRect.top + scrollRoot.scrollTop - 12 - peekAboveRows * rowHeight;
+            scrollRoot.scrollTo({
+              top: Math.max(0, targetTop),
+              behavior: smooth ? 'smooth' : 'auto',
+            });
+          } else {
+            const targetTop = trRect.top + window.scrollY - 12 - peekAboveRows * rowHeight;
+            window.scrollTo({
+              top: Math.max(0, targetTop),
+              behavior: smooth ? 'smooth' : 'auto',
+            });
+          }
+          syncOuterVirtualWindow();
           return true;
         };
 
         if (!alignExactRow() && activeMatchVisibleIdx >= 0) {
-          const estimatedTop = Math.max(
-            0,
-            (activeMatchVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT
-          );
-          scrollEl.scrollTop = estimatedTop;
-          setVirtualScrollTop(estimatedTop);
+          const maxIdx = Math.max(0, filteredRows.length - 1);
+          const nextStart = Math.max(0, activeMatchVisibleIdx - VIRTUAL_OVERSCAN);
+          const nextEnd = Math.min(maxIdx, activeMatchVisibleIdx + 36);
+          const next = { startIdx: nextStart, endIdx: nextEnd };
+          virtualRangeRef.current = next;
+          setVirtualRange(next);
+
+          const theadH = theadRef.current ? theadRef.current.offsetHeight : 38;
+          const containerRect = containerEl.getBoundingClientRect();
+          if (scrollRoot) {
+            const rootRect = scrollRoot.getBoundingClientRect();
+            const tbodyOrigin = containerRect.top - rootRect.top + scrollRoot.scrollTop + theadH;
+            const estimatedTop = Math.max(
+              0,
+              tbodyOrigin +
+                (activeMatchVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
+                12
+            );
+            scrollRoot.scrollTop = estimatedTop;
+          } else {
+            const tbodyOrigin = containerRect.top + window.scrollY + theadH;
+            const estimatedTop = Math.max(
+              0,
+              tbodyOrigin +
+                (activeMatchVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
+                12
+            );
+            window.scrollTo(0, estimatedTop);
+          }
+
           window.requestAnimationFrame(() => {
             alignExactRow();
           });
@@ -1504,7 +1602,16 @@ export function SessionSheetView({
         });
       }
     },
-    [isNumberSearch, activeMatchedRowId, activeMatchVisibleIdx, viewMode, visibleCardsLimit]
+    [
+      isNumberSearch,
+      activeMatchedRowId,
+      activeMatchVisibleIdx,
+      filteredRows.length,
+      viewMode,
+      visibleCardsLimit,
+      getOuterScrollRoot,
+      syncOuterVirtualWindow,
+    ]
   );
 
   useEffect(() => {
@@ -2954,34 +3061,15 @@ export function SessionSheetView({
               </div>
             </div>
           )}
-          <div
-            ref={tableScrollRef}
-            onScroll={isVirtualized ? handleTableScroll : undefined}
-            className={
-              isVirtualized
-                ? 'kk-surface-card rounded-2xl max-h-[65vh] sm:max-h-[70vh] overflow-y-auto overscroll-contain'
-                : isNumberSearch && matchedRowIndices.length > 0
-                  ? 'kk-surface-card rounded-2xl max-h-[58vh] overflow-y-auto overscroll-contain'
-                  : ''
-            }
-          >
+          <div ref={tableScrollRef}>
             <div ref={tableContainerRef} className="relative">
               <div
-                className={`${
-                  isVirtualized || (isNumberSearch && matchedRowIndices.length > 0)
-                    ? 'select-none sm:select-auto'
-                    : 'kk-surface-card rounded-2xl overflow-hidden select-none sm:select-auto'
-                } ${isTouchDragging ? 'touch-none' : ''}`}
+                className={`kk-surface-card rounded-2xl overflow-hidden select-none sm:select-auto ${
+                  isTouchDragging ? 'touch-none' : ''
+                }`}
               >
                 <table className="w-full table-fixed border-collapse">
-                  <thead
-                    ref={theadRef}
-                    className={
-                      isVirtualized || (isNumberSearch && matchedRowIndices.length > 0)
-                        ? 'sticky top-0 z-20'
-                        : ''
-                    }
-                  >
+                  <thead ref={theadRef}>
                     <tr className="kk-table-head text-white text-[10.5px] sm:text-xs font-bold uppercase tracking-[0.03em] whitespace-nowrap">
                       <th className="w-[5%] sm:w-[4%] px-0.5 py-2.5 sm:py-3 text-center border-r border-white/10">
                         <input

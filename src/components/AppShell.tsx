@@ -444,17 +444,7 @@ export function AppShell({
                 : 'pb-28 lg:pb-8'
             }`}
           >
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
-              >
-                {children}
-              </motion.div>
-            </AnimatePresence>
+            <div key={activeTab}>{children}</div>
           </div>
         </main>
 

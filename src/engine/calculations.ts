@@ -760,7 +760,8 @@ export function getSellerPrizeRates(rankStr: string, sellerName: string): {
 export function computeSellerSvc(
   rankStr: string,
   sellerName: string,
-  itemMultiplier: number
+  itemMultiplier: number,
+  alreadyUsedForNumber = 0
 ): number {
   const rates = getSellerPrizeRates(rankStr, sellerName);
   if (rates.svc === 0 || itemMultiplier <= 0) return 0;
@@ -770,8 +771,13 @@ export function computeSellerSvc(
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '');
 
-  const svcQty = compactName === 'TAPAN' ? Math.min(10, itemMultiplier) : itemMultiplier;
-  return round2(rates.svc * svcQty);
+  if (compactName === 'TAPAN') {
+    const remainingCap = Math.max(0, 10 - Math.max(0, alreadyUsedForNumber));
+    const svcQty = Math.min(itemMultiplier, remainingCap);
+    return svcQty > 0 ? round2(rates.svc * svcQty) : 0;
+  }
+
+  return round2(rates.svc * itemMultiplier);
 }
 
 export function getLimitPrizeRates(rankStr: string): { prize: number; vc: number } {
@@ -833,6 +839,24 @@ export function generatePrizeAndLimitData(
     const sessionSellerOrder: string[] = [];
     const sessionSellerMap = new Map<string, PrizeListRow[]>();
     const excludedNameCache = new Map<string, boolean>();
+    // Track TAPAN's cumulative SVC-eligible items per same winning number within this session (capped at 10)
+    const tapanSvcUsedByNumber = new Map<string, number>();
+
+    const computeRowSvc = (
+      rankStr: string,
+      sellerName: string,
+      isTapan: boolean,
+      numStr: string,
+      itemVal: number
+    ): number => {
+      if (!isTapan) {
+        return computeSellerSvc(rankStr, sellerName, itemVal);
+      }
+      const alreadyUsed = tapanSvcUsedByNumber.get(numStr) || 0;
+      const svc = computeSellerSvc(rankStr, sellerName, itemVal, alreadyUsed);
+      tapanSvcUsedByNumber.set(numStr, alreadyUsed + itemVal);
+      return svc;
+    };
 
     const pushSessionPrizeRow = (prizeRow: PrizeListRow) => {
       const sellerKey = prizeRow.name.trim().toUpperCase() || 'UNKNOWN';
@@ -865,6 +889,11 @@ export function generatePrizeAndLimitData(
       }
       if (skipName) continue;
 
+      const isTapan =
+        rawResolved
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, '') === 'TAPAN';
       const itemUpper = row.item.trim().toUpperCase();
       const itemVal = row.itemMultiplier;
       const startInt = row.startNumInt;
@@ -877,7 +906,7 @@ export function generatePrizeAndLimitData(
           const rates = getSellerPrizeRates(winObj.rank, rawResolved);
           const prize = round2(rates.prize * itemVal);
           const vc = round2(rates.vc * itemVal);
-          const svc = computeSellerSvc(winObj.rank, rawResolved, itemVal);
+          const svc = computeRowSvc(winObj.rank, rawResolved, isTapan, numStr, itemVal);
           pushSessionPrizeRow({
             id: `${sessionId}-${row.id}-${numStr}-${winObj.rank}`,
             time: sessionId,
@@ -905,7 +934,7 @@ export function generatePrizeAndLimitData(
               const rates = getSellerPrizeRates(winObj.rank, rawResolved);
               const prize = round2(rates.prize * itemVal);
               const vc = round2(rates.vc * itemVal);
-              const svc = computeSellerSvc(winObj.rank, rawResolved, itemVal);
+              const svc = computeRowSvc(winObj.rank, rawResolved, isTapan, numStr, itemVal);
               pushSessionPrizeRow({
                 id: `${sessionId}-${row.id}-${numStr}-${winObj.rank}`,
                 time: sessionId,
@@ -932,7 +961,7 @@ export function generatePrizeAndLimitData(
                 const rates = getSellerPrizeRates(winObj.rank, rawResolved);
                 const prize = round2(rates.prize * itemVal);
                 const vc = round2(rates.vc * itemVal);
-                const svc = computeSellerSvc(winObj.rank, rawResolved, itemVal);
+                const svc = computeRowSvc(winObj.rank, rawResolved, isTapan, numStr, itemVal);
                 pushSessionPrizeRow({
                   id: `${sessionId}-${row.id}-${numStr}-${winObj.rank}`,
                   time: sessionId,
