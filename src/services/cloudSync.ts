@@ -2753,6 +2753,21 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
     '6PM': String(snapshot.winningRaw?.['6PM'] || '').slice(0, 6000),
     '8PM': String(snapshot.winningRaw?.['8PM'] || '').slice(0, 6000),
   };
+  const adminAccountSummary = snapshot.adminAccountSummary
+    ? {
+        name: String(snapshot.adminAccountSummary.name || '').slice(0, 60),
+        mor: Number(snapshot.adminAccountSummary.mor) || 0,
+        day: Number(snapshot.adminAccountSummary.day) || 0,
+        eve: Number(snapshot.adminAccountSummary.eve) || 0,
+        sold: Number(snapshot.adminAccountSummary.sold) || 0,
+        bill: Number(snapshot.adminAccountSummary.bill) || 0,
+        prizeTotal: Number(snapshot.adminAccountSummary.prizeTotal) || 0,
+        fresh: Number(snapshot.adminAccountSummary.fresh) || 0,
+        joma: Number(snapshot.adminAccountSummary.joma) || 0,
+        due: Number(snapshot.adminAccountSummary.due) || 0,
+        total: Number(snapshot.adminAccountSummary.total) || 0,
+      }
+    : undefined;
   return {
     id: cleanId,
     date: cleanDate,
@@ -2772,6 +2787,7 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
       '8PM': Number(snapshot.overLimitTotals?.['8PM']) || 0,
     },
     sellerSummaries: summaries,
+    ...(adminAccountSummary ? { adminAccountSummary } : {}),
     prizeList: prizes,
     limitPrizeGroups: [],
     sellers,
@@ -2932,47 +2948,99 @@ function isTicketEntryRowBlank(r: TicketEntryRow | undefined | null): boolean {
     !String(r.item || '').trim() &&
     !String(r.start || '').trim() &&
     !String(r.end || '').trim() &&
-    !String(r.qtyOverride || '').trim()
+    !String(r.qtyOverride || '').trim() &&
+    !String(r.rangeOverride || '').trim()
   );
 }
 
-/**
- * Propagates Admin's edits on a restored archive date (e.g. Joma, Due, Rate, Entries, Winning Numbers)
- * to EVERY active Master, Sub-Master, Direct Seller, and Sub-Seller's `partyArchives` for that date.
- * - Updates existing `partyArchives` docs in-place (preserving each Master's sub-seller chain).
- * - Creates missing `partyArchives` docs if a party has data for that date.
- */
-export async function syncAdminRestoredArchiveToPartiesCloud(
+async function fetchAllAgencyPartyArchives(
+  agencyId: string,
+  ownerUid: string,
+  actorUid: string,
+  activeParties: CloudPartyDoc[]
+): Promise<Array<{ docId: string; data: CloudPartyArchiveDoc }>> {
+  const byDocId = new Map<string, CloudPartyArchiveDoc>();
+  const addSnap = (snap: Awaited<ReturnType<typeof getDocs>>) => {
+    for (const d of snap.docs) {
+      const data = d.data() as CloudPartyArchiveDoc;
+      if (data && data.partyId) {
+        byDocId.set(d.id, data);
+      }
+    }
+  };
+
+  let fetchedPrimary = false;
+  if (ownerUid) {
+    try {
+      const qOwner = query(
+        collection(db, 'agencies', agencyId, 'partyArchives'),
+        where('ownerUid', '==', ownerUid)
+      );
+      addSnap(await getDocs(qOwner));
+      fetchedPrimary = true;
+    } catch {
+      // Fallback to adminUids / per-party query below
+    }
+  }
+
+  if (!fetchedPrimary && actorUid) {
+    try {
+      const qAdmin = query(
+        collection(db, 'agencies', agencyId, 'partyArchives'),
+        where('adminUids', 'array-contains', actorUid)
+      );
+      addSnap(await getDocs(qAdmin));
+      fetchedPrimary = true;
+    } catch {
+      // Fallback to per-party query below
+    }
+  }
+
+  // Targeted fallback for any active party that wasn't returned by the ownerUid/adminUids query
+  const coveredPartyIds = new Set<string>();
+  for (const data of byDocId.values()) {
+    if (data.partyId) coveredPartyIds.add(data.partyId);
+  }
+  const missingParties = activeParties.filter((p) => !coveredPartyIds.has(p.partyId));
+  if (missingParties.length > 0 && (!fetchedPrimary || missingParties.length <= 25)) {
+    await Promise.all(
+      missingParties.map(async (p) => {
+        try {
+          const qParty = query(
+            collection(db, 'agencies', agencyId, 'partyArchives'),
+            where('partyId', '==', p.partyId)
+          );
+          addSnap(await getDocs(qParty));
+        } catch {
+          // Ignore individual party query failure when no docs exist or restricted
+        }
+      })
+    );
+  }
+
+  return Array.from(byDocId.entries()).map(([docId, data]) => ({ docId, data }));
+}
+
+async function syncSingleAdminArchiveAgainstExisting(
   agencyId: string,
   ownerUid: string,
   restoredDate: string,
   editedAdminSnap: DaySnapshot,
-  parties: CloudPartyDoc[],
-  config: AgencyConfig
+  activeParties: CloudPartyDoc[],
+  config: AgencyConfig,
+  allPartyArchiveDocs: Array<{ docId: string; data: CloudPartyArchiveDoc }>,
+  createMissing = true
 ): Promise<number> {
   const cleanDate = sanitizeIsoDate(restoredDate);
-  const activeParties = parties.filter((p) => p.active && p.role !== 'admin');
   if (activeParties.length === 0) return 0;
 
-  // Query all partyArchives for this agency owned by ownerUid (single-field index, rule-safe)
-  const q = query(
-    collection(db, 'agencies', agencyId, 'partyArchives'),
-    where('ownerUid', '==', ownerUid)
-  );
   const existingByPartyId = new Map<string, Array<{ docId: string; data: CloudPartyArchiveDoc }>>();
-  try {
-    const snap = await getDocs(q);
-    for (const d of snap.docs) {
-      const data = d.data() as CloudPartyArchiveDoc;
-      if (!data || !data.partyId) continue;
-      const docDate = data.date || data.payload?.date || '';
-      if (docDate !== cleanDate) continue;
-      const list = existingByPartyId.get(data.partyId) || [];
-      list.push({ docId: d.id, data });
-      existingByPartyId.set(data.partyId, list);
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyArchives`);
+  for (const item of allPartyArchiveDocs) {
+    const docDate = item.data.date || item.data.payload?.date || '';
+    if (docDate !== cleanDate) continue;
+    const list = existingByPartyId.get(item.data.partyId) || [];
+    list.push(item);
+    existingByPartyId.set(item.data.partyId, list);
   }
 
   // Fast lookups from Admin's freshly edited restored snapshot
@@ -3035,6 +3103,8 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
       }
     }
   }
+
+  const adminHasSubTracking = subRowsByPartyId.size > 0;
 
   const winningRaw: Record<SessionId, string> = {
     '1PM': editedAdminSnap.winningRaw?.['1PM'] || '',
@@ -3121,17 +3191,18 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
         '6PM': [],
         '8PM': [],
       };
+      const ownAdminSubBucket = subRowsByPartyId.get(party.partyId);
       for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
         if (isTopLevel) {
           const fromAdmin = topOwnRowsByName.get(partyUpper)?.[sid] || [];
           ownEntries[sid] = fromAdmin.map((r) => ({ ...r, name: party.name }));
+        } else if (ownAdminSubBucket || adminHasSubTracking) {
+          ownEntries[sid] = (ownAdminSubBucket?.[sid] || []).map((r) => ({
+            ...r,
+            name: party.name,
+          }));
         } else {
-          const fromAdminSub = subRowsByPartyId.get(party.partyId)?.[sid];
-          if (fromAdminSub && fromAdminSub.length > 0) {
-            ownEntries[sid] = fromAdminSub.map((r) => ({ ...r, name: party.name }));
-          } else {
-            ownEntries[sid] = existingOwnEntries[sid].map((r) => ({ ...r, name: party.name }));
-          }
+          ownEntries[sid] = existingOwnEntries[sid].map((r) => ({ ...r, name: party.name }));
         }
       }
 
@@ -3140,19 +3211,11 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
       for (const dp of descendants) {
         const fromAdminSub = subRowsByPartyId.get(dp.partyId);
         const fromExisting = existingSubEntriesByPid.get(dp.partyId);
+        const useAdminSub = Boolean(fromAdminSub) || adminHasSubTracking;
         const chosen: Record<SessionId, TicketEntryRow[]> = {
-          '1PM':
-            fromAdminSub && fromAdminSub['1PM'].length > 0
-              ? fromAdminSub['1PM']
-              : fromExisting?.['1PM'] || [],
-          '6PM':
-            fromAdminSub && fromAdminSub['6PM'].length > 0
-              ? fromAdminSub['6PM']
-              : fromExisting?.['6PM'] || [],
-          '8PM':
-            fromAdminSub && fromAdminSub['8PM'].length > 0
-              ? fromAdminSub['8PM']
-              : fromExisting?.['8PM'] || [],
+          '1PM': useAdminSub ? fromAdminSub?.['1PM'] || [] : fromExisting?.['1PM'] || [],
+          '6PM': useAdminSub ? fromAdminSub?.['6PM'] || [] : fromExisting?.['6PM'] || [],
+          '8PM': useAdminSub ? fromAdminSub?.['8PM'] || [] : fromExisting?.['8PM'] || [],
         };
         descendantEntriesByPid.set(dp.partyId, chosen);
       }
@@ -3248,7 +3311,6 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
       let updatedPrizes: PrizeListRow[] = [];
 
       if (party.role === 'master' && directSubs.length > 0) {
-        // Master / Sub-Master with Sub-Sellers: recompute sub-seller bills + own prizes against updated winning numbers
         const ownComps: Record<SessionId, SessionComputation> = {
           '1PM': processSessionRows(ownEntries['1PM'], '1PM', config),
           '6PM': processSessionRows(ownEntries['6PM'], '6PM', config),
@@ -3323,7 +3385,7 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
           }
         }
       } else if (isTopLevel && adminSummary) {
-        // Top-level Direct Seller or Master without sub-sellers: mirror Admin's exact edited summary & prizes
+        // Top-level Direct Seller or Master without sub-sellers (e.g. RIJU): mirror Admin's exact edited summary & prizes
         updatedSummaries = [adminSummary];
         updatedPrizes = adminPrizes;
       } else {
@@ -3370,6 +3432,13 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
         mergedEntries['6PM'].length > 0 ||
         mergedEntries['8PM'].length > 0;
 
+      const attachAdminAccountSummary =
+        isTopLevel &&
+        adminSummary &&
+        party.role === 'master' &&
+        directSubs.length > 0 &&
+        !updatedSummaries.some((s) => (s.name || '').trim().toUpperCase() === partyUpper);
+
       const rawSnap: DaySnapshot = {
         id: snapId,
         date: cleanDate,
@@ -3382,6 +3451,7 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
         limitGrandTotal: 0,
         overLimitTotals: { '1PM': 0, '6PM': 0, '8PM': 0 },
         sellerSummaries: updatedSummaries,
+        ...(attachAdminAccountSummary ? { adminAccountSummary: adminSummary } : {}),
         prizeList: updatedPrizes,
         limitPrizeGroups: [],
         sellers: updatedSellers,
@@ -3404,8 +3474,13 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
           savedAt: item.data.savedAt || item.data.payload.savedAt,
           trigger: item.data.trigger || item.data.payload.trigger || 'manual',
         };
+        const normalizedExisting = sanitizePartyArchivePayload(
+          existingSnap,
+          existingSnap.id,
+          cleanDate
+        );
         const { payload } = buildUpdatedPayloadForParty(existingSnap);
-        const prevSig = JSON.stringify(item.data.payload);
+        const prevSig = JSON.stringify(normalizedExisting);
         const nextSig = JSON.stringify(payload);
         if (prevSig === nextSig) continue;
 
@@ -3415,26 +3490,107 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
             payload,
             updatedAt: serverTimestamp(),
           });
+          // Update local cached copy so multi-date batches see the fresh payload
+          item.data = { ...item.data, payload };
           syncedCount++;
         } catch (err) {
           handleFirestoreError(err, OperationType.UPDATE, ref.path);
         }
       }
-    } else if (isTopLevel && (adminSummary || adminSeller)) {
-      // Party had no archive doc yet for this date — create one if they have data
+    } else if (createMissing && isTopLevel && (adminSummary || adminSeller)) {
       const { payload, hasData } = buildUpdatedPayloadForParty(undefined);
       if (hasData) {
         try {
           await savePartyArchiveCloud(ownerUid, party, payload, true);
           syncedCount++;
-        } catch {
-          // Best-effort creation for parties without an existing archive doc
+        } catch (err) {
+          console.error('[KK Agency] Could not create missing partyArchive:', party.name, err);
         }
       }
     }
   }
 
   return syncedCount;
+}
+
+/**
+ * Propagates Admin's edits on a restored archive date (e.g. Joma, Due, Rate, Entries, Winning Numbers)
+ * to EVERY active Master, Sub-Master, Direct Seller, and Sub-Seller's `partyArchives` for that date.
+ */
+export async function syncAdminRestoredArchiveToPartiesCloud(
+  agencyId: string,
+  ownerUid: string,
+  restoredDate: string,
+  editedAdminSnap: DaySnapshot,
+  parties: CloudPartyDoc[],
+  config: AgencyConfig,
+  actorUid?: string
+): Promise<number> {
+  const activeParties = parties.filter((p) => p.active && p.role !== 'admin');
+  if (activeParties.length === 0) return 0;
+
+  const allDocs = await fetchAllAgencyPartyArchives(
+    agencyId,
+    ownerUid,
+    actorUid || ownerUid,
+    activeParties
+  );
+
+  return syncSingleAdminArchiveAgainstExisting(
+    agencyId,
+    ownerUid,
+    restoredDate,
+    editedAdminSnap,
+    activeParties,
+    config,
+    allDocs,
+    true
+  );
+}
+
+/**
+ * Batch-reconciles multiple Admin Archive snapshots against every party's `partyArchives`
+ * using a single Firestore read pass and writing ONLY documents whose payload actually changed.
+ */
+export async function syncAdminArchivesBatchToPartiesCloud(
+  agencyId: string,
+  ownerUid: string,
+  actorUid: string,
+  snapshots: DaySnapshot[],
+  parties: CloudPartyDoc[],
+  config: AgencyConfig,
+  createMissing = false
+): Promise<number> {
+  const activeParties = parties.filter((p) => p.active && p.role !== 'admin');
+  if (activeParties.length === 0 || snapshots.length === 0) return 0;
+
+  // Deduplicate by date (keep the newest/first Admin snapshot per date)
+  const seenDates = new Set<string>();
+  const uniqueSnaps: DaySnapshot[] = [];
+  for (const snap of snapshots) {
+    const cleanDate = sanitizeIsoDate(snap.date);
+    if (seenDates.has(cleanDate)) continue;
+    seenDates.add(cleanDate);
+    uniqueSnaps.push(snap);
+  }
+  if (uniqueSnaps.length === 0) return 0;
+
+  const allDocs = await fetchAllAgencyPartyArchives(agencyId, ownerUid, actorUid, activeParties);
+
+  let totalSynced = 0;
+  for (const snap of uniqueSnaps) {
+    totalSynced += await syncSingleAdminArchiveAgainstExisting(
+      agencyId,
+      ownerUid,
+      snap.date,
+      snap,
+      activeParties,
+      config,
+      allDocs,
+      createMissing
+    );
+  }
+  return totalSynced;
 }
 
 export async function carryForwardSubSellerBalancesCloud(

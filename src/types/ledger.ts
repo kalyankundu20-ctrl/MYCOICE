@@ -199,6 +199,7 @@ export interface DaySnapshot {
   limitGrandTotal: number;
   overLimitTotals: Record<SessionId, number>;
   sellerSummaries: ArchivedSellerSummary[];
+  adminAccountSummary?: ArchivedSellerSummary;
   prizeList: PrizeListRow[];
   limitPrizeGroups: LimitPrizeSessionGroup[];
   sellers: Seller[];

@@ -1,5 +1,5 @@
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
-import { Archive, RotateCcw } from 'lucide-react';
+import { Archive, RefreshCw, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminAnnouncementModal } from './components/AdminAnnouncementModal';
@@ -80,6 +80,7 @@ import {
   subscribeAdminSheets,
   subscribePublicAnnouncement,
   syncAdminAgencyState,
+  syncAdminArchivesBatchToPartiesCloud,
   syncAdminArchivesCloud,
   syncAdminLedgerChunksCloud,
   syncAdminPrivateConfigCloud,
@@ -606,7 +607,9 @@ export default function App() {
   const adminRestoredModeRef = useRef<AdminRestoredArchiveMode | null>(adminRestoredMode);
   adminRestoredModeRef.current = adminRestoredMode;
   const lastRestoredEditSigRef = useRef<string>('');
-  const [restoredSyncState, setRestoredSyncState] = useState<'idle' | 'syncing' | 'synced'>('idle');
+  const [restoredSyncState, setRestoredSyncState] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const pendingRestoredCloudPromiseRef = useRef<Promise<void> | null>(null);
+  const reconciledHistorySigRef = useRef<string>('');
 
   const updateAdminRestoredMode = useCallback(
     (next: AdminRestoredArchiveMode | null) => {
@@ -3135,7 +3138,7 @@ export default function App() {
       .map((sid) =>
         (curState.entries[sid] || [])
           .filter((r) => !isRowBlank(r))
-          .map((r) => `${r.id}:${r.name}:${r.item}:${r.start}:${r.end}:${r.qtyOverride}`)
+          .map((r) => `${r.id}:${r.name}:${r.item}:${r.start}:${r.end}:${r.qtyOverride}:${r.rangeOverride}`)
           .join(',')
       )
       .join('||');
@@ -3276,32 +3279,45 @@ export default function App() {
     ) => {
       if (cloudSession.kind !== 'admin' || !authUser || !cloudAgencyRef.current) return;
       const agencyId = cloudSession.agencyId;
-      const ownerUid = cloudSession.ownerUid;
+      const ownerUid = cloudAgencyRef.current.ownerUid || cloudSession.ownerUid;
+      const actorUid = authUser.uid;
       const adminUids = cloudAgencyRef.current.adminUids;
 
       setRestoredSyncState('syncing');
-      try {
+      const runSync = async () => {
+        let hadFailure = false;
+        let syncedPartyDocs = 0;
+
         // 1. Save Admin's updated archive history to Admin Cloud Vault
-        await syncAdminArchivesCloud(
-          ownerUid,
-          adminUids,
-          nextHistory,
-          recycleBin,
-          adminArchiveSigsRef.current,
-          adminArchiveDocIdsRef.current,
-          agencyId
-        ).catch(() => {});
+        try {
+          await syncAdminArchivesCloud(
+            ownerUid,
+            adminUids,
+            nextHistory,
+            recycleBin,
+            adminArchiveSigsRef.current,
+            adminArchiveDocIdsRef.current,
+            agencyId
+          );
+        } catch (err) {
+          hadFailure = true;
+          console.error('[KK Agency] Restored Admin archive vault sync failed:', err);
+        }
 
         // 2. Propagate every edited/cascaded archive date to ALL Master, Sub-Master & Seller partyArchives
-        for (const snap of cascadedSnapshots) {
-          await syncAdminRestoredArchiveToPartiesCloud(
+        try {
+          syncedPartyDocs = await syncAdminArchivesBatchToPartiesCloud(
             agencyId,
             ownerUid,
-            snap.date,
-            snap,
+            actorUid,
+            cascadedSnapshots,
             cloudPartiesRef.current,
-            configSnapshot
-          ).catch(() => {});
+            configSnapshot,
+            true
+          );
+        } catch (err) {
+          hadFailure = true;
+          console.error('[KK Agency] Restored partyArchives sync failed:', err);
         }
 
         // 3. Update affected top-level Masters / Sellers' LIVE Current Day Due & Joma in Firestore
@@ -3326,18 +3342,202 @@ export default function App() {
           ) {
             continue;
           }
-          await updatePartyBalancesAdminCloud(agencyId, party.partyId, nextDue, nextJoma).catch(
-            () => {}
-          );
+          try {
+            await updatePartyBalancesAdminCloud(agencyId, party.partyId, nextDue, nextJoma);
+          } catch (err) {
+            hadFailure = true;
+            console.error('[KK Agency] Live Due/Joma carry-forward failed for', party.name, err);
+          }
         }
 
-        setRestoredSyncState('synced');
-      } catch {
-        setRestoredSyncState('idle');
+        if (hadFailure) {
+          setRestoredSyncState('error');
+          showToast('Cloud sync issue — please tap Sync Now to retry', 4200);
+        } else {
+          setRestoredSyncState('synced');
+          if (syncedPartyDocs > 0) {
+            reconciledHistorySigRef.current = '';
+          }
+        }
+      };
+
+      const promise = runSync();
+      pendingRestoredCloudPromiseRef.current = promise;
+      try {
+        await promise;
+      } finally {
+        if (pendingRestoredCloudPromiseRef.current === promise) {
+          pendingRestoredCloudPromiseRef.current = null;
+        }
       }
     },
-    [cloudSession, authUser]
+    [cloudSession, authUser, showToast]
   );
+
+  const flushRestoredArchiveEditNow = useCallback(async () => {
+    const mode = adminRestoredModeRef.current;
+    const cur = latestStateRef.current;
+    if (!mode || cur.date !== mode.restoredDate) {
+      if (pendingRestoredCloudPromiseRef.current) {
+        await pendingRestoredCloudPromiseRef.current;
+      }
+      return;
+    }
+
+    lastRestoredEditSigRef.current = serializeRestoredWorkingSig(cur);
+    const existingSnap = cur.history.find(
+      (h) => (mode.restoredSnapId && h.id === mode.restoredSnapId) || h.date === mode.restoredDate
+    );
+    const editedSnap = buildExactSnapshotFromState(
+      cur,
+      mode.restoredTrigger || existingSnap?.trigger || 'manual',
+      mode.restoredSnapId || existingSnap?.id,
+      existingSnap?.savedAt
+    );
+
+    const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
+      editedSnap,
+      mode,
+      cur.history
+    );
+
+    updateAdminRestoredMode({
+      ...mode,
+      restoredSnapId: editedSnap.id,
+      liveBackup: {
+        ...mode.liveBackup,
+        sellers: updatedLiveSellers,
+      },
+    });
+
+    setState((prev) => ({
+      ...prev,
+      history: nextHistory,
+    }));
+
+    await pushRestoredCascadeToCloud(
+      nextHistory,
+      cur.recycleBin || [],
+      cascadedSnapshots,
+      updatedLiveSellers,
+      cur.config
+    );
+  }, [
+    serializeRestoredWorkingSig,
+    buildExactSnapshotFromState,
+    cascadeRestoredEdit,
+    updateAdminRestoredMode,
+    setState,
+    pushRestoredCascadeToCloud,
+  ]);
+
+  const handleSyncSingleArchiveToParties = useCallback(
+    async (snap: DaySnapshot) => {
+      if (cloudSession.kind !== 'admin' || !authUser || !cloudAgencyRef.current) {
+        showToast('Cloud Admin sign-in required to sync Master/Sub-Master archives');
+        return;
+      }
+      const agencyId = cloudSession.agencyId;
+      const ownerUid = cloudAgencyRef.current.ownerUid || cloudSession.ownerUid;
+      try {
+        const updatedCount = await syncAdminRestoredArchiveToPartiesCloud(
+          agencyId,
+          ownerUid,
+          snap.date,
+          snap,
+          cloudPartiesRef.current,
+          latestStateRef.current.config,
+          authUser.uid
+        );
+        AppSounds.success();
+        if (updatedCount > 0) {
+          showToast(
+            `${formatDateDDMM(snap.date)} synced to ${updatedCount} Master / Seller archive${updatedCount === 1 ? '' : 's'} ✓`
+          );
+        } else {
+          showToast(`${formatDateDDMM(snap.date)} already up to date on all Master / Seller IDs ✓`);
+        }
+      } catch (err) {
+        console.error('[KK Agency] Manual archive sync failed:', err);
+        showToast('Sync failed — check connection and try again', 4000);
+      }
+    },
+    [cloudSession, authUser, showToast]
+  );
+
+  // Automatic Background Reconciliation (Admin-only, 1 read pass, writes ONLY diffs):
+  // Ensures any previously edited Admin Archive (like 24/11/26) is automatically synced
+  // to every Master, Sub-Master & Seller's `partyArchives` without needing manual re-edits.
+  useEffect(() => {
+    if (
+      cloudSession.kind !== 'admin' ||
+      !authUser ||
+      !cloudAgency ||
+      !cloudHydrated ||
+      !adminVaultHydrated ||
+      isAdminRestoredView ||
+      cloudParties.length === 0 ||
+      state.history.length === 0
+    ) {
+      return;
+    }
+
+    const recentUnique: DaySnapshot[] = [];
+    const seenDates = new Set<string>();
+    for (const h of state.history) {
+      if (!h?.date || seenDates.has(h.date)) continue;
+      seenDates.add(h.date);
+      recentUnique.push(h);
+      if (recentUnique.length >= 14) break;
+    }
+    if (recentUnique.length === 0) return;
+
+    const historySig = recentUnique
+      .map(
+        (h) =>
+          `${h.date}:${h.totalSold}:${h.totalBill}:${h.totalPrize}:${h.totalNetPayable}:${(h.sellerSummaries || []).map((s) => `${s.name}=${s.sold}/${s.due}/${s.joma}/${s.total}`).join(',')}`
+      )
+      .join('|');
+    const partySig = cloudParties
+      .filter((p) => p.active && p.role !== 'admin')
+      .map((p) => `${p.partyId}:${p.name}:${p.role}:${p.parentMasterId}`)
+      .sort()
+      .join(',');
+    const fullSig = `${historySig}##${partySig}`;
+    if (fullSig === reconciledHistorySigRef.current) return;
+
+    const ownerUid = cloudAgency.ownerUid || cloudSession.ownerUid;
+    const agencyId = cloudSession.agencyId;
+    const actorUid = authUser.uid;
+    const timer = window.setTimeout(() => {
+      if (isAdminRestoredViewRef.current) return;
+      reconciledHistorySigRef.current = fullSig;
+      void syncAdminArchivesBatchToPartiesCloud(
+        agencyId,
+        ownerUid,
+        actorUid,
+        recentUnique,
+        cloudPartiesRef.current,
+        latestStateRef.current.config,
+        false
+      ).catch((err) => {
+        // Allow retry on next state change if offline
+        reconciledHistorySigRef.current = '';
+        console.error('[KK Agency] Background archive reconcile skipped:', err);
+      });
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    cloudSession,
+    authUser,
+    cloudAgency,
+    cloudHydrated,
+    adminVaultHydrated,
+    isAdminRestoredView,
+    cloudParties,
+    state.history,
+  ]);
 
   // Admin-only Restored Archive Auto-Sync:
   // Whenever Admin edits Joma, Due, Rate, Entries, or Winning numbers on a restored date (e.g. 24/11),
@@ -3400,7 +3600,7 @@ export default function App() {
         updatedLiveSellers,
         cur.config
       );
-    }, 650);
+    }, 300);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -3437,10 +3637,6 @@ export default function App() {
       mode,
       cur.history
     );
-
-    const latestSig = serializeRestoredWorkingSig(cur);
-    const hadUnsyncedEdit =
-      Boolean(lastRestoredEditSigRef.current) && latestSig !== lastRestoredEditSigRef.current;
 
     // Clear restored flag FIRST so cloud live sync can resume cleanly on the live date
     lastRestoredEditSigRef.current = '';
@@ -3486,15 +3682,15 @@ export default function App() {
       };
     });
 
-    if (hadUnsyncedEdit) {
-      void pushRestoredCascadeToCloud(
-        nextHistory,
-        cur.recycleBin || [],
-        cascadedSnapshots,
-        updatedLiveSellers,
-        cur.config
-      );
-    }
+    // Always reconcile & sync the restored date (and any cascaded dates/live Due-Joma)
+    // to all Master/Sub-Master/Seller partyArchives (skips unchanged docs cleanly with 0 wasted writes).
+    void pushRestoredCascadeToCloud(
+      nextHistory,
+      cur.recycleBin || [],
+      cascadedSnapshots,
+      updatedLiveSellers,
+      cur.config
+    );
 
     setRecentlyPastedIds({ '1PM': [], '6PM': [], '8PM': [] });
     setSessionHistory({
@@ -4619,16 +4815,37 @@ export default function App() {
                   All Synced ✓
                 </span>
               )}
+              {restoredSyncState === 'error' && (
+                <span className="ml-2 text-[11px] font-bold text-rose-700">
+                  Sync Retry Needed
+                </span>
+              )}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleExitAdminRestoredMode}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Back to Live ({formatDateDDMM(adminRestoredMode.liveDate)})</span>
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              disabled={restoredSyncState === 'syncing'}
+              onClick={() => {
+                AppSounds.tap();
+                void flushRestoredArchiveEditNow();
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap disabled:opacity-60"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${restoredSyncState === 'syncing' ? 'animate-spin' : ''}`}
+              />
+              <span>{restoredSyncState === 'error' ? 'Retry Sync' : 'Sync Now'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExitAdminRestoredMode}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Back to Live ({formatDateDDMM(adminRestoredMode.liveDate)})</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -4732,6 +4949,7 @@ export default function App() {
           recycleBin={state.recycleBin || []}
           onArchiveNow={() => performArchiveAndRollover('manual')}
           onRestoreSnapshot={handleRestoreSnapshot}
+          onSyncSnapshotToParties={handleSyncSingleArchiveToParties}
           onUpdateSnapshotDate={(snapshotId, newDate) => {
             setState((prev) => ({
               ...prev,
@@ -4842,7 +5060,13 @@ export default function App() {
         onAddSeller={handleAddSeller}
         onPreviewSeller={(party) => {
           setSellerIdsOpen(false);
-          setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
+          if (adminRestoredModeRef.current || pendingRestoredCloudPromiseRef.current) {
+            void flushRestoredArchiveEditNow().finally(() => {
+              setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
+            });
+          } else {
+            setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
+          }
         }}
         onOpenSellerLoginMode={() => {
           setCloudError('');

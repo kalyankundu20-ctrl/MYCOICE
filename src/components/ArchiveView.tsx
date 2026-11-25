@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, Calendar, ChevronDown, ChevronRight, Download, RotateCcw, Trash2 } from 'lucide-react';
+import { AlertTriangle, Archive, Calendar, ChevronDown, ChevronRight, Download, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useState } from 'react';
 import { formatDateDDMMYYYY, formatINR, isMyChoiceName } from '../engine/calculations';
@@ -13,6 +13,7 @@ interface ArchiveViewProps {
   recycleBin?: DaySnapshot[];
   onArchiveNow: () => void;
   onRestoreSnapshot?: (snapshot: DaySnapshot) => void;
+  onSyncSnapshotToParties?: (snapshot: DaySnapshot) => Promise<void> | void;
   onUpdateSnapshotDate: (snapshotId: string, newDate: string) => void;
   onDeleteSnapshot: (snapshotId: string) => void;
   onRecoverFromBin?: (snapshotId: string) => void;
@@ -34,6 +35,7 @@ export function ArchiveView({
   recycleBin = [],
   onArchiveNow,
   onRestoreSnapshot,
+  onSyncSnapshotToParties,
   onUpdateSnapshotDate,
   onDeleteSnapshot,
   onRecoverFromBin,
@@ -58,6 +60,7 @@ export function ArchiveView({
   const [recycleBinOpen, setRecycleBinOpen] = useState<boolean>(false);
   const [pendingPermDeleteSnap, setPendingPermDeleteSnap] = useState<DaySnapshot | null>(null);
   const [confirmEmptyBin, setConfirmEmptyBin] = useState<boolean>(false);
+  const [syncingSnapId, setSyncingSnapId] = useState<string | null>(null);
 
   const handleExportCsv = () => {
     const header = [
@@ -298,6 +301,29 @@ export function ArchiveView({
                         <Calendar className="w-3.5 h-3.5" />
                         <span className="hidden sm:inline">Date</span>
                       </button>
+                      {onSyncSnapshotToParties && (
+                        <button
+                          type="button"
+                          disabled={syncingSnapId === snap.id}
+                          title="Sync this date to all Master & Sub-Master archives"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            AppSounds.tap();
+                            setSyncingSnapId(snap.id);
+                            try {
+                              await onSyncSnapshotToParties(snap);
+                            } finally {
+                              setSyncingSnapId((cur) => (cur === snap.id ? null : cur));
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-colors cursor-pointer disabled:opacity-60"
+                        >
+                          <RefreshCw
+                            className={`w-3.5 h-3.5 ${syncingSnapId === snap.id ? 'animate-spin' : ''}`}
+                          />
+                          <span>{syncingSnapId === snap.id ? 'Syncing' : 'Sync IDs'}</span>
+                        </button>
+                      )}
                       {!hideRestore && onRestoreSnapshot && (
                         <button
                           type="button"
@@ -368,23 +394,53 @@ export function ArchiveView({
                         (s) => s.name.trim().toUpperCase() === ownerUpper
                       );
                       if (alreadyInSummaries) return null;
+                      const adminSum = snap.adminAccountSummary;
                       const ownSeller = (snap.sellers || []).find(
                         (s) => s.name.trim().toUpperCase() === ownerUpper
                       );
-                      if (!ownSeller) return null;
+                      if (!adminSum && !ownSeller) return null;
                       return (
                         <div className="bg-indigo-50/90 border border-indigo-200 rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-indigo-950">
                           <span className="uppercase tracking-wide">
-                            Admin Account · {ownSeller.name}
+                            Admin Account · {adminSum?.name || ownSeller?.name}
                           </span>
                           <div className="flex flex-wrap items-center gap-3 font-mono-tabular">
-                            <span>Rate: ₹{formatINR(ownSeller.rate)}</span>
-                            <span className="text-sky-800">
-                              Joma: ₹{formatINR(ownSeller.joma)}
-                            </span>
-                            <span className="text-amber-800">
-                              Due: ₹{formatINR(ownSeller.due)}
-                            </span>
+                            {adminSum ? (
+                              <>
+                                <span>Sold: {formatINR(adminSum.sold)}</span>
+                                <span>Bill: ₹{formatINR(adminSum.bill)}</span>
+                                <span className="text-emerald-700">
+                                  Prize: ₹{formatINR(adminSum.prizeTotal)}
+                                </span>
+                                <span className="text-sky-800">
+                                  Joma: ₹{formatINR(adminSum.joma)}
+                                </span>
+                                <span className="text-amber-800">
+                                  Due: ₹{formatINR(adminSum.due)}
+                                </span>
+                                <span
+                                  className={
+                                    adminSum.total > 0
+                                      ? 'text-emerald-700 font-extrabold'
+                                      : adminSum.total < 0
+                                        ? 'text-rose-600 font-extrabold'
+                                        : ''
+                                  }
+                                >
+                                  Total: ₹{formatINR(adminSum.total)}
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <span>Rate: ₹{formatINR(ownSeller!.rate)}</span>
+                                <span className="text-sky-800">
+                                  Joma: ₹{formatINR(ownSeller!.joma)}
+                                </span>
+                                <span className="text-amber-800">
+                                  Due: ₹{formatINR(ownSeller!.due)}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
                       );
