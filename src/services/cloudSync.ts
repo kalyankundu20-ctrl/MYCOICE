@@ -2848,20 +2848,46 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
   };
 }
 
+/**
+ * Generates a collision-free Firestore document ID for a party's daily archive.
+ * Uses the trailing 24 chars of partyId PLUS an FNV-1a hash of the full partyId so
+ * parties created in the same millisecond (e.g. `seller-gs-1763...`) NEVER collide.
+ */
+export function makeUniquePartyArchiveId(
+  partyId: string,
+  cleanDate: string,
+  uniqueSalt?: string
+): string {
+  const cleanPid = String(partyId || 'party').replace(/[^a-zA-Z0-9_-]/g, '');
+  const dateCompact = sanitizeIsoDate(cleanDate).replace(/[^0-9]/g, '').slice(0, 8) || '00000000';
+  let h = 2166136261;
+  for (let i = 0; i < cleanPid.length; i += 1) {
+    h ^= cleanPid.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const pidHash = (h >>> 0).toString(36);
+  const tail = cleanPid.slice(-24) || 'p';
+  const cleanSalt = uniqueSalt ? String(uniqueSalt).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) : '';
+  const raw = cleanSalt
+    ? `pa-${dateCompact}-${tail}-${pidHash}-${cleanSalt}`
+    : `pa-${dateCompact}-${tail}-${pidHash}`;
+  return raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+}
+
 export async function savePartyArchiveCloud(
   actorUid: string,
   party: CloudPartyDoc,
   snapshot: DaySnapshot,
   isAdminActor = false
 ): Promise<DaySnapshot> {
-  const safeSuffix = String(snapshot.id || `snap-${Date.now()}`)
+  const cleanDate = sanitizeIsoDate(snapshot.date);
+  const safeSuffix = String(snapshot.id || '')
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .slice(0, 64);
   const snapshotId =
     safeSuffix.length >= 4
       ? safeSuffix
-      : `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const cleanDate = sanitizeIsoDate(snapshot.date);
+      : makeUniquePartyArchiveId(party.partyId, cleanDate, Math.random().toString(36).slice(2, 6));
   const cleanSavedAt = String(snapshot.savedAt || new Date().toISOString()).slice(0, 64);
   const cleanTrigger: DaySnapshot['trigger'] =
     snapshot.trigger === 'day-close' || snapshot.trigger === 'daily-auto'
@@ -2878,28 +2904,58 @@ export async function savePartyArchiveCloud(
     new Set([cleanOwnerUid, ...rawAdminUids].filter((u) => typeof u === 'string' && u.trim().length > 0))
   ).slice(0, 10);
 
+  const buildDocBody = (targetId: string, targetPayload: DaySnapshot) => ({
+    agencyId: cleanAgencyId,
+    snapshotId: targetId,
+    partyId: party.partyId,
+    partyName: (party.name || 'SELLER').trim().slice(0, 60) || 'SELLER',
+    ownerUid: cleanOwnerUid,
+    adminUids,
+    assignedUid: isAdminActor ? party.assignedUid || '' : actorUid,
+    parentMasterId: party.parentMasterId || '',
+    parentMasterUid: party.parentMasterUid || '',
+    date: cleanDate,
+    savedAt: cleanSavedAt,
+    trigger: cleanTrigger,
+    payload: targetPayload,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
   const ref = doc(db, 'agencies', cleanAgencyId, 'partyArchives', snapshotId);
   try {
-    await setDoc(ref, {
-      agencyId: cleanAgencyId,
-      snapshotId,
-      partyId: party.partyId,
-      partyName: (party.name || 'SELLER').trim().slice(0, 60) || 'SELLER',
-      ownerUid: cleanOwnerUid,
-      adminUids,
-      assignedUid: isAdminActor ? party.assignedUid || '' : actorUid,
-      parentMasterId: party.parentMasterId || '',
-      parentMasterUid: party.parentMasterUid || '',
-      date: cleanDate,
-      savedAt: cleanSavedAt,
-      trigger: cleanTrigger,
-      payload,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    await setDoc(ref, buildDocBody(snapshotId, payload));
     return payload;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, ref.path);
+  } catch (firstErr) {
+    // Idempotency & collision recovery: if a doc with `snapshotId` already exists in Firestore,
+    // `setDoc` hits `allow update` (which forbids modifying `createdAt` or `partyId`).
+    try {
+      const existingSnap = await getDoc(ref);
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data() as Partial<CloudPartyArchiveDoc>;
+        if (existingData?.partyId === party.partyId) {
+          await updateDoc(ref, {
+            date: cleanDate,
+            payload,
+            updatedAt: serverTimestamp(),
+          });
+          return payload;
+        }
+        // Different party owned that legacy ID -> mint a fresh unique ID and create cleanly
+        const freshId = makeUniquePartyArchiveId(
+          party.partyId,
+          cleanDate,
+          Math.random().toString(36).slice(2, 6)
+        );
+        const freshPayload = sanitizePartyArchivePayload(snapshot, freshId, cleanDate);
+        const freshRef = doc(db, 'agencies', cleanAgencyId, 'partyArchives', freshId);
+        await setDoc(freshRef, buildDocBody(freshId, freshPayload));
+        return freshPayload;
+      }
+    } catch {
+      // Fall through to report original error below
+    }
+    handleFirestoreError(firstErr, OperationType.CREATE, ref.path);
   }
 }
 
@@ -2965,7 +3021,11 @@ export function subscribePartyArchives(
           trigger: data.trigger || data.payload.trigger || 'manual',
         });
       }
-      list.sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
+      list.sort(
+        (a, b) =>
+          (b.date || '').localeCompare(a.date || '') ||
+          (b.savedAt || '').localeCompare(a.savedAt || '')
+      );
       onSnapshots(list.slice(0, 60));
     },
     () => {
@@ -3195,6 +3255,8 @@ async function syncSingleAdminArchiveAgainstExisting(
   };
 
   let syncedCount = 0;
+  const pendingWrites: Array<() => Promise<void>> = [];
+  const failedParties: string[] = [];
 
   for (const party of activeParties) {
     const partyUpper = (party.name || '').trim().toUpperCase();
@@ -3210,9 +3272,7 @@ async function syncSingleAdminArchiveAgainstExisting(
     const buildUpdatedPayloadForParty = (
       existingSnap?: DaySnapshot
     ): { payload: DaySnapshot; hasData: boolean } => {
-      const snapId =
-        existingSnap?.id ||
-        `snap-${party.partyId.slice(0, 14)}-${cleanDate.replace(/-/g, '')}`;
+      const snapId = existingSnap?.id || makeUniquePartyArchiveId(party.partyId, cleanDate);
 
       // Split existing snapshot entries into own vs sub::partyId:: buckets
       const existingOwnEntries: Record<SessionId, TicketEntryRow[]> = {
@@ -3561,28 +3621,60 @@ async function syncSingleAdminArchiveAgainstExisting(
         if (prevSig === nextSig) continue;
 
         const ref = doc(db, 'agencies', agencyId, 'partyArchives', item.docId);
-        try {
-          await updateDoc(ref, {
-            payload,
-            updatedAt: serverTimestamp(),
-          });
-          // Update local cached copy so multi-date batches see the fresh payload
-          item.data = { ...item.data, payload };
-          syncedCount++;
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, ref.path);
-        }
+        pendingWrites.push(async () => {
+          try {
+            await updateDoc(ref, {
+              payload,
+              updatedAt: serverTimestamp(),
+            });
+            item.data = { ...item.data, payload };
+            syncedCount++;
+          } catch (err) {
+            failedParties.push(party.name || party.partyId);
+            console.error('[KK Agency] Could not update partyArchive:', party.name, err);
+          }
+        });
       }
     } else if (createMissing) {
       // Backfill missing archive for EVERY active Master, Sub-Master, Direct Seller & Sub-Seller
       const { payload } = buildUpdatedPayloadForParty(undefined);
-      try {
-        await savePartyArchiveCloud(ownerUid, party, payload, true);
-        syncedCount++;
-      } catch (err) {
-        console.error('[KK Agency] Could not create missing partyArchive:', party.name, err);
-      }
+      pendingWrites.push(async () => {
+        try {
+          const saved = await savePartyArchiveCloud(ownerUid, party, payload, true);
+          allPartyArchiveDocs.push({
+            docId: saved.id,
+            data: {
+              agencyId,
+              snapshotId: saved.id,
+              partyId: party.partyId,
+              partyName: party.name,
+              ownerUid: party.ownerUid || ownerUid,
+              adminUids: party.adminUids || [ownerUid],
+              assignedUid: party.assignedUid || '',
+              parentMasterId: party.parentMasterId || '',
+              parentMasterUid: party.parentMasterUid || '',
+              date: cleanDate,
+              savedAt: saved.savedAt,
+              trigger: saved.trigger,
+              payload: saved,
+            },
+          });
+          syncedCount++;
+        } catch (err) {
+          failedParties.push(party.name || party.partyId);
+          console.error('[KK Agency] Could not create missing partyArchive:', party.name, err);
+        }
+      });
     }
+  }
+
+  const CONCURRENCY = 6;
+  for (let i = 0; i < pendingWrites.length; i += CONCURRENCY) {
+    await Promise.all(pendingWrites.slice(i, i + CONCURRENCY).map((fn) => fn()));
+  }
+
+  if (failedParties.length > 0 && syncedCount === 0) {
+    throw new Error(`Archive sync failed for: ${failedParties.slice(0, 4).join(', ')}`);
   }
 
   return syncedCount;
@@ -3601,7 +3693,7 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
   config: AgencyConfig,
   actorUid?: string
 ): Promise<number> {
-  const activeParties = parties.filter((p) => p.active && p.role !== 'admin');
+  const activeParties = parties.filter((p) => p.active !== false && p.role !== 'admin');
   if (activeParties.length === 0) return 0;
 
   const allDocs = await fetchAllAgencyPartyArchives(
@@ -3636,7 +3728,7 @@ export async function syncAdminArchivesBatchToPartiesCloud(
   config: AgencyConfig,
   createMissing = false
 ): Promise<number> {
-  const activeParties = parties.filter((p) => p.active && p.role !== 'admin');
+  const activeParties = parties.filter((p) => p.active !== false && p.role !== 'admin');
   if (activeParties.length === 0 || snapshots.length === 0) return 0;
 
   // Deduplicate by date (keep the newest/first Admin snapshot per date)

@@ -67,6 +67,7 @@ import {
   loginSellerWithIdPassword,
   lookupPartyInvite,
   makePartyIdFromSeller,
+  makeUniquePartyArchiveId,
   normalizeLoginId,
   pushAdminSheetRowsForParty,
   readCachedPublicAnnouncement,
@@ -3663,12 +3664,17 @@ export default function App() {
       const agencyId = cloudSession.agencyId;
       const ownerUid = cloudAgencyRef.current.ownerUid || cloudSession.ownerUid;
       try {
+        let partiesToSync = cloudPartiesRef.current;
+        if (partiesToSync.length === 0) {
+          const fetched = await fetchAdminPartiesAndSheetsOnce(ownerUid, agencyId);
+          partiesToSync = fetched.parties;
+        }
         const updatedCount = await syncAdminRestoredArchiveToPartiesCloud(
           agencyId,
           ownerUid,
           snap.date,
           snap,
-          cloudPartiesRef.current,
+          partiesToSync,
           latestStateRef.current.config,
           authUser.uid
         );
@@ -3688,14 +3694,15 @@ export default function App() {
     [cloudSession, authUser, showToast]
   );
 
-  // Automatic Background Reconciliation (Admin-only, 1 read pass, writes ONLY diffs):
-  // Ensures any previously edited Admin Archive (like 24/11/26) is automatically synced
+  // Automatic Background Reconciliation (Admin-only, 1 read pass, writes ONLY diffs or missing dates):
+  // Ensures every Admin Archive (both Close Day snapshots and restored edits) is automatically synced
   // to every Master, Sub-Master & Seller's `partyArchives` without needing manual re-edits.
+  const cloudAgencyOwnerUid = cloudAgency?.ownerUid || '';
   useEffect(() => {
     if (
       cloudSession.kind !== 'admin' ||
       !authUser ||
-      !cloudAgency ||
+      !cloudAgencyOwnerUid ||
       !cloudHydrated ||
       !adminVaultHydrated ||
       isAdminRestoredView ||
@@ -3722,14 +3729,14 @@ export default function App() {
       )
       .join('|');
     const partySig = cloudParties
-      .filter((p) => p.active && p.role !== 'admin')
+      .filter((p) => p.active !== false && p.role !== 'admin')
       .map((p) => `${p.partyId}:${p.name}:${p.role}:${p.parentMasterId}`)
       .sort()
       .join(',');
     const fullSig = `${historySig}##${partySig}`;
     if (fullSig === reconciledHistorySigRef.current) return;
 
-    const ownerUid = cloudAgency.ownerUid || cloudSession.ownerUid;
+    const ownerUid = cloudAgencyOwnerUid || cloudSession.ownerUid;
     const agencyId = cloudSession.agencyId;
     const actorUid = authUser.uid;
     const timer = window.setTimeout(() => {
@@ -3743,23 +3750,30 @@ export default function App() {
         cloudPartiesRef.current,
         latestStateRef.current.config,
         true
-      ).catch((err) => {
-        // Allow retry on next state change if offline
-        reconciledHistorySigRef.current = '';
-        console.error('[KK Agency] Background archive reconcile skipped:', err);
-      });
-    }, 900);
+      )
+        .then((syncedCount) => {
+          if (syncedCount > 0) {
+            showToast(`Master / Sub-Master archives synced (${syncedCount} updated) ✓`, 3500);
+          }
+        })
+        .catch((err) => {
+          // Allow retry on next state change if offline or failed
+          reconciledHistorySigRef.current = '';
+          console.error('[KK Agency] Background archive reconcile skipped:', err);
+        });
+    }, 350);
 
     return () => window.clearTimeout(timer);
   }, [
     cloudSession,
     authUser,
-    cloudAgency,
+    cloudAgencyOwnerUid,
     cloudHydrated,
     adminVaultHydrated,
     isAdminRestoredView,
     cloudParties,
     state.history,
+    showToast,
   ]);
 
   // Admin-only Restored Archive Auto-Sync:
@@ -4102,7 +4116,7 @@ export default function App() {
           }
         }
 
-        const activeParties = allParties.filter((p) => p.active && p.role !== 'admin');
+        const activeParties = allParties.filter((p) => p.active !== false && p.role !== 'admin');
         const existingSheetIds = new Set(allSheets.map((s) => s.partyId));
         const billByName = new Map(
           closedSellerBills.map((b) => [b.name.trim().toUpperCase(), b] as const)
@@ -4569,7 +4583,7 @@ export default function App() {
               : closedPrizeList.filter((pr) => summaryNameSet.has(pr.name.trim().toUpperCase()));
 
           const partySnap: DaySnapshot = {
-            id: `snap-${party.partyId.slice(0, 14)}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            id: makeUniquePartyArchiveId(party.partyId, closedDate),
             date: closedDate,
             savedAt: snapshot.savedAt,
             trigger,
@@ -4646,7 +4660,7 @@ export default function App() {
         })();
 
         const partiesToClearSheets = allParties.filter(
-          (p) => p.role !== 'admin' && (p.active || existingSheetIds.has(p.partyId))
+          (p) => p.role !== 'admin' && (p.active !== false || existingSheetIds.has(p.partyId))
         );
         const clearSheetsTask = (async () => {
           for (let i = 0; i < partiesToClearSheets.length; i += CONCURRENCY) {
