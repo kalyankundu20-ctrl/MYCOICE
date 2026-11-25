@@ -508,13 +508,14 @@ const VirtualSheetTableRow = memo(function VirtualSheetTableRow({
                 rangeOverride: '',
               })
             }
+            onPaste={(e) => onSmartPaste(e, row.id)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && nextVisibleRowId) {
                 e.preventDefault();
                 onFocusField(`input[data-row-field="table-start-${nextVisibleRowId}"]`);
               }
             }}
-            className="ios-compact-input w-full px-0.5 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+            className="ios-compact-input w-full px-0.5 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-900 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
           />
         </div>
       </td>
@@ -3158,7 +3159,7 @@ export function SessionSheetView({
                 <table className="w-full table-fixed border-collapse">
                   <thead ref={theadRef}>
                     <tr className="kk-table-head text-white text-[10.5px] sm:text-xs font-bold uppercase tracking-[0.03em] whitespace-nowrap">
-                      <th className="w-[5%] sm:w-[4%] px-0.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                      <th className="w-[4.5%] sm:w-[4%] px-0.5 py-2.5 sm:py-3 text-center border-r border-white/10">
                         <input
                           type="checkbox"
                           aria-label="Select all rows"
@@ -3170,22 +3171,22 @@ export function SessionSheetView({
                       <th className="hidden sm:table-cell sm:w-[5.5%] px-1 py-2.5 sm:py-3 text-center border-r border-white/10">
                         Time
                       </th>
-                      <th className="w-[22%] sm:w-[18%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                      <th className="w-[18.5%] sm:w-[16%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
                         Name
                       </th>
-                      <th className="w-[11.5%] sm:w-[9.5%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                      <th className="w-[10%] sm:w-[9%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
                         Item
                       </th>
                       <th className="w-[13.5%] sm:w-[13%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
                         Start
                       </th>
-                      <th className="w-[7.5%] sm:w-[8%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                      <th className="w-[13.5%] sm:w-[13%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
                         End
                       </th>
-                      <th className="w-[8.5%] sm:w-[9%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                      <th className="w-[8.5%] sm:w-[8.5%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
                         Qty
                       </th>
-                      <th className="w-[27.5%] sm:w-[28.5%] px-0.5 sm:px-2 py-2.5 sm:py-3 text-center border-r border-white/10 whitespace-nowrap">
+                      <th className="w-[27%] sm:w-[26.5%] px-0.5 sm:px-2 py-2.5 sm:py-3 text-center border-r border-white/10 whitespace-nowrap">
                         Limit Status
                       </th>
                       <th className="w-[4.5%] sm:w-[4.5%] px-0.5 py-2.5 sm:py-3 text-center"></th>
