@@ -1287,24 +1287,26 @@ export function SessionSheetView({
   const isNumberSearch = /^\d{1,5}$/.test(trimmedSearch);
 
   const rowMatchesNumberQuery = useCallback((r: ComputedTicketRow, q: string): boolean => {
-    if (r.start.toLowerCase().includes(q) || r.end.toLowerCase().includes(q)) {
+    if (r.start.includes(q) || r.end.includes(q)) {
       return true;
     }
     // Also match middle numbers within the row's Start..End ticket range (e.g. searching 31857 matches 31855-59)
-    if (/^\d{2,5}$/.test(q) && r.startNumInt !== null && r.rangeEndInt !== null) {
+    if (q.length >= 2 && q.length <= 5 && r.startNumInt !== null && r.rangeEndInt !== null) {
       const numQuery = parseInt(q, 10);
       if (q.length === 5) {
         return numQuery >= r.startNumInt && numQuery <= r.rangeEndInt;
       }
-      if (r.rangeEndInt - r.startNumInt <= 1000) {
+      const span = r.rangeEndInt - r.startNumInt;
+      if (span <= 200) {
         for (let n = r.startNumInt; n <= r.rangeEndInt; n++) {
           if (pad5(n).includes(q)) return true;
         }
       } else {
+        // O(1) suffix match check for wide ranges (never blocks main thread even on 30,000 rows!)
         const mod = Math.pow(10, q.length);
-        for (let n = r.startNumInt; n <= r.rangeEndInt; n++) {
-          if (n % mod === numQuery) return true;
-        }
+        const rem = r.startNumInt % mod;
+        const delta = (numQuery - rem + mod) % mod;
+        if (r.startNumInt + delta <= r.rangeEndInt) return true;
       }
     }
     return false;

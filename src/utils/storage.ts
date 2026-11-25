@@ -31,11 +31,14 @@ export function requestPersistentStorage(): void {
   }
 }
 
+let cachedIdbPromise: Promise<IDBDatabase | null> | null = null;
+
 function openIdb(): Promise<IDBDatabase | null> {
   if (typeof window === 'undefined' || !('indexedDB' in window)) {
     return Promise.resolve(null);
   }
-  return new Promise((resolve) => {
+  if (cachedIdbPromise) return cachedIdbPromise;
+  cachedIdbPromise = new Promise((resolve) => {
     try {
       const req = window.indexedDB.open(IDB_NAME, 1);
       req.onupgradeneeded = () => {
@@ -44,28 +47,84 @@ function openIdb(): Promise<IDBDatabase | null> {
           db.createObjectStore(IDB_STORE);
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-      req.onblocked = () => resolve(null);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+          cachedIdbPromise = null;
+        };
+        db.onclose = () => {
+          cachedIdbPromise = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        cachedIdbPromise = null;
+        resolve(null);
+      };
+      req.onblocked = () => {
+        cachedIdbPromise = null;
+        resolve(null);
+      };
     } catch {
+      cachedIdbPromise = null;
       resolve(null);
     }
   });
+  return cachedIdbPromise;
+}
+
+export function scheduleIdlePersistence(task: () => void, timeoutMs = 220): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const win = window as Window & {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+    cancelIdleCallback?: (id: number) => void;
+  };
+  if (typeof win.requestIdleCallback === 'function') {
+    const id = win.requestIdleCallback(() => task(), { timeout: timeoutMs });
+    return () => win.cancelIdleCallback?.(id);
+  }
+  const id = window.setTimeout(task, Math.min(80, timeoutMs));
+  return () => window.clearTimeout(id);
+}
+
+function countSnapshotRows(snaps: AppState['history'] | undefined): number {
+  if (!Array.isArray(snaps)) return 0;
+  let total = 0;
+  for (let i = 0; i < snaps.length; i++) {
+    const e = snaps[i]?.entries;
+    if (!e) continue;
+    total += (e['1PM']?.length || 0) + (e['6PM']?.length || 0) + (e['8PM']?.length || 0);
+  }
+  return total;
 }
 
 export function writeLocalStorageSafe(state: AppState, updatedAt: number): void {
   if (typeof window === 'undefined') return;
 
-  // At high row counts (e.g. 5,000–30,000 rows across 1PM/6PM/8PM), synchronous JSON.stringify
-  // blocks the main thread and exceeds localStorage's ~5MB quota. IndexedDB persists the full
-  // state asynchronously with a newer updatedAt and wins on recovery!
+  // At high row counts (e.g. 2,000–30,000+ rows across 1PM/6PM/8PM), synchronous JSON.stringify
+  // blocks the main thread and risks exceeding localStorage's ~5MB quota. IndexedDB persists the
+  // full state asynchronously with a newer updatedAt and always wins on recovery!
   const totalEntryRows =
     (state.entries?.['1PM']?.length || 0) +
     (state.entries?.['6PM']?.length || 0) +
     (state.entries?.['8PM']?.length || 0);
-  if (totalEntryRows > 3500) {
+  if (totalEntryRows > 2200) {
     return;
   }
+
+  // Never synchronously JSON.stringify huge 30-day archive history arrays into localStorage
+  // (IndexedDB stores 100% of full history & recycleBin asynchronously without blocking UI!).
+  const historyRows = countSnapshotRows(state.history);
+  const recycleRows = countSnapshotRows(state.recycleBin);
+  const compactForLocal: AppState =
+    historyRows + recycleRows > 1200
+      ? {
+          ...state,
+          history: (state.history || []).slice(0, 2),
+          recycleBin: [],
+        }
+      : state;
 
   const tryWrite = (candidateState: AppState): boolean => {
     try {
@@ -77,19 +136,17 @@ export function writeLocalStorageSafe(state: AppState, updatedAt: number): void 
     }
   };
 
-  if (tryWrite(state)) return;
+  if (tryWrite(compactForLocal)) return;
 
-  // Fallback on QuotaExceededError: keep all live sheets/sellers/winning numbers intact,
-  // and trim archived history snapshots in localStorage (full history still goes to IndexedDB).
-  for (const limit of [20, 5, 0]) {
-    if (
-      tryWrite({
-        ...state,
-        history: state.history.slice(0, limit),
-      })
-    ) {
-      return;
-    }
+  // Fallback on QuotaExceededError: keep live sheets/sellers/winning numbers intact, trim history
+  if (
+    tryWrite({
+      ...state,
+      history: [],
+      recycleBin: [],
+    })
+  ) {
+    return;
   }
 }
 
@@ -112,30 +169,44 @@ export function readLocalStorageEnvelope(): PersistedEnvelope | null {
   }
 }
 
-export async function writeIndexedDbEnvelope(
-  state: AppState,
-  updatedAt: number
-): Promise<void> {
+let idbWriteInFlight = false;
+let pendingIdbEnvelope: PersistedEnvelope | null = null;
+
+async function writeSingleIdbEnvelope(envelope: PersistedEnvelope): Promise<void> {
   const db = await openIdb();
   if (!db) return;
   return new Promise<void>((resolve) => {
     try {
       const tx = db.transaction(IDB_STORE, 'readwrite');
       const store = tx.objectStore(IDB_STORE);
-      store.put({ state, updatedAt } satisfies PersistedEnvelope, IDB_KEY);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
+      store.put(envelope, IDB_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     } catch {
-      db.close();
+      cachedIdbPromise = null;
       resolve();
     }
   });
+}
+
+export async function writeIndexedDbEnvelope(
+  state: AppState,
+  updatedAt: number
+): Promise<void> {
+  // Coalesce rapid successive writes so only the newest snapshot is written to IndexedDB
+  pendingIdbEnvelope = { state, updatedAt };
+  if (idbWriteInFlight) return;
+  idbWriteInFlight = true;
+  try {
+    while (pendingIdbEnvelope) {
+      const next = pendingIdbEnvelope;
+      pendingIdbEnvelope = null;
+      await writeSingleIdbEnvelope(next);
+    }
+  } finally {
+    idbWriteInFlight = false;
+  }
 }
 
 export async function readIndexedDbEnvelope(): Promise<PersistedEnvelope | null> {
@@ -148,19 +219,15 @@ export async function readIndexedDbEnvelope(): Promise<PersistedEnvelope | null>
       const req = store.get(IDB_KEY);
       req.onsuccess = () => {
         const val = req.result as PersistedEnvelope | undefined;
-        db.close();
         if (val && val.state && typeof val.updatedAt === 'number') {
           resolve(val);
         } else {
           resolve(null);
         }
       };
-      req.onerror = () => {
-        db.close();
-        resolve(null);
-      };
+      req.onerror = () => resolve(null);
     } catch {
-      db.close();
+      cachedIdbPromise = null;
       resolve(null);
     }
   });
@@ -185,10 +252,8 @@ export function writePermanentSellers(sellers: Seller[], updatedAt: number): voi
       const tx = db.transaction(IDB_STORE, 'readwrite');
       const store = tx.objectStore(IDB_STORE);
       store.put(payload, IDB_SELLERS_KEY);
-      tx.oncomplete = () => db.close();
-      tx.onerror = () => db.close();
     } catch {
-      db.close();
+      cachedIdbPromise = null;
     }
   });
 }
@@ -218,7 +283,6 @@ export async function readPermanentSellersIdb(): Promise<PermanentSellersEnvelop
       const req = store.get(IDB_SELLERS_KEY);
       req.onsuccess = () => {
         const val = req.result as PermanentSellersEnvelope | undefined;
-        db.close();
         if (val && Array.isArray(val.sellers) && typeof val.updatedAt === 'number') {
           resolve(val);
         } else {
@@ -226,11 +290,10 @@ export async function readPermanentSellersIdb(): Promise<PermanentSellersEnvelop
         }
       };
       req.onerror = () => {
-        db.close();
         resolve(null);
       };
     } catch {
-      db.close();
+      cachedIdbPromise = null;
       resolve(null);
     }
   });

@@ -27,15 +27,20 @@ export function pad5(num: number): string {
   return ('00000' + num).slice(-5);
 }
 
+const INR_FORMATTER = new Intl.NumberFormat('en-IN', {
+  maximumFractionDigits: 2,
+});
+const INR_WHOLE_FORMATTER = new Intl.NumberFormat('en-IN', {
+  maximumFractionDigits: 0,
+});
+
 export function formatINR(num: number): string {
   const rounded = Math.round(num * 100) / 100;
-  return rounded.toLocaleString('en-IN', {
-    maximumFractionDigits: 2,
-  });
+  return INR_FORMATTER.format(rounded);
 }
 
 export function formatINRWhole(num: number): string {
-  return Math.round(num).toLocaleString('en-IN');
+  return INR_WHOLE_FORMATTER.format(Math.round(num));
 }
 
 export function formatDateDDMMYYYY(isoDate: string): string {
@@ -299,6 +304,8 @@ export function processSessionRows(
 
   let lastValidName = '';
   let totalQty = 0;
+  let minTouchedNum = 100000;
+  let maxTouchedNum = -1;
 
   interface ParsedMeta {
     isInvalid: boolean;
@@ -342,6 +349,9 @@ export function processSessionRows(
       } else {
         const totalNumbersInRow = Math.max(1, metrics.rangeEndInt - metrics.startNumInt + 1);
         const qtyPerNumber = metrics.qty / totalNumbersInRow;
+
+        if (metrics.startNumInt < minTouchedNum) minTouchedNum = metrics.startNumInt;
+        if (metrics.rangeEndInt > maxTouchedNum) maxTouchedNum = metrics.rangeEndInt;
 
         for (let n = metrics.startNumInt; n <= metrics.rangeEndInt; n++) {
           numberTotals[n] += qtyPerNumber;
@@ -546,16 +556,20 @@ export function processSessionRows(
   };
 
   // Build per-seller Over-Limit Breakdown Groups ("Kis kis sath limit over hua")
+  // Scan ONLY the touched [minTouchedNum..maxTouchedNum] window (0 iterations on empty sheets!)
   const overLimitNums: number[] = [];
   const over10Nums: number[] = [];
   const watch10Limit = 10 + 0.001;
-  for (let n = 0; n < 100000; n++) {
-    const val = numberTotals[n];
-    if (val > thresholdLimit) {
-      overLimitNums.push(n);
-    }
-    if (val > watch10Limit) {
-      over10Nums.push(n);
+  if (maxTouchedNum >= minTouchedNum) {
+    const checkOver10 = !config.disableOver10Watch && config.limitThreshold > 10;
+    for (let n = minTouchedNum; n <= maxTouchedNum; n++) {
+      const val = numberTotals[n];
+      if (val > thresholdLimit) {
+        overLimitNums.push(n);
+      }
+      if (checkOver10 && val > watch10Limit) {
+        over10Nums.push(n);
+      }
     }
   }
 

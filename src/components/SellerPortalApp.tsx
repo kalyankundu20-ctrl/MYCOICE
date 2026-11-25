@@ -22,7 +22,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createBlankRows, createEmptyAppState, createEmptyRow } from '../data/initialState';
 import {
   computeSellerBills,
@@ -63,6 +63,7 @@ import {
 } from '../types/ledger';
 import { BillReceiptPayload, sendBillCardDirectToWhatsApp } from '../utils/billImageGenerator';
 import { AppSounds } from '../utils/sound';
+import { scheduleIdlePersistence } from '../utils/storage';
 import { AnnouncementBanner } from './AnnouncementBanner';
 import { ArchiveView } from './ArchiveView';
 import { getIstClockParts, getSellerSessionLockStatus, SessionLockStatus } from '../utils/sessionLock';
@@ -1095,14 +1096,26 @@ export function SellerPortalApp({
   const effectiveSubParties = restoredData ? restoredData.subParties : subParties;
   const effectiveAllChainParties = restoredData ? restoredData.allChainParties : allChainParties;
 
-  // Live computations (always track current working day for Save Archive)
+  // Live computations split per-session so editing 1PM never recomputes 6PM/8PM
+  const liveComp1PM = useMemo(
+    () => processSessionRows(entries['1PM'], '1PM', sellerConfig),
+    [entries['1PM'], sellerConfig]
+  );
+  const liveComp6PM = useMemo(
+    () => processSessionRows(entries['6PM'], '6PM', sellerConfig),
+    [entries['6PM'], sellerConfig]
+  );
+  const liveComp8PM = useMemo(
+    () => processSessionRows(entries['8PM'], '8PM', sellerConfig),
+    [entries['8PM'], sellerConfig]
+  );
   const liveSessionComputations: Record<SessionId, SessionComputation> = useMemo(
     () => ({
-      '1PM': processSessionRows(entries['1PM'], '1PM', sellerConfig),
-      '6PM': processSessionRows(entries['6PM'], '6PM', sellerConfig),
-      '8PM': processSessionRows(entries['8PM'], '8PM', sellerConfig),
+      '1PM': liveComp1PM,
+      '6PM': liveComp6PM,
+      '8PM': liveComp8PM,
     }),
-    [entries, sellerConfig]
+    [liveComp1PM, liveComp6PM, liveComp8PM]
   );
 
   // Active view computations (switches cleanly to Restored Archive when viewing history)
@@ -1118,13 +1131,20 @@ export function SellerPortalApp({
     [restoredData, effectiveEntries, sellerConfig, liveSessionComputations]
   );
 
+  // Defer secondary chain rollups & prize scans so typing/pasting never drops a frame
+  const deferredEffectiveEntries = useDeferredValue(effectiveEntries);
+  const deferredEffectiveSubSheets = useDeferredValue(effectiveSubSheets);
+  const deferredSessionComputations = useDeferredValue(sessionComputations);
+
   // Combined Chain Computations (Own + Sub-Sellers) for Master's Admin Bill & Individual Sub-Seller Bills
   const chainMasterRollupComputations: Record<SessionId, SessionComputation> = useMemo(() => {
-    if (!isMasterSeller || !effectiveParty || effectiveSubSheets.length === 0) return sessionComputations;
+    if (!isMasterSeller || !effectiveParty || deferredEffectiveSubSheets.length === 0) {
+      return deferredSessionComputations;
+    }
     const combineForMaster = (sid: SessionId): TicketEntryRow[] => {
-      const own = effectiveEntries[sid] || [];
+      const own = deferredEffectiveEntries[sid] || [];
       const subRows: TicketEntryRow[] = [];
-      for (const sh of effectiveSubSheets) {
+      for (const sh of deferredEffectiveSubSheets) {
         const list =
           sid === '1PM' ? sh.entries1PM : sid === '6PM' ? sh.entries6PM : sh.entries8PM;
         for (const r of list || []) {
@@ -1142,16 +1162,25 @@ export function SellerPortalApp({
       '6PM': processSessionRows(combineForMaster('6PM'), '6PM', sellerConfig),
       '8PM': processSessionRows(combineForMaster('8PM'), '8PM', sellerConfig),
     };
-  }, [isMasterSeller, effectiveParty, effectiveSubSheets, effectiveEntries, sellerConfig, sessionComputations]);
+  }, [
+    isMasterSeller,
+    effectiveParty,
+    deferredEffectiveSubSheets,
+    deferredEffectiveEntries,
+    sellerConfig,
+    deferredSessionComputations,
+  ]);
 
   // Map every descendant sheet (L2, L3, L4...) to its individual seller name for Prize List
   const chainIndividualComputations: Record<SessionId, SessionComputation> = useMemo(() => {
-    if (!isMasterSeller || !effectiveParty || effectiveSubSheets.length === 0) return sessionComputations;
+    if (!isMasterSeller || !effectiveParty || deferredEffectiveSubSheets.length === 0) {
+      return deferredSessionComputations;
+    }
     const allById = new Map<string, CloudPartyDoc>(effectiveAllChainParties.map((p) => [p.partyId, p]));
     const combineNamed = (sid: SessionId): TicketEntryRow[] => {
-      const own = effectiveEntries[sid] || [];
+      const own = deferredEffectiveEntries[sid] || [];
       const subRows: TicketEntryRow[] = [];
-      for (const sh of effectiveSubSheets) {
+      for (const sh of deferredEffectiveSubSheets) {
         const matchedSub =
           allById.get(sh.partyId) || effectiveSubParties.find((p) => p.partyId === sh.partyId);
         const subName = (matchedSub?.name || sh.partyName || 'SUB').trim();
@@ -1172,11 +1201,22 @@ export function SellerPortalApp({
       '6PM': processSessionRows(combineNamed('6PM'), '6PM', sellerConfig),
       '8PM': processSessionRows(combineNamed('8PM'), '8PM', sellerConfig),
     };
-  }, [isMasterSeller, effectiveParty, effectiveSubSheets, effectiveAllChainParties, effectiveSubParties, effectiveEntries, sellerConfig, sessionComputations]);
+  }, [
+    isMasterSeller,
+    effectiveParty,
+    deferredEffectiveSubSheets,
+    effectiveAllChainParties,
+    effectiveSubParties,
+    deferredEffectiveEntries,
+    sellerConfig,
+    deferredSessionComputations,
+  ]);
 
   // Roll up nested L3/L4/L5+ sheets into their direct L2 branch under this Master for accurate direct Sub-Seller billing
-  const chainDirectBranchComputations: Record<SessionId, SessionComputation> = useMemo(() => {
-    if (!isMasterSeller || !effectiveParty || effectiveSubSheets.length === 0) return sessionComputations;
+  const chainDirectBranchComputationsRaw: Record<SessionId, SessionComputation> | null = useMemo(() => {
+    if (!isMasterSeller || !effectiveParty || deferredEffectiveSubSheets.length === 0) {
+      return null;
+    }
     const allById = new Map<string, CloudPartyDoc>(effectiveAllChainParties.map((p) => [p.partyId, p]));
     const directById = new Map<string, CloudPartyDoc>(effectiveSubParties.map((p) => [p.partyId, p]));
 
@@ -1198,7 +1238,7 @@ export function SellerPortalApp({
 
     const combineBranches = (sid: SessionId): TicketEntryRow[] => {
       const subRows: TicketEntryRow[] = [];
-      for (const sh of effectiveSubSheets) {
+      for (const sh of deferredEffectiveSubSheets) {
         const branchName = resolveDirectBranchName(sh);
         const list =
           sid === '1PM' ? sh.entries1PM : sid === '6PM' ? sh.entries6PM : sh.entries8PM;
@@ -1217,7 +1257,16 @@ export function SellerPortalApp({
       '6PM': processSessionRows(combineBranches('6PM'), '6PM', sellerConfig),
       '8PM': processSessionRows(combineBranches('8PM'), '8PM', sellerConfig),
     };
-  }, [isMasterSeller, effectiveParty, effectiveSubSheets, effectiveAllChainParties, effectiveSubParties, sellerConfig, sessionComputations]);
+  }, [
+    isMasterSeller,
+    effectiveParty,
+    deferredEffectiveSubSheets,
+    effectiveAllChainParties,
+    effectiveSubParties,
+    sellerConfig,
+  ]);
+
+  const chainDirectBranchComputations = chainDirectBranchComputationsRaw ?? deferredSessionComputations;
 
   const parsedWinning = useMemo(
     () =>
@@ -1502,20 +1551,30 @@ export function SellerPortalApp({
 
   const persistLocalPartyArchives = (next: DaySnapshot[]) => {
     setPartyArchives(next);
-    try {
-      window.localStorage.setItem(archiveStorageKey, JSON.stringify(next));
-    } catch {
-      // Ignore storage quota errors
-    }
+    scheduleIdlePersistence(() => {
+      try {
+        // Keep localStorage light so large 30-day archives never block the main thread; Firestore holds full copy.
+        const lite = next.slice(0, 12);
+        window.localStorage.setItem(archiveStorageKey, JSON.stringify(lite));
+      } catch {
+        try {
+          window.localStorage.setItem(archiveStorageKey, JSON.stringify(next.slice(0, 4)));
+        } catch {
+          // Ignore storage quota errors
+        }
+      }
+    });
   };
 
   const persistPartyRecycleBin = (next: DaySnapshot[]) => {
     setPartyRecycleBin(next);
-    try {
-      window.localStorage.setItem(recycleBinStorageKey, JSON.stringify(next));
-    } catch {
-      // Ignore storage quota errors
-    }
+    scheduleIdlePersistence(() => {
+      try {
+        window.localStorage.setItem(recycleBinStorageKey, JSON.stringify(next.slice(0, 8)));
+      } catch {
+        // Ignore storage quota errors
+      }
+    });
   };
 
   const showArchiveNotice = (msg: string) => {

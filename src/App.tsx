@@ -131,6 +131,7 @@ import {
   readPermanentSellersIdb,
   readPermanentSellersLocal,
   requestPersistentStorage,
+  scheduleIdlePersistence,
   STORAGE_KEY,
   writeIndexedDbEnvelope,
   writeLocalStorageSafe,
@@ -449,8 +450,10 @@ export default function App() {
         }
         persistTimerRef.current = window.setTimeout(() => {
           persistTimerRef.current = null;
-          writeLocalStorageSafe(latestStateRef.current, lastSavedAtRef.current);
-          void writeIndexedDbEnvelope(latestStateRef.current, lastSavedAtRef.current);
+          scheduleIdlePersistence(() => {
+            writeLocalStorageSafe(latestStateRef.current, lastSavedAtRef.current);
+            void writeIndexedDbEnvelope(latestStateRef.current, lastSavedAtRef.current);
+          });
         }, delayMs);
         return next;
       });
@@ -3182,6 +3185,11 @@ export default function App() {
     [limitPrizeGroups]
   );
 
+  const prizeTotalAmount = useMemo(
+    () => prizeList.reduce((sum, p) => sum + p.total, 0),
+    [prizeList]
+  );
+
   const commitSessionRows = useCallback(
     (sessionId: SessionId, nextRows: TicketEntryRow[]) => {
       const normalized = normalizeRowsKeepOneTrailing(nextRows);
@@ -5494,7 +5502,7 @@ export default function App() {
           onDeleteSeller={handleDeleteSeller}
           onRolloverDay={() => performArchiveAndRollover('day-close')}
           onPreviewMessage={handleOpenPreview}
-          sessionComputations={sessionComputations}
+          sessionComputations={deferredSessionComputations}
           limitThreshold={state.config.limitThreshold}
           onOpenSession={(sid) => {
             AppSounds.tap();
@@ -5551,7 +5559,7 @@ export default function App() {
           winningRaw={state.winningRaw}
           parsedWinning={parsedWinning}
           prizeCount={prizeList.length}
-          prizeTotal={prizeList.reduce((sum, p) => sum + p.total, 0)}
+          prizeTotal={prizeTotalAmount}
           onChangeWinningRaw={handleChangeWinningRaw}
           onClearAllWinning={handleClearAllWinning}
           onOpenPrizeList={() => setActiveTab('Prize List')}
