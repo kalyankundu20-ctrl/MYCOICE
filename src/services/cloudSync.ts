@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
   query,
   serverTimestamp,
@@ -1581,7 +1582,8 @@ export function subscribeAdminParties(
   const path = `agencies/${AGENCY_ID}/parties`;
   const q = query(
     collection(db, 'agencies', AGENCY_ID, 'parties'),
-    where('ownerUid', '==', ownerUid)
+    where('ownerUid', '==', ownerUid),
+    limit(200)
   );
   return onSnapshot(
     q,
@@ -1603,7 +1605,8 @@ export function subscribeAdminPartyPrivates(
   const path = `agencies/${AGENCY_ID}/partyPrivate`;
   const q = query(
     collection(db, 'agencies', AGENCY_ID, 'partyPrivate'),
-    where('ownerUid', '==', ownerUid)
+    where('ownerUid', '==', ownerUid),
+    limit(200)
   );
   return onSnapshot(
     q,
@@ -1625,7 +1628,8 @@ export function subscribeAdminSheets(
   const path = `agencies/${AGENCY_ID}/sheets`;
   const q = query(
     collection(db, 'agencies', AGENCY_ID, 'sheets'),
-    where('ownerUid', '==', ownerUid)
+    where('ownerUid', '==', ownerUid),
+    limit(200)
   );
   return onSnapshot(
     q,
@@ -1652,13 +1656,15 @@ export async function fetchAdminPartiesAndSheetsOnce(
     getDocs(
       query(
         collection(db, 'agencies', cleanAgencyId, 'parties'),
-        where('ownerUid', '==', ownerUid)
+        where('ownerUid', '==', ownerUid),
+        limit(200)
       )
     ),
     getDocs(
       query(
         collection(db, 'agencies', cleanAgencyId, 'sheets'),
-        where('ownerUid', '==', ownerUid)
+        where('ownerUid', '==', ownerUid),
+        limit(200)
       )
     ),
   ]);
@@ -2506,7 +2512,7 @@ export function subscribeMasterSubChain(
     };
 
     const unsubParties = onSnapshot(
-      query(collection(db, 'agencies', agencyId, 'parties'), where('ownerUid', '==', queryUid)),
+      query(collection(db, 'agencies', agencyId, 'parties'), where('ownerUid', '==', queryUid), limit(200)),
       (snap) => {
         latestAgencyParties = snap.docs.map((d) => d.data() as CloudPartyDoc);
         emitFromAdmin();
@@ -2517,7 +2523,7 @@ export function subscribeMasterSubChain(
     );
 
     const unsubPrivates = onSnapshot(
-      query(collection(db, 'agencies', agencyId, 'partyPrivate'), where('ownerUid', '==', queryUid)),
+      query(collection(db, 'agencies', agencyId, 'partyPrivate'), where('ownerUid', '==', queryUid), limit(200)),
       (snap) => {
         callbacks.onSubPrivates(snap.docs.map((d) => d.data() as CloudPartyPrivateDoc));
       },
@@ -2527,7 +2533,7 @@ export function subscribeMasterSubChain(
     );
 
     const unsubSheets = onSnapshot(
-      query(collection(db, 'agencies', agencyId, 'sheets'), where('ownerUid', '==', queryUid)),
+      query(collection(db, 'agencies', agencyId, 'sheets'), where('ownerUid', '==', queryUid), limit(200)),
       (snap) => {
         latestAgencySheets = snap.docs.map((d) => d.data() as CloudPartySheetDoc);
         emitFromAdmin();
@@ -2544,13 +2550,16 @@ export function subscribeMasterSubChain(
     };
   }
 
-  // Signed-in Master / Sub-Master live multi-level listeners:
-  // Merge direct children (parentMasterId == masterPartyId, works even before UID backfill)
-  // AND deep chain descendants (ancestorMasterIds array-contains masterPartyId).
+  // Signed-in Master / Sub-Master live multi-level listeners (quota-optimized):
+  // Attach direct listeners immediately; ONLY attach deep ancestor listeners when
+  // at least one direct child has role === 'master' (prevents 2x reads of every child sheet!).
   const directPartyMap = new Map<string, CloudPartyDoc>();
   const deepPartyMap = new Map<string, CloudPartyDoc>();
   const directSheetMap = new Map<string, CloudPartySheetDoc>();
   const deepSheetMap = new Map<string, CloudPartySheetDoc>();
+  let unsubDeepParties: Unsubscribe | null = null;
+  let unsubDeepSheets: Unsubscribe | null = null;
+  let disposed = false;
 
   const emitParties = () => {
     const merged = new Map<string, CloudPartyDoc>();
@@ -2569,17 +2578,78 @@ export function subscribeMasterSubChain(
     callbacks.onSubSheets(Array.from(merged.values()));
   };
 
+  const ensureDeepChainListeners = (hasSubMaster: boolean) => {
+    if (disposed) return;
+    if (!hasSubMaster) {
+      if (unsubDeepParties) {
+        unsubDeepParties();
+        unsubDeepParties = null;
+        deepPartyMap.clear();
+      }
+      if (unsubDeepSheets) {
+        unsubDeepSheets();
+        unsubDeepSheets = null;
+        deepSheetMap.clear();
+      }
+      return;
+    }
+    if (!unsubDeepParties) {
+      unsubDeepParties = onSnapshot(
+        query(
+          collection(db, 'agencies', agencyId, 'parties'),
+          where('ancestorMasterIds', 'array-contains', masterPartyId),
+          limit(150)
+        ),
+        (snap) => {
+          deepPartyMap.clear();
+          snap.docs.forEach((d) => {
+            const p = d.data() as CloudPartyDoc;
+            deepPartyMap.set(p.partyId, p);
+          });
+          emitParties();
+        },
+        () => {
+          // Fallback silently if ancestor query index/permission not yet backfilled; direct listener remains active.
+        }
+      );
+    }
+    if (!unsubDeepSheets) {
+      unsubDeepSheets = onSnapshot(
+        query(
+          collection(db, 'agencies', agencyId, 'sheets'),
+          where('ancestorMasterIds', 'array-contains', masterPartyId),
+          limit(150)
+        ),
+        (snap) => {
+          deepSheetMap.clear();
+          snap.docs.forEach((d) => {
+            const s = d.data() as CloudPartySheetDoc;
+            deepSheetMap.set(s.partyId, s);
+          });
+          emitSheets();
+        },
+        () => {
+          // Fallback silently; direct sheet listener remains active.
+        }
+      );
+    }
+  };
+
   const unsubDirectParties = onSnapshot(
     query(
       collection(db, 'agencies', agencyId, 'parties'),
-      where('parentMasterId', '==', masterPartyId)
+      where('parentMasterId', '==', masterPartyId),
+      limit(150)
     ),
     (snap) => {
       directPartyMap.clear();
+      let hasSubMaster = false;
       snap.docs.forEach((d) => {
         const p = d.data() as CloudPartyDoc;
         directPartyMap.set(p.partyId, p);
+        if (p.role === 'master') hasSubMaster = true;
       });
+      ensureDeepChainListeners(hasSubMaster);
       emitParties();
     },
     (err) => {
@@ -2587,73 +2657,40 @@ export function subscribeMasterSubChain(
     }
   );
 
-  const unsubDeepParties = onSnapshot(
-    query(
-      collection(db, 'agencies', agencyId, 'parties'),
-      where('ancestorMasterIds', 'array-contains', masterPartyId)
-    ),
-    (snap) => {
-      deepPartyMap.clear();
-      snap.docs.forEach((d) => {
-        const p = d.data() as CloudPartyDoc;
-        deepPartyMap.set(p.partyId, p);
-      });
-      emitParties();
-    },
-    () => {
-      // Fallback silently if ancestor query index/permission not yet backfilled; direct listener remains active.
-    }
-  );
-
-  const uidPrivMap = new Map<string, CloudPartyPrivateDoc>();
-  const idPrivMap = new Map<string, CloudPartyPrivateDoc>();
-  const emitPrivates = () => {
-    const merged = new Map<string, CloudPartyPrivateDoc>();
-    for (const [id, pr] of uidPrivMap.entries()) merged.set(id, pr);
-    for (const [id, pr] of idPrivMap.entries()) merged.set(id, pr);
-    callbacks.onSubPrivates(Array.from(merged.values()));
-  };
-
-  const unsubPrivatesByUid = onSnapshot(
+  // Single partyPrivate listener by parentMasterId (with lazy UID fallback only if needed)
+  let unsubPrivatesFallback: Unsubscribe | null = null;
+  const unsubPrivatesPrimary = onSnapshot(
     query(
       collection(db, 'agencies', agencyId, 'partyPrivate'),
-      where('parentMasterUid', '==', queryUid)
+      where('parentMasterId', '==', masterPartyId),
+      limit(150)
     ),
     (snap) => {
-      uidPrivMap.clear();
-      snap.docs.forEach((d) => {
-        const pr = d.data() as CloudPartyPrivateDoc;
-        uidPrivMap.set(pr.partyId, pr);
-      });
-      emitPrivates();
-    },
-    (err) => {
-      handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyPrivate`);
-    }
-  );
-
-  const unsubPrivatesByMasterId = onSnapshot(
-    query(
-      collection(db, 'agencies', agencyId, 'partyPrivate'),
-      where('parentMasterId', '==', masterPartyId)
-    ),
-    (snap) => {
-      idPrivMap.clear();
-      snap.docs.forEach((d) => {
-        const pr = d.data() as CloudPartyPrivateDoc;
-        idPrivMap.set(pr.partyId, pr);
-      });
-      emitPrivates();
+      callbacks.onSubPrivates(snap.docs.map((d) => d.data() as CloudPartyPrivateDoc));
     },
     () => {
-      // Fallback silently; UID listener remains active.
+      if (disposed || unsubPrivatesFallback) return;
+      unsubPrivatesFallback = onSnapshot(
+        query(
+          collection(db, 'agencies', agencyId, 'partyPrivate'),
+          where('parentMasterUid', '==', queryUid),
+          limit(150)
+        ),
+        (snap) => {
+          callbacks.onSubPrivates(snap.docs.map((d) => d.data() as CloudPartyPrivateDoc));
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyPrivate`);
+        }
+      );
     }
   );
 
   const unsubDirectSheets = onSnapshot(
     query(
       collection(db, 'agencies', agencyId, 'sheets'),
-      where('parentMasterId', '==', masterPartyId)
+      where('parentMasterId', '==', masterPartyId),
+      limit(150)
     ),
     (snap) => {
       directSheetMap.clear();
@@ -2668,31 +2705,14 @@ export function subscribeMasterSubChain(
     }
   );
 
-  const unsubDeepSheets = onSnapshot(
-    query(
-      collection(db, 'agencies', agencyId, 'sheets'),
-      where('ancestorMasterIds', 'array-contains', masterPartyId)
-    ),
-    (snap) => {
-      deepSheetMap.clear();
-      snap.docs.forEach((d) => {
-        const s = d.data() as CloudPartySheetDoc;
-        deepSheetMap.set(s.partyId, s);
-      });
-      emitSheets();
-    },
-    () => {
-      // Fallback silently; direct sheet listener remains active.
-    }
-  );
-
   return () => {
+    disposed = true;
     unsubDirectParties();
-    unsubDeepParties();
-    unsubPrivatesByUid();
-    unsubPrivatesByMasterId();
+    unsubDeepParties?.();
+    unsubPrivatesPrimary();
+    unsubPrivatesFallback?.();
     unsubDirectSheets();
-    unsubDeepSheets();
+    unsubDeepSheets?.();
   };
 }
 
@@ -3052,7 +3072,8 @@ export function subscribePartyArchives(
 ): Unsubscribe {
   const q = query(
     collection(db, 'agencies', agencyId, 'partyArchives'),
-    where('partyId', '==', partyId)
+    where('partyId', '==', partyId),
+    limit(40)
   );
   return onSnapshot(
     q,
@@ -4483,7 +4504,8 @@ export async function loadAdminCloudVault(
     getDocs(
       query(
         collection(db, 'agencies', cleanAgencyId, 'adminLedgerChunks'),
-        where('ownerUid', '==', ownerUid)
+        where('ownerUid', '==', ownerUid),
+        limit(120)
       )
     ).catch((err) => {
       handleFirestoreError(err, OperationType.LIST, chunksPath);
@@ -4491,7 +4513,8 @@ export async function loadAdminCloudVault(
     getDocs(
       query(
         collection(db, 'agencies', cleanAgencyId, 'archives'),
-        where('ownerUid', '==', ownerUid)
+        where('ownerUid', '==', ownerUid),
+        limit(60)
       )
     ).catch((err) => {
       handleFirestoreError(err, OperationType.LIST, archivesPath);

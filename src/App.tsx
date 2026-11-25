@@ -525,11 +525,11 @@ export default function App() {
   });
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
-  const [cloudSession, setCloudSession] = useState<
+  type CloudSessionState =
     | { kind: 'none' }
     | { kind: 'admin'; agencyId: string; ownerUid: string }
-    | { kind: 'seller'; agencyId: string; partyId: string }
-  >(() => {
+    | { kind: 'seller'; agencyId: string; partyId: string };
+  const [cloudSession, setCloudSessionRaw] = useState<CloudSessionState>(() => {
     if (hasUrlLoginTrigger) return { kind: 'none' };
     const cached = readCachedCloudSession();
     if (!cached) return { kind: 'none' };
@@ -538,6 +538,29 @@ export default function App() {
     }
     return { kind: 'seller', agencyId: cached.agencyId, partyId: cached.partyId };
   });
+  const setCloudSession = useCallback((next: CloudSessionState) => {
+    setCloudSessionRaw((prev) => {
+      if (prev.kind !== next.kind) return next;
+      if (prev.kind === 'none') return prev;
+      if (
+        prev.kind === 'admin' &&
+        next.kind === 'admin' &&
+        prev.agencyId === next.agencyId &&
+        prev.ownerUid === next.ownerUid
+      ) {
+        return prev;
+      }
+      if (
+        prev.kind === 'seller' &&
+        next.kind === 'seller' &&
+        prev.agencyId === next.agencyId &&
+        prev.partyId === next.partyId
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
   const [sellerLoginMode, setSellerLoginMode] = useState<boolean>(hasUrlLoginTrigger);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudError, setCloudError] = useState('');
@@ -1303,6 +1326,10 @@ export default function App() {
         return;
       } catch (err) {
         lastErr = err;
+        const msg = err instanceof Error ? err.message.toLowerCase() : String(err || '').toLowerCase();
+        if (msg.includes('quota') || msg.includes('resource-exhausted')) {
+          break;
+        }
         if (attempt < 2) {
           await new Promise((resolve) => window.setTimeout(resolve, 900 * (attempt + 1)));
         }
@@ -1513,15 +1540,20 @@ export default function App() {
     []
   );
 
+  const adminSessionOwnerUid = cloudSession.kind === 'admin' ? cloudSession.ownerUid : '';
+  const adminSessionAgencyId = cloudSession.kind === 'admin' ? cloudSession.agencyId : '';
+  const authUserUid = authUser?.uid || '';
+  const hasCloudAgency = Boolean(cloudAgency);
+
   // Admin Real-time Subscriptions: parties, private contacts, and live seller sheets!
   useEffect(() => {
-    if (cloudSession.kind !== 'admin' || !authUser) {
+    if (!adminSessionOwnerUid || !authUserUid) {
       setCloudHydrated(false);
       sheetsHydratedOnceRef.current = false;
       subSheetMergedSigRef.current = {};
       return;
     }
-    const ownerUid = cloudSession.ownerUid;
+    const ownerUid = adminSessionOwnerUid;
     let gotParties = false;
     let gotPrivates = false;
     let gotSheets = false;
@@ -1556,7 +1588,7 @@ export default function App() {
       unsubPrivates();
       unsubSheets();
     };
-  }, [cloudSession, authUser]);
+  }, [adminSessionOwnerUid, authUserUid]);
 
   // Reactive Live Merge: once BOTH cloudParties and cloudSheets are hydrated,
   // merge every Direct Seller & Multi-Level Chain Sub-Seller sheet live into Admin's ledger
@@ -1851,16 +1883,16 @@ export default function App() {
   // so deleting the app, reinstalling, or opening on a new phone/domain NEVER overwrites
   // cloud data with empty sheets and automatically restores 100% of Admin's data!
   useEffect(() => {
-    if (cloudSession.kind !== 'admin' || !authUser || !cloudAgency || !localIdbReady) {
-      if (cloudSession.kind !== 'admin' || !authUser) {
+    if (!adminSessionOwnerUid || !adminSessionAgencyId || !authUserUid || !hasCloudAgency || !localIdbReady) {
+      if (!adminSessionOwnerUid || !authUserUid) {
         setAdminVaultHydrated(false);
       }
       return;
     }
 
     let cancelled = false;
-    const ownerUid = cloudSession.ownerUid;
-    const agencyId = cloudSession.agencyId;
+    const ownerUid = adminSessionOwnerUid;
+    const agencyId = adminSessionAgencyId;
 
     const hydrateAdminVault = async () => {
       try {
@@ -2154,7 +2186,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [cloudSession, authUser, cloudAgency, localIdbReady, vaultRetryNonce, setState, showToast]);
+  }, [adminSessionOwnerUid, adminSessionAgencyId, authUserUid, hasCloudAgency, localIdbReady, vaultRetryNonce, setState, showToast]);
 
   // Admin -> Cloud Sync: Date, Limit Threshold, Item Options & Official Winning Numbers
   // Strictly gated on adminVaultHydrated and paused while Admin is viewing a locally restored Archive date.
