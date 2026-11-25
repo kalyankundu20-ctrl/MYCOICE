@@ -310,6 +310,7 @@ export function ArchiveView({
                             e.stopPropagation();
                             AppSounds.tap();
                             setSyncingSnapId(snap.id);
+                            await new Promise((r) => window.setTimeout(r, 0));
                             try {
                               await onSyncSnapshotToParties(snap);
                             } finally {
