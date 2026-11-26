@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   ClipboardPaste,
   Eraser,
-  FileText,
   Hash,
   Layers,
   Plus,
@@ -90,17 +89,6 @@ const RANK_STYLE: Record<
   },
 };
 
-const RANK_TEMPLATE = `1st
-
-2nd
-
-3rd
-
-4th
-
-5th
-`;
-
 function groupParsedByRank(list: ParsedWinningNumber[]): Record<RankKey, string[]> {
   const buckets: Record<RankKey, string[]> = {
     '1st': [],
@@ -156,7 +144,6 @@ function SessionResultCard({
   parsedList,
   onChangeRaw,
 }: SessionCardProps) {
-  const [mode, setMode] = useState<'cards' | 'paste'>('cards');
   const [rankInputs, setRankInputs] = useState<Record<RankKey, string>>({
     '1st': '',
     '2nd': '',
@@ -165,7 +152,8 @@ function SessionResultCard({
     '5th': '',
   });
   const [justPasted, setJustPasted] = useState(false);
-  const [clipboardBlockedHint, setClipboardBlockedHint] = useState(false);
+  const [showManualPasteBox, setShowManualPasteBox] = useState(false);
+  const [manualPasteText, setManualPasteText] = useState('');
   const [confirmClearSession, setConfirmClearSession] = useState(false);
   const pasteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -174,26 +162,25 @@ function SessionResultCard({
 
   const triggerPastedFeedback = () => {
     setJustPasted(true);
-    setClipboardBlockedHint(false);
+    setShowManualPasteBox(false);
+    setManualPasteText('');
     window.setTimeout(() => setJustPasted(false), 1600);
   };
 
-  const handleSmartClipboardPaste = async () => {
+  const handleClipboardPaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
       if (text && text.trim()) {
         onChangeRaw(text.trim());
         AppSounds.success();
         triggerPastedFeedback();
-        setMode('cards');
         return;
       }
     } catch {
-      // Clipboard read permission denied or unavailable — open Smart Paste editor
+      // Clipboard permission blocked by browser — show compact inline paste box
     }
     AppSounds.tap();
-    setClipboardBlockedHint(true);
-    setMode('paste');
+    setShowManualPasteBox(true);
     window.setTimeout(() => {
       pasteTextareaRef.current?.focus();
     }, 60);
@@ -251,50 +238,21 @@ function SessionResultCard({
         </div>
       </div>
 
-      {/* Mode Switcher + 1-Tap Paste Action Strip */}
-      <div className="px-3 py-2 bg-slate-50/90 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-0.5 p-0.5 bg-slate-200/70 rounded-xl">
-          <button
-            type="button"
-            onClick={() => {
-              AppSounds.tap();
-              setMode('cards');
-              setClipboardBlockedHint(false);
-            }}
-            className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors cursor-pointer ${
-              mode === 'cards'
-                ? 'bg-white text-[var(--kk-brand)] shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Layers className="w-3 h-3" />
-            <span>Rank Cards</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              AppSounds.tap();
-              setMode('paste');
-            }}
-            className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors cursor-pointer ${
-              mode === 'paste'
-                ? 'bg-white text-[var(--kk-brand)] shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <FileText className="w-3 h-3" />
-            <span>Smart Paste</span>
-          </button>
+      {/* Action Strip (Rank Cards + 1-Tap Paste Result) */}
+      <div className="px-3 py-2 bg-slate-50/90 border-b border-slate-200/80 flex items-center justify-between gap-2">
+        <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[var(--kk-brand)]">
+          <Layers className="w-3.5 h-3.5 shrink-0" />
+          <span>Rank Cards</span>
         </div>
 
         <div className="flex items-center gap-1.5">
           <button
             type="button"
-            onClick={() => void handleSmartClipboardPaste()}
+            onClick={() => void handleClipboardPaste()}
             className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold rounded-xl border transition-colors cursor-pointer whitespace-nowrap ${
               justPasted
                 ? 'bg-emerald-600 text-white border-emerald-600'
-                : 'bg-white hover:bg-indigo-50 text-[var(--kk-brand)] border-slate-200 hover:border-indigo-300 shadow-[0_1px_2px_rgba(15,23,42,0.04)]'
+                : 'bg-white hover:bg-[var(--kk-tint)] text-[var(--kk-brand)] border-slate-200 hover:border-[var(--kk-tint-border)] shadow-[0_1px_2px_rgba(15,23,42,0.04)]'
             }`}
           >
             {justPasted ? (
@@ -352,95 +310,61 @@ function SessionResultCard({
         </div>
       </div>
 
-      {/* Main Content Area */}
-      {mode === 'paste' ? (
-        <div className="p-3.5 space-y-2.5 flex-1 flex flex-col bg-white">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-bold text-slate-700">
-              {clipboardBlockedHint
-                ? 'Paste result below (Ctrl+V / Long-press → Paste)'
-                : `Paste ${sessionId} official draw text`}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                if (!rawValue.trim()) {
-                  onChangeRaw(RANK_TEMPLATE);
-                } else {
-                  onChangeRaw(`${rawValue.trimEnd()}\n${RANK_TEMPLATE}`);
+      {/* Main Content Area: Structured 1st – 5th Rank Cards */}
+      <div className="p-3 space-y-2.5 flex-1 bg-slate-50/40">
+        {showManualPasteBox && (
+          <div className="bg-white border border-[var(--kk-tint-border)] rounded-xl p-2.5 space-y-2 shadow-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold text-slate-700">
+                Paste {sessionId} result here (Long-press → Paste)
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  AppSounds.tap();
+                  setShowManualPasteBox(false);
+                  setManualPasteText('');
+                }}
+                aria-label="Close paste box"
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-md cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <textarea
+              ref={pasteTextareaRef}
+              value={manualPasteText}
+              onChange={(e) => setManualPasteText(e.target.value)}
+              onPaste={(e) => {
+                const pasted = e.clipboardData.getData('text').trim();
+                if (pasted) {
+                  e.preventDefault();
+                  onChangeRaw(pasted);
+                  AppSounds.success();
+                  triggerPastedFeedback();
                 }
               }}
-              className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--kk-brand)] hover:underline cursor-pointer"
-            >
-              <FileText className="w-3 h-3" />
-              <span>Template</span>
-            </button>
+              placeholder="Paste official draw result text..."
+              rows={4}
+              className="w-full p-2.5 text-sm sm:text-xs font-semibold font-mono-tabular text-slate-950 placeholder:text-slate-400 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]/35 focus:border-[var(--kk-brand)] resize-none"
+            />
+            <div className="flex justify-end">
+              <button
+                type="button"
+                disabled={!manualPasteText.trim()}
+                onClick={() => {
+                  if (!manualPasteText.trim()) return;
+                  onChangeRaw(manualPasteText.trim());
+                  AppSounds.success();
+                  triggerPastedFeedback();
+                }}
+                className="px-3 py-1.5 text-xs font-bold text-white kk-brand-gradient rounded-lg disabled:opacity-40 cursor-pointer"
+              >
+                Apply Result
+              </button>
+            </div>
           </div>
-
-          <textarea
-            ref={pasteTextareaRef}
-            aria-label={`${sessionId} Winning Numbers`}
-            value={rawValue}
-            onChange={(e) => onChangeRaw(e.target.value)}
-            onPaste={() => {
-              AppSounds.success();
-              triggerPastedFeedback();
-            }}
-            placeholder={`1st\n54321\n2nd\n12345\n3rd\n1122 3344 5566\n4th\n7788 9900\n5th\n1020 3040`}
-            rows={10}
-            className="w-full p-3 text-base sm:text-xs font-semibold font-mono-tabular leading-relaxed text-slate-950 placeholder:text-slate-400 bg-slate-50/80 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]/35 focus:border-[var(--kk-brand)] resize-y flex-1"
-          />
-
-          <div className="flex items-center justify-between gap-2 pt-0.5">
-            <span className="text-[11px] font-semibold text-slate-500 font-mono-tabular">
-              {parsedList.length} numbers detected
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setMode('cards');
-                setClipboardBlockedHint(false);
-              }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white kk-brand-gradient rounded-xl shadow-xs cursor-pointer"
-            >
-              <span>View Rank Cards</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="p-3 space-y-2.5 flex-1 bg-slate-50/40">
-          {/* Quick Paste Dropzone when session has no numbers yet */}
-          {parsedList.length === 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setMode('paste');
-                window.setTimeout(() => pasteTextareaRef.current?.focus(), 60);
-              }}
-              className="w-full text-left p-3 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/60 hover:bg-indigo-50 transition-colors flex items-center justify-between gap-3 cursor-pointer group"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-lg bg-white border border-indigo-200 text-[var(--kk-brand)] flex items-center justify-center shrink-0 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-                  <ClipboardPaste className="w-4 h-4" />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-xs font-bold text-slate-900">
-                    Paste Full {sessionId} Result
-                  </div>
-                  <div className="text-[11px] font-medium text-slate-500 truncate">
-                    Auto-splits 1st to 5th prizes cleanly
-                  </div>
-                </div>
-              </div>
-              <span className="text-[11px] font-bold text-[var(--kk-brand)] group-hover:translate-x-0.5 transition-transform shrink-0">
-                Paste →
-              </span>
-            </button>
-          )}
+        )}
 
           {/* Structured 1st – 5th App Rank Cards */}
           {RANK_ORDER.map((rank) => {
@@ -533,7 +457,6 @@ function SessionResultCard({
             );
           })}
         </div>
-      )}
 
       {/* Clean Rank Breakdown Footer */}
       <div className="px-3.5 py-2.5 bg-white border-t border-slate-200/80 text-[11px] font-semibold text-slate-600 flex flex-wrap items-center justify-between gap-2">

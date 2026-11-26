@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowUpRight, Check, Copy, ExternalLink, Eye, EyeOff, FileText, LayoutGrid, Loader2, Plus, RotateCcw, Send, ShieldAlert, Table2, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, Check, Copy, ExternalLink, Eye, EyeOff, FileText, Loader2, Plus, RotateCcw, Send, ShieldAlert, Table2, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { formatDateDDMMYYYY, formatINR, formatLimitGroup, isMyChoiceName, round2 } from '../engine/calculations';
@@ -65,7 +65,7 @@ export const SellerBillView = memo(function SellerBillView({
   limitThreshold = 10,
   onOpenSession,
 }: SellerBillViewProps) {
-  const [viewMode, setViewMode] = useState<'all' | 'cards' | 'limit'>('all');
+  const [viewMode, setViewMode] = useState<'all' | 'limit'>('all');
   const [limitSessionFilter, setLimitSessionFilter] = useState<'ALL' | SessionId>('ALL');
   const [copiedLimitKey, setCopiedLimitKey] = useState<string | null>(null);
   const [showRateMobile, setShowRateMobile] = useState(false);
@@ -378,133 +378,148 @@ export const SellerBillView = memo(function SellerBillView({
       </section>
 
       {/* Toolbar */}
-      <div className="kk-surface-card flex flex-wrap items-center justify-between gap-1.5 sm:gap-2 rounded-2xl px-2.5 py-2 sm:px-3 sm:py-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl">
+      <div className="kk-surface-card rounded-2xl p-2 sm:px-3 sm:py-2.5 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:gap-2.5">
+        {/* Segmented View Switcher: All Cols | Limit >10 */}
+        <div
+          className={`grid ${
+            sessionComputations ? 'grid-cols-2' : 'grid-cols-1'
+          } sm:inline-flex items-center gap-1 p-1 bg-slate-100 border border-slate-200/90 rounded-xl w-full sm:w-auto`}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              AppSounds.tap();
+              setViewMode('all');
+            }}
+            className={`inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+              viewMode === 'all'
+                ? 'bg-white text-[var(--kk-brand)] shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Table2 className="w-3.5 h-3.5 shrink-0" />
+            <span>All Cols</span>
+          </button>
+
+          {sessionComputations && (
             <button
               type="button"
               onClick={() => {
                 AppSounds.tap();
-                setViewMode('all');
+                setViewMode('limit');
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
-                viewMode === 'all' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              className={`inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+                viewMode === 'limit'
+                  ? 'bg-rose-600 text-white shadow-xs'
+                  : overLimitSummary.grandTotal > 0
+                    ? 'text-rose-700 hover:text-rose-900 bg-rose-50/90'
+                    : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Table2 className="w-3.5 h-3.5" />
-              <span>All Cols</span>
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>Limit &gt;{BILL_EXCESS_LIMIT_CUTOFF}</span>
+              {overLimitSummary.grandTotal > 0 && (
+                <span
+                  className={`px-1.5 py-0.5 rounded-md text-[10px] leading-none font-mono-tabular font-extrabold ${
+                    viewMode === 'limit'
+                      ? 'bg-white/20 text-white'
+                      : 'bg-rose-600 text-white'
+                  }`}
+                >
+                  {formatINR(overLimitSummary.grandTotal)}
+                </span>
+              )}
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setViewMode('cards');
-              }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
-                viewMode === 'cards' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-              <span>Cards</span>
-            </button>
-            {sessionComputations && (
+          )}
+        </div>
+
+        {/* Action Buttons: Rate & Mob | Add Seller | Close Day */}
+        {!hideRollover && confirmRollover ? (
+          <div className="flex items-center justify-between gap-2 bg-amber-50 border border-amber-300 rounded-xl px-3 py-1.5 w-full sm:w-auto">
+            <span className="text-[11px] font-bold text-amber-950 leading-tight">
+              Carry +Total→DUE, -Total→JOMA?
+            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  onRolloverDay();
+                  setConfirmRollover(false);
+                }}
+                className="px-2.5 py-1 text-[11px] font-bold text-white bg-amber-700 hover:bg-amber-800 rounded-lg cursor-pointer"
+              >
+                Yes
+              </button>
               <button
                 type="button"
                 onClick={() => {
                   AppSounds.tap();
-                  setViewMode('limit');
+                  setConfirmRollover(false);
                 }}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
-                  viewMode === 'limit'
-                    ? 'bg-rose-600 text-white shadow-xs'
-                    : overLimitSummary.grandTotal > 0
-                      ? 'text-rose-700 hover:text-rose-900 bg-rose-50/90'
-                      : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className="px-2 py-1 text-[11px] font-bold text-slate-700 bg-white border border-amber-200 hover:bg-slate-50 rounded-lg cursor-pointer"
               >
-                <AlertTriangle className="w-3.5 h-3.5" />
-                <span>Limit &gt;{BILL_EXCESS_LIMIT_CUTOFF}</span>
-                {overLimitSummary.grandTotal > 0 && (
-                  <span
-                    className={`px-1.5 py-0.2 rounded-md text-[10px] font-mono-tabular font-extrabold ${
-                      viewMode === 'limit'
-                        ? 'bg-white/20 text-white'
-                        : 'bg-rose-600 text-white'
-                    }`}
-                  >
-                    {formatINR(overLimitSummary.grandTotal)}
-                  </span>
-                )}
+                No
               </button>
-            )}
+            </div>
           </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              AppSounds.tap();
-              setShowRateMobile((prev) => !prev);
-            }}
-            title={showRateMobile ? 'Hide Rate & Mobile Number' : 'Show Rate & Mobile Number'}
-            className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
-              showRateMobile
-                ? 'text-[var(--kk-brand)] bg-indigo-50 border-indigo-300'
-                : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200'
-            }`}
+        ) : (
+          <div
+            className={`grid ${
+              hideRollover ? 'grid-cols-2' : 'grid-cols-3'
+            } sm:flex sm:items-center gap-1.5 sm:gap-2 w-full sm:w-auto`}
           >
-            {showRateMobile ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-            <span>{showRateMobile ? 'Hide Rate/Mob' : 'Rate & Mob'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              AppSounds.tap();
-              setShowAddForm((prev) => !prev);
-            }}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl cursor-pointer whitespace-nowrap transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Seller</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                AppSounds.tap();
+                setShowRateMobile((prev) => !prev);
+              }}
+              title={showRateMobile ? 'Hide Rate & Mobile Number' : 'Show Rate & Mobile Number'}
+              className={`inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
+                showRateMobile
+                  ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)]'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200'
+              }`}
+            >
+              {showRateMobile ? (
+                <EyeOff className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <Eye className="w-3.5 h-3.5 shrink-0" />
+              )}
+              <span className="truncate">{showRateMobile ? 'Hide Rate' : 'Rate & Mob'}</span>
+            </button>
 
-          {!hideRollover &&
-            (!confirmRollover ? (
+            <button
+              type="button"
+              onClick={() => {
+                AppSounds.tap();
+                setShowAddForm((prev) => !prev);
+              }}
+              className={`inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
+                showAddForm
+                  ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)]'
+                  : 'text-slate-900 bg-slate-100 hover:bg-slate-200 border-slate-200'
+              }`}
+            >
+              <Plus className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Add Seller</span>
+            </button>
+
+            {!hideRollover && (
               <button
                 type="button"
                 onClick={() => {
                   AppSounds.tap();
                   setConfirmRollover(true);
                 }}
-                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] rounded-xl cursor-pointer whitespace-nowrap transition-colors"
+                className="inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] rounded-xl cursor-pointer whitespace-nowrap transition-colors shadow-xs"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Close Day</span>
+                <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Close Day</span>
               </button>
-            ) : (
-              <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-300 rounded-xl px-2.5 py-1">
-                <span className="text-[11px] font-bold text-amber-950">Carry +Total→DUE, -Total→JOMA?</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onRolloverDay();
-                    setConfirmRollover(false);
-                  }}
-                  className="px-2 py-0.5 text-[11px] font-bold text-white bg-amber-700 hover:bg-amber-800 rounded-lg cursor-pointer"
-                >
-                  Yes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmRollover(false)}
-                  className="px-1.5 py-0.5 text-[11px] font-bold text-slate-800 cursor-pointer"
-                >
-                  No
-                </button>
-              </div>
-            ))}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Inline Add Seller Form */}
@@ -824,301 +839,6 @@ export const SellerBillView = memo(function SellerBillView({
             </table>
           </div>
         </div>
-      ) : viewMode === 'cards' ? (
-        /* CARDS VIEW */
-        <>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
-          {visibleBills.map((row) => (
-            <div
-              key={row.id}
-              className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs flex flex-col"
-            >
-              <div className="px-4 py-3 bg-[var(--kk-brand)] text-white flex items-center justify-between">
-                <span className="text-base font-extrabold tracking-tight">{row.name}</span>
-                {showRateMobile && (
-                  <span className="text-xs font-mono-tabular font-semibold text-white/80">
-                    ₹{row.rate}
-                  </span>
-                )}
-              </div>
-
-              <div className="p-4 space-y-3 text-sm">
-                <div className="grid grid-cols-4 gap-2 text-center bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-mono-tabular">
-                  <div>
-                    <div className="font-sans text-[11px] font-bold text-amber-800">MOR</div>
-                    <div className="mt-0.5 text-sm font-extrabold text-slate-950">{formatINR(row.mor)}</div>
-                  </div>
-                  <div>
-                    <div className="font-sans text-[11px] font-bold text-sky-800">DAY</div>
-                    <div className="mt-0.5 text-sm font-extrabold text-slate-950">{formatINR(row.day)}</div>
-                  </div>
-                  <div>
-                    <div className="font-sans text-[11px] font-bold text-violet-800">EVE</div>
-                    <div className="mt-0.5 text-sm font-extrabold text-slate-950">{formatINR(row.eve)}</div>
-                  </div>
-                  <div>
-                    <div className="font-sans text-[11px] font-bold text-[var(--kk-brand)]">SOLD</div>
-                    <div className="mt-0.5 text-sm font-extrabold text-[var(--kk-brand)]">{formatINR(row.sold)}</div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2 font-mono-tabular">
-                  <div className="border border-slate-200 rounded-xl p-2.5">
-                    <div className="font-sans text-[11px] font-bold text-slate-600">BILL</div>
-                    <div className="mt-0.5 text-sm font-extrabold text-slate-950">₹{formatINR(row.bill)}</div>
-                  </div>
-                  <div className="border border-emerald-200 bg-emerald-50/60 rounded-xl p-2.5">
-                    <div className="font-sans text-[11px] font-bold text-emerald-800">PRIZE (-)</div>
-                    <div className="mt-0.5 text-sm font-extrabold text-emerald-700">₹{formatINR(row.prizeTotal)}</div>
-                  </div>
-                  <div className="border border-slate-200 rounded-xl p-2.5">
-                    <div className="font-sans text-[11px] font-bold text-slate-600">FRESH</div>
-                    <div
-                      className={`mt-0.5 text-sm font-extrabold ${
-                        row.fresh > 0
-                          ? 'text-emerald-700'
-                          : row.fresh < 0
-                            ? 'text-rose-600'
-                            : 'text-slate-950'
-                      }`}
-                    >
-                      ₹{formatINR(row.fresh)}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2.5">
-                  <label className="space-y-1">
-                    <span className="text-xs font-bold text-sky-900">JOMA (-)</span>
-                    <FormulaNumberInput
-                      id={`card-joma-${row.id}`}
-                      label={`${row.name} · JOMA`}
-                      value={row.joma}
-                      onCommit={(val) => onUpdateSeller(row.id, { joma: val })}
-                      onActiveSessionChange={handleActiveFormulaChange}
-                      placeholder="0"
-                      className="w-full px-3 py-2 text-sm font-mono-tabular font-bold text-slate-950 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs font-bold text-amber-900">DUE (+)</span>
-                    <FormulaNumberInput
-                      id={`card-due-${row.id}`}
-                      label={`${row.name} · DUE`}
-                      value={row.due}
-                      onCommit={(val) => onUpdateSeller(row.id, { due: val })}
-                      onActiveSessionChange={handleActiveFormulaChange}
-                      placeholder="0"
-                      className="w-full px-3 py-2 text-sm font-mono-tabular font-bold text-slate-950 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
-                    />
-                  </label>
-                </div>
-
-                {showRateMobile && (
-                  <div className="grid grid-cols-3 gap-2 pt-1">
-                    <label className="col-span-2 space-y-1">
-                      <span className="text-xs font-bold text-slate-600">Mobile</span>
-                      <input
-                        type="text"
-                        value={row.mobile}
-                        onChange={(e) => onUpdateSeller(row.id, { mobile: e.target.value })}
-                        className="w-full px-3 py-2 text-sm font-mono-tabular font-semibold text-slate-950 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
-                      />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-xs font-bold text-slate-600">Rate (₹)</span>
-                      <input
-                        type="number"
-                        step="0.05"
-                        value={row.rate}
-                        onChange={(e) =>
-                          onUpdateSeller(row.id, { rate: parseFloat(e.target.value) || 0 })
-                        }
-                        className="w-full px-3 py-2 text-sm font-mono-tabular font-bold text-right text-slate-950 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
-                      />
-                    </label>
-                  </div>
-                )}
-
-                <div className="pt-2.5 border-t border-slate-200 flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-[11px] font-bold uppercase tracking-wide text-slate-600">NET PAYABLE</div>
-                    <div
-                      className={`text-lg font-extrabold font-mono-tabular ${
-                        row.total > 0
-                          ? 'text-emerald-700'
-                          : row.total < 0
-                            ? 'text-rose-600'
-                            : 'text-slate-950'
-                      }`}
-                    >
-                      ₹{formatINR(row.total)}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => openBillPreview(row)}
-                      title={`View ${row.name} Bill Card`}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-[var(--kk-brand)] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl cursor-pointer transition-colors"
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                      <span>Bill Card</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={sendingBillId !== null}
-                      onClick={() => void handleSendBillCard(row)}
-                      title={`Send ${row.name} Bill Card on WhatsApp`}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl cursor-pointer transition-colors disabled:opacity-60"
-                    >
-                      {sendingBillId === row.id ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Send className="w-3.5 h-3.5" />
-                      )}
-                      <span>Send Card</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => requestDeleteSeller(row)}
-                      className="p-2 text-slate-500 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-xl cursor-pointer transition-colors"
-                      title={`Delete ${row.name}`}
-                      aria-label={`Delete ${row.name}`}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {visibleBills.length > 0 && (
-          <div className="mt-3.5 bg-[var(--kk-brand)] text-white border border-[var(--kk-brand)] rounded-2xl overflow-hidden shadow-xs">
-            <div className="px-4 py-3 flex items-center justify-between text-sm font-bold border-b border-white/10">
-              <span>TOTAL ({visibleBills.length} Sellers)</span>
-              <span
-                className={`font-mono-tabular text-base font-extrabold ${
-                  totals.total > 0
-                    ? 'text-emerald-300'
-                    : totals.total < 0
-                      ? 'text-rose-300'
-                      : 'text-white'
-                }`}
-              >
-                ₹{formatINR(totals.total)}
-              </span>
-            </div>
-            {/* Mobile spacious rows */}
-            <div className="sm:hidden font-mono-tabular">
-              <div className="grid grid-cols-4 text-center border-b border-white/10">
-                <div className="px-2 py-2.5 border-r border-white/10">
-                  <div className="font-sans text-[11px] font-semibold text-indigo-200">MOR</div>
-                  <div className="mt-0.5 text-sm font-bold">{formatINR(totals.mor)}</div>
-                </div>
-                <div className="px-2 py-2.5 border-r border-white/10">
-                  <div className="font-sans text-[11px] font-semibold text-indigo-200">DAY</div>
-                  <div className="mt-0.5 text-sm font-bold">{formatINR(totals.day)}</div>
-                </div>
-                <div className="px-2 py-2.5 border-r border-white/10">
-                  <div className="font-sans text-[11px] font-semibold text-indigo-200">EVE</div>
-                  <div className="mt-0.5 text-sm font-bold">{formatINR(totals.eve)}</div>
-                </div>
-                <div className="px-2 py-2.5">
-                  <div className="font-sans text-[11px] font-semibold text-indigo-200">SOLD</div>
-                  <div className="mt-0.5 text-sm font-bold">{formatINR(totals.sold)}</div>
-                </div>
-              </div>
-              <div className="grid grid-cols-3 text-center border-b border-white/10">
-                <div className="px-2 py-2.5 border-r border-white/10">
-                  <div className="font-sans text-[11px] font-semibold text-indigo-200">BILL</div>
-                  <div className="mt-0.5 text-sm font-bold break-all">₹{formatINR(totals.bill)}</div>
-                </div>
-                <div className="px-2 py-2.5 border-r border-white/10">
-                  <div className="font-sans text-[11px] font-semibold text-emerald-300">PRIZE</div>
-                  <div className="mt-0.5 text-sm font-bold text-emerald-300 break-all">₹{formatINR(totals.prize)}</div>
-                </div>
-                <div className="px-2 py-2.5">
-                  <div className="font-sans text-[11px] font-semibold text-indigo-200">JOMA</div>
-                  <div className="mt-0.5 text-sm font-bold break-all">₹{formatINR(totals.joma)}</div>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 text-center">
-                <div className="px-2.5 py-3 border-r border-white/10">
-                  <div className="font-sans text-[11px] font-semibold text-amber-300">DUE (+)</div>
-                  <div className="mt-0.5 text-sm font-bold text-amber-200 break-all">₹{formatINR(totals.due)}</div>
-                </div>
-                <div className="px-2.5 py-3">
-                  <div className="font-sans text-[11px] font-semibold text-indigo-200">TOTAL</div>
-                  <div
-                    className={`mt-0.5 text-base font-extrabold break-all ${
-                      totals.total > 0
-                        ? 'text-emerald-300'
-                        : totals.total < 0
-                          ? 'text-rose-300'
-                          : 'text-white'
-                    }`}
-                  >
-                    ₹{formatINR(totals.total)}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Tablet/Desktop 9-column row */}
-            <div className="hidden sm:grid sm:grid-cols-9 text-center font-mono-tabular">
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-indigo-200">MOR</div>
-                <div className="mt-0.5 text-xs font-bold">{formatINR(totals.mor)}</div>
-              </div>
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-indigo-200">DAY</div>
-                <div className="mt-0.5 text-xs font-bold">{formatINR(totals.day)}</div>
-              </div>
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-indigo-200">EVE</div>
-                <div className="mt-0.5 text-xs font-bold">{formatINR(totals.eve)}</div>
-              </div>
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-indigo-200">SOLD</div>
-                <div className="mt-0.5 text-xs font-bold">{formatINR(totals.sold)}</div>
-              </div>
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-indigo-200">BILL</div>
-                <div className="mt-0.5 text-xs font-bold break-all">{formatINR(totals.bill)}</div>
-              </div>
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-emerald-300">PRIZE</div>
-                <div className="mt-0.5 text-xs font-bold text-emerald-300 break-all">{formatINR(totals.prize)}</div>
-              </div>
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-indigo-200">JOMA</div>
-                <div className="mt-0.5 text-xs font-bold break-all">{formatINR(totals.joma)}</div>
-              </div>
-              <div className="px-2 py-2.5 border-r border-white/10">
-                <div className="font-sans text-[11px] font-semibold text-amber-300">DUE</div>
-                <div className="mt-0.5 text-xs font-bold text-amber-200 break-all">{formatINR(totals.due)}</div>
-              </div>
-              <div className="px-2 py-2.5">
-                <div className="font-sans text-[11px] font-semibold text-indigo-200">TOTAL</div>
-                <div
-                  className={`mt-0.5 text-xs font-extrabold break-all ${
-                    totals.total > 0
-                      ? 'text-emerald-300'
-                      : totals.total < 0
-                        ? 'text-rose-300'
-                        : 'text-white'
-                  }`}
-                >
-                  {formatINR(totals.total)}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        </>
       ) : null}
 
       {/* SEPARATE OVER-LIMIT (limit output > 10, e.g. M15, M20=61070) SECTION */}

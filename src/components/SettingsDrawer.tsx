@@ -1,9 +1,16 @@
-import { Archive, X } from 'lucide-react';
+import { Check, Palette, Volume2, VolumeX, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useState } from 'react';
-import { formatDateDDMMYYYY, formatINR } from '../engine/calculations';
 import { AgencyConfig, AppState, DaySnapshot } from '../types/ledger';
-import { AppSounds } from '../utils/sound';
+import {
+  AppSounds,
+  getSoundStyle,
+  previewSoundStyle,
+  setSoundEnabled,
+  SOUND_STYLES,
+  SoundStyleId,
+} from '../utils/sound';
+import { APP_THEMES, applyDocumentTheme, AppThemeId, resolveThemeOption } from '../utils/theme';
 
 interface SettingsDrawerProps {
   isOpen: boolean;
@@ -12,9 +19,9 @@ interface SettingsDrawerProps {
   onChangeBillingDate: (newDate: string) => void;
   onUpdateConfig: (patch: Partial<AgencyConfig>) => void;
   onUpdateExtraNames: (names: string[]) => void;
-  onRestoreSnapshot: (snapshot: DaySnapshot) => void;
-  onArchiveNow: () => void;
-  onOpenArchiveSheet: () => void;
+  onRestoreSnapshot?: (snapshot: DaySnapshot) => void;
+  onArchiveNow?: () => void;
+  onOpenArchiveSheet?: () => void;
 }
 
 export function SettingsDrawer({
@@ -24,11 +31,36 @@ export function SettingsDrawer({
   onChangeBillingDate,
   onUpdateConfig,
   onUpdateExtraNames,
-  onRestoreSnapshot,
-  onArchiveNow,
-  onOpenArchiveSheet,
 }: SettingsDrawerProps) {
-  const [confirmRestoreId, setConfirmRestoreId] = useState<string | null>(null);
+  const [activeSound, setActiveSound] = useState<SoundStyleId>(() => getSoundStyle());
+
+  const activeTheme = resolveThemeOption(state.config.theme).id;
+  const soundOn = state.config.soundEnabled !== false;
+
+  const handleSelectTheme = (themeId: AppThemeId) => {
+    applyDocumentTheme(themeId);
+    onUpdateConfig({ theme: themeId, themeVersion: 3 });
+    AppSounds.tap();
+  };
+
+  const handleToggleSound = () => {
+    const next = !soundOn;
+    setSoundEnabled(next);
+    onUpdateConfig({ soundEnabled: next });
+    if (next) {
+      AppSounds.success();
+    }
+  };
+
+  const handleSelectSoundStyle = (styleId: SoundStyleId) => {
+    setActiveSound(styleId);
+    if (!soundOn) {
+      setSoundEnabled(true);
+      onUpdateConfig({ soundEnabled: true });
+    }
+    previewSoundStyle(styleId);
+  };
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -53,10 +85,10 @@ export function SettingsDrawer({
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-md bg-white h-full overflow-y-auto overscroll-y-contain border-l border-slate-200 shadow-2xl flex flex-col"
           >
-            <div className="bg-[var(--kk-brand)] text-white sticky top-0 z-10 pt-[env(safe-area-inset-top)] transition-colors">
+            <div className="kk-brand-gradient text-white sticky top-0 z-10 pt-[env(safe-area-inset-top)] transition-colors">
               <div className="px-5 py-3.5 flex items-center justify-between gap-2">
                 <h2 id="settings-title" className="text-sm font-bold">
-                  Agency Settings &amp; Archive
+                  Agency Settings
                 </h2>
                 <button
                   type="button"
@@ -73,7 +105,7 @@ export function SettingsDrawer({
             </div>
 
             <div className="p-5 pb-[max(2.25rem,env(safe-area-inset-bottom))] space-y-6 flex-1 min-w-0">
-              {/* Limit & WhatsApp Config */}
+              {/* Date & Agency Config */}
               <section className="space-y-3 min-w-0">
                 <h3 className="text-xs font-bold text-slate-900">
                   Date &amp; Agency Configuration
@@ -167,7 +199,7 @@ export function SettingsDrawer({
                     </label>
                     <div className="flex items-center gap-1.5">
                       <span className="text-[11px] font-semibold text-slate-500">Quick set:</span>
-                      {[10, 15, 20, 25].map((val) => (
+                      {[10, 15, 20].map((val) => (
                         <button
                           key={val}
                           type="button"
@@ -231,102 +263,131 @@ export function SettingsDrawer({
 
               <hr className="border-slate-200" />
 
-              {/* Archive Sheet Controls */}
+              {/* App Theme Selector */}
               <section className="space-y-3">
-                <h3 className="text-xs font-bold text-slate-900">
-                  Archive Sheet ({state.history.length})
-                </h3>
-
-                <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl">
-                  <div className="text-xs font-bold text-emerald-950">
-                    Permanent Save Active (No Auto-Clear)
-                  </div>
-                  <div className="text-xs text-emerald-800 mt-0.5">
-                    All sellers, ticket entries, and winning numbers stay permanently saved until you manually tap Close Day or Archive &amp; New Date.
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-[var(--kk-tint)] border border-[var(--kk-tint-border)] text-[var(--kk-brand)] flex items-center justify-center">
+                      <Palette className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-900">App Theme</h3>
+                      <p className="text-[11px] font-medium text-slate-500">
+                        Choose your executive color style
+                      </p>
+                    </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onArchiveNow();
-                    }}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl transition-colors cursor-pointer"
-                  >
-                    <Archive className="w-3.5 h-3.5" />
-                    <span>Archive &amp; New Date</span>
-                  </button>
+                  {APP_THEMES.map((theme) => {
+                    const isSelected = activeTheme === theme.id;
+                    return (
+                      <button
+                        key={theme.id}
+                        type="button"
+                        onClick={() => handleSelectTheme(theme.id)}
+                        className={`group relative text-left rounded-xl p-2.5 border transition-all cursor-pointer ${
+                          isSelected
+                            ? 'border-[var(--kk-brand)] bg-[var(--kk-tint)] shadow-xs ring-1 ring-[var(--kk-brand)]/25'
+                            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/70'
+                        }`}
+                      >
+                        <div
+                          className="h-9 rounded-lg mb-2 flex items-center justify-between px-2.5 shadow-inner"
+                          style={{
+                            backgroundImage: `linear-gradient(135deg, ${theme.brand} 0%, ${theme.brandMid} 55%, ${theme.brandEnd} 100%)`,
+                          }}
+                        >
+                          <span
+                            className="w-2.5 h-2.5 rounded-full ring-2 ring-white/30"
+                            style={{ backgroundColor: theme.accentDot }}
+                          />
+                          {isSelected && (
+                            <span className="w-5 h-5 rounded-full bg-white text-slate-900 flex items-center justify-center shadow-xs">
+                              <Check className="w-3 h-3 stroke-[3]" />
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs font-bold text-slate-900 leading-tight">
+                          {theme.name}
+                        </div>
+                        <div className="text-[10px] font-medium text-slate-500 mt-0.5">
+                          {theme.tagline}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <hr className="border-slate-200" />
+
+              {/* Sound Style & Tone Controls */}
+              <section className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-[var(--kk-tint)] border border-[var(--kk-tint-border)] text-[var(--kk-brand)] flex items-center justify-center">
+                      {soundOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-900">App Sound &amp; Tone</h3>
+                      <p className="text-[11px] font-medium text-slate-500">
+                        Tap any tone to preview &amp; apply
+                      </p>
+                    </div>
+                  </div>
 
                   <button
                     type="button"
-                    onClick={() => {
-                      AppSounds.tap();
-                      onClose();
-                      onOpenArchiveSheet();
-                    }}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-[var(--kk-brand)] bg-[var(--kk-tint)] hover:opacity-90 border border-[var(--kk-tint-border)] rounded-xl transition-colors cursor-pointer"
+                    onClick={handleToggleSound}
+                    aria-pressed={soundOn}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-colors cursor-pointer ${
+                      soundOn
+                        ? 'bg-[var(--kk-brand)] text-white border-[var(--kk-brand)]'
+                        : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                    }`}
                   >
-                    <Archive className="w-3.5 h-3.5" />
-                    <span>View Archive</span>
+                    {soundOn ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+                    <span>{soundOn ? 'Sound ON' : 'Muted'}</span>
                   </button>
                 </div>
 
-                {state.history.length > 0 && (
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {state.history.slice(0, 5).map((snap) => (
-                      <div
-                        key={snap.id}
-                        className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2"
+                <div className="grid grid-cols-2 gap-2">
+                  {SOUND_STYLES.map((style) => {
+                    const isSelected = activeSound === style.id;
+                    return (
+                      <button
+                        key={style.id}
+                        type="button"
+                        onClick={() => handleSelectSoundStyle(style.id)}
+                        className={`text-left rounded-xl px-3 py-2.5 border transition-all cursor-pointer flex items-start justify-between gap-2 ${
+                          isSelected
+                            ? 'border-[var(--kk-brand)] bg-[var(--kk-tint)] ring-1 ring-[var(--kk-brand)]/25'
+                            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/70'
+                        }`}
                       >
-                        <div className="text-xs space-y-0.5">
-                          <div className="font-bold text-slate-900">
-                            {formatDateDDMMYYYY(snap.date)}
+                        <div className="min-w-0">
+                          <div
+                            className={`text-xs font-bold leading-tight ${
+                              isSelected ? 'text-[var(--kk-brand)]' : 'text-slate-900'
+                            }`}
+                          >
+                            {style.label}
                           </div>
-                          <div className="text-slate-600 font-mono-tabular">
-                            Sold: {formatINR(snap.totalSold)} · Net: ₹{formatINR(snap.totalNetPayable)}
+                          <div className="text-[10px] font-medium text-slate-500 mt-0.5 truncate">
+                            {style.desc}
                           </div>
                         </div>
-                        {confirmRestoreId === snap.id ? (
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                AppSounds.tap();
-                                setConfirmRestoreId(null);
-                              }}
-                              className="px-2 py-1 text-[11px] font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setConfirmRestoreId(null);
-                                onRestoreSnapshot(snap);
-                                onClose();
-                              }}
-                              className="px-2.5 py-1 text-[11px] font-bold text-white bg-indigo-700 hover:bg-indigo-800 rounded-lg cursor-pointer"
-                            >
-                              Confirm
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              AppSounds.tap();
-                              setConfirmRestoreId(snap.id);
-                            }}
-                            className="px-2.5 py-1 text-xs font-bold text-[var(--kk-brand)] bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer shrink-0"
-                          >
-                            Restore
-                          </button>
+                        {isSelected && (
+                          <span className="w-4 h-4 rounded-full bg-[var(--kk-brand)] text-white flex items-center justify-center shrink-0 mt-0.5">
+                            <Check className="w-2.5 h-2.5 stroke-[3]" />
+                          </span>
                         )}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                      </button>
+                    );
+                  })}
+                </div>
               </section>
             </div>
           </motion.div>

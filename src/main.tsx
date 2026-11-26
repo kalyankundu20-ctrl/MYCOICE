@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
+import { initAppTheme } from './utils/theme.ts';
+
+initAppTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

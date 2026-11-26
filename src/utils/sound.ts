@@ -27,8 +27,25 @@ const SOUND_PRIORITY: Record<SoundName, number> = {
   prizeReveal: 2,
 };
 
+export type SoundStyleId = 'studio' | 'crisp' | 'chime' | 'classic';
+
+export interface SoundStyleOption {
+  id: SoundStyleId;
+  label: string;
+  desc: string;
+}
+
+export const SOUND_STYLES: SoundStyleOption[] = [
+  { id: 'studio', label: 'Soft Studio', desc: 'Warm pure tone' },
+  { id: 'crisp', label: 'Crisp iOS', desc: 'Bright glass pop' },
+  { id: 'chime', label: 'Royal Chime', desc: 'Melodic bell' },
+  { id: 'classic', label: 'Classic Click', desc: 'Snappy keypad' },
+];
+
+const SOUND_STYLE_STORAGE_KEY = 'kk-sound-style';
+
 // Soft, warm pure-sine presets tuned for phone micro-speakers (zero harsh harmonics, zero clipping)
-const SOUND_PRESETS: Record<SoundName, CleanVoiceSpec[]> = {
+const STUDIO_PRESETS: Record<SoundName, CleanVoiceSpec[]> = {
   tap: [
     {
       freq: 760,
@@ -182,7 +199,128 @@ const SOUND_PRESETS: Record<SoundName, CleanVoiceSpec[]> = {
   ],
 };
 
+// Bright, airy iOS glass pop profile
+const CRISP_PRESETS: Record<SoundName, CleanVoiceSpec[]> = {
+  tap: [
+    { freq: 1180, endFreq: 860, durationSec: 0.028, gainPeak: 0.12, attackSec: 0.004, octaveGain: 0.1 },
+  ],
+  add: [
+    { freq: 880, durationSec: 0.075, gainPeak: 0.12, delaySec: 0, attackSec: 0.005, octaveGain: 0.11 },
+    { freq: 1318.51, durationSec: 0.12, gainPeak: 0.13, delaySec: 0.04, attackSec: 0.006, octaveGain: 0.1 },
+  ],
+  success: [
+    { freq: 783.99, durationSec: 0.11, gainPeak: 0.11, delaySec: 0, attackSec: 0.006, octaveGain: 0.1 },
+    { freq: 987.77, durationSec: 0.12, gainPeak: 0.12, delaySec: 0.042, attackSec: 0.006, octaveGain: 0.1 },
+    { freq: 1567.98, durationSec: 0.2, gainPeak: 0.12, delaySec: 0.084, attackSec: 0.007, octaveGain: 0.08 },
+  ],
+  warning: [
+    { freq: 740, durationSec: 0.08, gainPeak: 0.12, delaySec: 0, attackSec: 0.006, octaveGain: 0.07 },
+    { freq: 554.37, durationSec: 0.11, gainPeak: 0.12, delaySec: 0.078, attackSec: 0.006, octaveGain: 0.07 },
+  ],
+  limitAlert: [
+    { freq: 1174.66, durationSec: 0.08, gainPeak: 0.13, delaySec: 0, attackSec: 0.005, octaveGain: 0.09 },
+    { freq: 1567.98, durationSec: 0.11, gainPeak: 0.14, delaySec: 0.075, attackSec: 0.005, octaveGain: 0.09 },
+    { freq: 1174.66, durationSec: 0.13, gainPeak: 0.12, delaySec: 0.16, attackSec: 0.006, octaveGain: 0.07 },
+  ],
+  prizeReveal: [
+    { freq: 783.99, durationSec: 0.1, gainPeak: 0.11, delaySec: 0, attackSec: 0.006, octaveGain: 0.1 },
+    { freq: 1046.5, durationSec: 0.12, gainPeak: 0.12, delaySec: 0.04, attackSec: 0.006, octaveGain: 0.1 },
+    { freq: 1318.51, durationSec: 0.15, gainPeak: 0.12, delaySec: 0.08, attackSec: 0.006, octaveGain: 0.09 },
+    { freq: 1567.98, durationSec: 0.22, gainPeak: 0.12, delaySec: 0.12, attackSec: 0.008, octaveGain: 0.08 },
+  ],
+  remove: [
+    { freq: 490, endFreq: 250, durationSec: 0.07, gainPeak: 0.12, delaySec: 0, attackSec: 0.005, octaveGain: 0.05 },
+  ],
+};
+
+// Melodic bell / royal chime profile
+const CHIME_PRESETS: Record<SoundName, CleanVoiceSpec[]> = {
+  tap: [
+    { freq: 920, endFreq: 880, durationSec: 0.055, gainPeak: 0.11, attackSec: 0.006, octaveGain: 0.14 },
+  ],
+  add: [
+    { freq: 659.25, durationSec: 0.13, gainPeak: 0.12, delaySec: 0, attackSec: 0.008, octaveGain: 0.15 },
+    { freq: 987.77, durationSec: 0.19, gainPeak: 0.13, delaySec: 0.052, attackSec: 0.008, octaveGain: 0.14 },
+  ],
+  success: [
+    { freq: 587.33, durationSec: 0.18, gainPeak: 0.11, delaySec: 0, attackSec: 0.009, octaveGain: 0.14 },
+    { freq: 880.0, durationSec: 0.2, gainPeak: 0.12, delaySec: 0.055, attackSec: 0.009, octaveGain: 0.14 },
+    { freq: 1174.66, durationSec: 0.26, gainPeak: 0.12, delaySec: 0.11, attackSec: 0.01, octaveGain: 0.12 },
+  ],
+  warning: [
+    { freq: 523.25, durationSec: 0.12, gainPeak: 0.12, delaySec: 0, attackSec: 0.009, octaveGain: 0.1 },
+    { freq: 440.0, durationSec: 0.16, gainPeak: 0.12, delaySec: 0.095, attackSec: 0.009, octaveGain: 0.1 },
+  ],
+  limitAlert: [
+    { freq: 880, durationSec: 0.13, gainPeak: 0.13, delaySec: 0, attackSec: 0.008, octaveGain: 0.15 },
+    { freq: 1174.66, durationSec: 0.16, gainPeak: 0.13, delaySec: 0.09, attackSec: 0.008, octaveGain: 0.15 },
+    { freq: 1318.51, durationSec: 0.2, gainPeak: 0.12, delaySec: 0.18, attackSec: 0.009, octaveGain: 0.13 },
+  ],
+  prizeReveal: [
+    { freq: 523.25, durationSec: 0.16, gainPeak: 0.11, delaySec: 0, attackSec: 0.009, octaveGain: 0.14 },
+    { freq: 659.25, durationSec: 0.18, gainPeak: 0.12, delaySec: 0.05, attackSec: 0.009, octaveGain: 0.14 },
+    { freq: 783.99, durationSec: 0.22, gainPeak: 0.12, delaySec: 0.1, attackSec: 0.009, octaveGain: 0.13 },
+    { freq: 1046.5, durationSec: 0.28, gainPeak: 0.12, delaySec: 0.15, attackSec: 0.01, octaveGain: 0.12 },
+  ],
+  remove: [
+    { freq: 440, endFreq: 260, durationSec: 0.11, gainPeak: 0.12, delaySec: 0, attackSec: 0.009, octaveGain: 0.08 },
+  ],
+};
+
+// Short, snappy calculator/keypad click profile
+const CLASSIC_PRESETS: Record<SoundName, CleanVoiceSpec[]> = {
+  tap: [
+    { freq: 520, endFreq: 310, durationSec: 0.022, gainPeak: 0.14, attackSec: 0.003, octaveGain: 0.04 },
+  ],
+  add: [
+    { freq: 620, durationSec: 0.055, gainPeak: 0.13, delaySec: 0, attackSec: 0.004, octaveGain: 0.04 },
+    { freq: 920, durationSec: 0.08, gainPeak: 0.14, delaySec: 0.036, attackSec: 0.004, octaveGain: 0.04 },
+  ],
+  success: [
+    { freq: 660, durationSec: 0.075, gainPeak: 0.12, delaySec: 0, attackSec: 0.004, octaveGain: 0.04 },
+    { freq: 880, durationSec: 0.09, gainPeak: 0.13, delaySec: 0.045, attackSec: 0.004, octaveGain: 0.04 },
+    { freq: 1100, durationSec: 0.13, gainPeak: 0.13, delaySec: 0.09, attackSec: 0.005, octaveGain: 0.04 },
+  ],
+  warning: [
+    { freq: 480, durationSec: 0.065, gainPeak: 0.13, delaySec: 0, attackSec: 0.004, octaveGain: 0.03 },
+    { freq: 380, durationSec: 0.085, gainPeak: 0.13, delaySec: 0.068, attackSec: 0.004, octaveGain: 0.03 },
+  ],
+  limitAlert: [
+    { freq: 900, durationSec: 0.07, gainPeak: 0.14, delaySec: 0, attackSec: 0.004, octaveGain: 0.05 },
+    { freq: 1200, durationSec: 0.085, gainPeak: 0.14, delaySec: 0.07, attackSec: 0.004, octaveGain: 0.05 },
+    { freq: 900, durationSec: 0.095, gainPeak: 0.13, delaySec: 0.145, attackSec: 0.004, octaveGain: 0.04 },
+  ],
+  prizeReveal: [
+    { freq: 600, durationSec: 0.08, gainPeak: 0.12, delaySec: 0, attackSec: 0.004, octaveGain: 0.05 },
+    { freq: 800, durationSec: 0.09, gainPeak: 0.13, delaySec: 0.042, attackSec: 0.004, octaveGain: 0.05 },
+    { freq: 1000, durationSec: 0.11, gainPeak: 0.13, delaySec: 0.084, attackSec: 0.004, octaveGain: 0.05 },
+    { freq: 1200, durationSec: 0.16, gainPeak: 0.13, delaySec: 0.126, attackSec: 0.005, octaveGain: 0.04 },
+  ],
+  remove: [
+    { freq: 320, endFreq: 170, durationSec: 0.055, gainPeak: 0.14, delaySec: 0, attackSec: 0.003, octaveGain: 0.02 },
+  ],
+};
+
+const SOUND_PROFILES: Record<SoundStyleId, Record<SoundName, CleanVoiceSpec[]>> = {
+  studio: STUDIO_PRESETS,
+  crisp: CRISP_PRESETS,
+  chime: CHIME_PRESETS,
+  classic: CLASSIC_PRESETS,
+};
+
+function readStoredSoundStyle(): SoundStyleId {
+  if (typeof window === 'undefined') return 'studio';
+  try {
+    const raw = window.localStorage.getItem(SOUND_STYLE_STORAGE_KEY) as SoundStyleId | null;
+    if (raw && SOUND_PROFILES[raw]) return raw;
+  } catch {
+    // ignore storage errors
+  }
+  return 'studio';
+}
+
 let soundEnabled = true;
+let activeSoundStyle: SoundStyleId = readStoredSoundStyle();
 
 export function setSoundEnabled(enabled: boolean) {
   soundEnabled = Boolean(enabled);
@@ -190,6 +328,33 @@ export function setSoundEnabled(enabled: boolean) {
 
 export function isSoundEnabled(): boolean {
   return soundEnabled;
+}
+
+export function getSoundStyle(): SoundStyleId {
+  return activeSoundStyle;
+}
+
+export function setSoundStyle(style: SoundStyleId) {
+  if (!SOUND_PROFILES[style]) return;
+  activeSoundStyle = style;
+  bufferCache.clear();
+  lastSoundName = null;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(SOUND_STYLE_STORAGE_KEY, style);
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
+export function previewSoundStyle(style: SoundStyleId) {
+  setSoundStyle(style);
+  const wasEnabled = soundEnabled;
+  soundEnabled = true;
+  lastSoundName = null;
+  playSound('success');
+  soundEnabled = wasEnabled;
 }
 
 function pulseHaptic(ms: number | number[]) {
@@ -330,7 +495,7 @@ function renderCleanBuffer(ctx: AudioContext, name: SoundName): AudioBuffer {
   if (cached) return cached;
 
   const sampleRate = ctx.sampleRate || 44100;
-  const voices = SOUND_PRESETS[name];
+  const voices = SOUND_PROFILES[activeSoundStyle][name];
 
   let activeDurationSec = 0;
   for (const v of voices) {

@@ -23,7 +23,7 @@
     overflow: hidden;
     overscroll-behavior: none;
     font-family: var(--font-sans);
-    background-color: #0B1E47;
+    background-color: var(--kk-brand);
     color: #0f172a;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -196,7 +196,7 @@
 
 /* Refined unified theme gradients & single-elevation surfaces */
 .kk-brand-gradient {
-  background-color: #0B1E47;
+  background-color: var(--kk-brand);
   background-image: linear-gradient(145deg, var(--kk-brand) 0%, var(--kk-brand-mid) 56%, var(--kk-brand-end) 100%);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -204,7 +204,7 @@
 }
 
 .kk-table-head {
-  background-color: #0B1E47;
+  background-color: var(--kk-brand);
   background-image: linear-gradient(95deg, var(--kk-brand) 0%, var(--kk-brand-mid) 54%, var(--kk-brand-end) 100%);
   color: #ffffff;
 }
