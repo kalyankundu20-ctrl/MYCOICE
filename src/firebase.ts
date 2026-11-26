@@ -13,15 +13,7 @@ import {
   type Auth,
   type User,
 } from 'firebase/auth';
-import {
-  doc,
-  getDocFromServer,
-  getFirestore,
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
-  type Firestore,
-} from 'firebase/firestore';
+import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -30,34 +22,7 @@ const FIRESTORE_DATABASE_ID =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-kkagencyledger-4009c142-a714-4d4b-9dd5-d98e312a9f6e';
 
-let firestoreInstance: Firestore;
-try {
-  firestoreInstance = initializeFirestore(
-    app,
-    {
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager(),
-      }),
-      experimentalAutoDetectLongPolling: true,
-    },
-    FIRESTORE_DATABASE_ID
-  );
-} catch {
-  try {
-    firestoreInstance = initializeFirestore(
-      app,
-      {
-        localCache: persistentLocalCache(),
-        experimentalForceLongPolling: true,
-      },
-      FIRESTORE_DATABASE_ID
-    );
-  } catch {
-    firestoreInstance = getFirestore(app, FIRESTORE_DATABASE_ID);
-  }
-}
-
-export const db = firestoreInstance;
+export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
 
 // Explicitly prefer durable IndexedDB + LocalStorage persistence so Admin & Seller
 // logins stay permanently signed in across reloads, tab closes, and phone restarts.
@@ -286,8 +251,6 @@ export async function trySilentGoogleSheetsTokenRefresh(
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIREBASE_AUTHORIZED_DOMAINS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
 export const FIREBASE_AUTH_PROVIDERS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
-export const FIREBASE_FIRESTORE_UPGRADE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${FIRESTORE_DATABASE_ID}/data?openUpgradeDialog=true`;
-export const FIREBASE_PRICING_URL = 'https://firebase.google.com/pricing#cloud-firestore';
 
 /**
  * Ensures an active Anonymous Firebase Auth session for Master & Client direct ID+Password login
@@ -359,29 +322,7 @@ export function isUnauthorizedDomainError(errOrMessage: unknown): boolean {
   );
 }
 
-export function isFirestoreQuotaExceededError(errOrMessage: unknown): boolean {
-  const code =
-    typeof errOrMessage === 'object' && errOrMessage !== null && 'code' in errOrMessage
-      ? String((errOrMessage as { code?: unknown }).code || '')
-      : '';
-  const raw =
-    typeof errOrMessage === 'string'
-      ? errOrMessage
-      : errOrMessage instanceof Error
-        ? errOrMessage.message
-        : '';
-  const lower = raw.toLowerCase();
-  return (
-    code === 'resource-exhausted' ||
-    lower.includes('quota limit exceeded') ||
-    lower.includes('quota exceeded') ||
-    lower.includes('free daily read units') ||
-    lower.includes('resource-exhausted')
-  );
-}
-
 export function isAnonymousAuthDisabledError(errOrMessage: unknown): boolean {
-  if (isFirestoreQuotaExceededError(errOrMessage)) return false;
   const code =
     typeof errOrMessage === 'object' && errOrMessage !== null && 'code' in errOrMessage
       ? String((errOrMessage as { code?: unknown }).code || '')
@@ -397,7 +338,7 @@ export function isAnonymousAuthDisabledError(errOrMessage: unknown): boolean {
     code === 'auth/operation-not-allowed' ||
     raw.includes('auth/admin-restricted-operation') ||
     raw.includes('auth/operation-not-allowed') ||
-    raw.includes('"Anonymous" sign-in')
+    raw.includes('Anonymous')
   );
 }
 
@@ -408,9 +349,6 @@ export function formatFirebaseAuthError(err: unknown): string {
       : '';
   const raw = err instanceof Error ? err.message : String(err || '');
 
-  if (isFirestoreQuotaExceededError(err)) {
-    return 'Firebase Free Daily Read Quota aaj ke liye poora ho gaya hai. Quota kal apne aap reset ho jayega, ya turant chalu karne ke liye neeche button se database upgrade karein.';
-  }
   if (
     code === 'auth/admin-restricted-operation' ||
     code === 'auth/operation-not-allowed' ||
@@ -498,20 +436,11 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-async function testConnection(attempt = 0) {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    return;
-  }
+async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      if (attempt < 1) {
-        window.setTimeout(() => {
-          void testConnection(attempt + 1);
-        }, 2500);
-        return;
-      }
       console.error('Please check your Firebase configuration.');
     }
   }

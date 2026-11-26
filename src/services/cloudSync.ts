@@ -3,8 +3,6 @@ import {
   deleteDoc,
   doc,
   getDoc,
-  getDocs,
-  limit,
   onSnapshot,
   query,
   serverTimestamp,
@@ -15,25 +13,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
-import {
-  computeSellerBills,
-  generatePrizeAndLimitData,
-  parseWinningNumbers,
-  processSessionRows,
-  round2,
-} from '../engine/calculations';
-import {
-  AgencyConfig,
-  AppState,
-  ArchivedSellerSummary,
-  DaySnapshot,
-  PrizeListRow,
-  Seller,
-  SellerBillRow,
-  SessionComputation,
-  SessionId,
-  TicketEntryRow,
-} from '../types/ledger';
+import { AppState, DaySnapshot, Seller, SellerBillRow, SessionId, TicketEntryRow } from '../types/ledger';
 
 export const AGENCY_ID = 'kk-main';
 export const BOOTSTRAP_ADMIN_EMAIL = 'kalyankundu20@gmail.com';
@@ -61,19 +41,6 @@ export interface CloudAgencyDoc {
   winning1PM: string;
   winning6PM: string;
   winning8PM: string;
-}
-
-export type CloudAnnouncementKind = 'offer' | 'urgent' | 'notice';
-
-export interface CloudPublicAnnouncement {
-  agencyId: string;
-  active: boolean;
-  kind: CloudAnnouncementKind;
-  title: string;
-  message: string;
-  ownerUid: string;
-  updatedByUid: string;
-  updatedAtMs: number;
 }
 
 export interface CloudPartyDoc {
@@ -1582,8 +1549,7 @@ export function subscribeAdminParties(
   const path = `agencies/${AGENCY_ID}/parties`;
   const q = query(
     collection(db, 'agencies', AGENCY_ID, 'parties'),
-    where('ownerUid', '==', ownerUid),
-    limit(200)
+    where('ownerUid', '==', ownerUid)
   );
   return onSnapshot(
     q,
@@ -1605,8 +1571,7 @@ export function subscribeAdminPartyPrivates(
   const path = `agencies/${AGENCY_ID}/partyPrivate`;
   const q = query(
     collection(db, 'agencies', AGENCY_ID, 'partyPrivate'),
-    where('ownerUid', '==', ownerUid),
-    limit(200)
+    where('ownerUid', '==', ownerUid)
   );
   return onSnapshot(
     q,
@@ -1628,8 +1593,7 @@ export function subscribeAdminSheets(
   const path = `agencies/${AGENCY_ID}/sheets`;
   const q = query(
     collection(db, 'agencies', AGENCY_ID, 'sheets'),
-    where('ownerUid', '==', ownerUid),
-    limit(200)
+    where('ownerUid', '==', ownerUid)
   );
   return onSnapshot(
     q,
@@ -1641,37 +1605,6 @@ export function subscribeAdminSheets(
       handleFirestoreError(err, OperationType.LIST, path);
     }
   );
-}
-
-/**
- * One-shot fetch of all agency parties & live sheets (used as a safety net during Day Close
- * if live listeners haven't populated yet).
- */
-export async function fetchAdminPartiesAndSheetsOnce(
-  ownerUid: string,
-  agencyId = AGENCY_ID
-): Promise<{ parties: CloudPartyDoc[]; sheets: CloudPartySheetDoc[] }> {
-  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const [partiesSnap, sheetsSnap] = await Promise.all([
-    getDocs(
-      query(
-        collection(db, 'agencies', cleanAgencyId, 'parties'),
-        where('ownerUid', '==', ownerUid),
-        limit(200)
-      )
-    ),
-    getDocs(
-      query(
-        collection(db, 'agencies', cleanAgencyId, 'sheets'),
-        where('ownerUid', '==', ownerUid),
-        limit(200)
-      )
-    ),
-  ]);
-  return {
-    parties: partiesSnap.docs.map((d) => d.data() as CloudPartyDoc),
-    sheets: sheetsSnap.docs.map((d) => d.data() as CloudPartySheetDoc),
-  };
 }
 
 /**
@@ -2512,7 +2445,7 @@ export function subscribeMasterSubChain(
     };
 
     const unsubParties = onSnapshot(
-      query(collection(db, 'agencies', agencyId, 'parties'), where('ownerUid', '==', queryUid), limit(200)),
+      query(collection(db, 'agencies', agencyId, 'parties'), where('ownerUid', '==', queryUid)),
       (snap) => {
         latestAgencyParties = snap.docs.map((d) => d.data() as CloudPartyDoc);
         emitFromAdmin();
@@ -2523,7 +2456,7 @@ export function subscribeMasterSubChain(
     );
 
     const unsubPrivates = onSnapshot(
-      query(collection(db, 'agencies', agencyId, 'partyPrivate'), where('ownerUid', '==', queryUid), limit(200)),
+      query(collection(db, 'agencies', agencyId, 'partyPrivate'), where('ownerUid', '==', queryUid)),
       (snap) => {
         callbacks.onSubPrivates(snap.docs.map((d) => d.data() as CloudPartyPrivateDoc));
       },
@@ -2533,7 +2466,7 @@ export function subscribeMasterSubChain(
     );
 
     const unsubSheets = onSnapshot(
-      query(collection(db, 'agencies', agencyId, 'sheets'), where('ownerUid', '==', queryUid), limit(200)),
+      query(collection(db, 'agencies', agencyId, 'sheets'), where('ownerUid', '==', queryUid)),
       (snap) => {
         latestAgencySheets = snap.docs.map((d) => d.data() as CloudPartySheetDoc);
         emitFromAdmin();
@@ -2550,16 +2483,13 @@ export function subscribeMasterSubChain(
     };
   }
 
-  // Signed-in Master / Sub-Master live multi-level listeners (quota-optimized):
-  // Attach direct listeners immediately; ONLY attach deep ancestor listeners when
-  // at least one direct child has role === 'master' (prevents 2x reads of every child sheet!).
+  // Signed-in Master / Sub-Master live multi-level listeners:
+  // Merge direct children (parentMasterId == masterPartyId, works even before UID backfill)
+  // AND deep chain descendants (ancestorMasterIds array-contains masterPartyId).
   const directPartyMap = new Map<string, CloudPartyDoc>();
   const deepPartyMap = new Map<string, CloudPartyDoc>();
   const directSheetMap = new Map<string, CloudPartySheetDoc>();
   const deepSheetMap = new Map<string, CloudPartySheetDoc>();
-  let unsubDeepParties: Unsubscribe | null = null;
-  let unsubDeepSheets: Unsubscribe | null = null;
-  let disposed = false;
 
   const emitParties = () => {
     const merged = new Map<string, CloudPartyDoc>();
@@ -2578,78 +2508,17 @@ export function subscribeMasterSubChain(
     callbacks.onSubSheets(Array.from(merged.values()));
   };
 
-  const ensureDeepChainListeners = (hasSubMaster: boolean) => {
-    if (disposed) return;
-    if (!hasSubMaster) {
-      if (unsubDeepParties) {
-        unsubDeepParties();
-        unsubDeepParties = null;
-        deepPartyMap.clear();
-      }
-      if (unsubDeepSheets) {
-        unsubDeepSheets();
-        unsubDeepSheets = null;
-        deepSheetMap.clear();
-      }
-      return;
-    }
-    if (!unsubDeepParties) {
-      unsubDeepParties = onSnapshot(
-        query(
-          collection(db, 'agencies', agencyId, 'parties'),
-          where('ancestorMasterIds', 'array-contains', masterPartyId),
-          limit(150)
-        ),
-        (snap) => {
-          deepPartyMap.clear();
-          snap.docs.forEach((d) => {
-            const p = d.data() as CloudPartyDoc;
-            deepPartyMap.set(p.partyId, p);
-          });
-          emitParties();
-        },
-        () => {
-          // Fallback silently if ancestor query index/permission not yet backfilled; direct listener remains active.
-        }
-      );
-    }
-    if (!unsubDeepSheets) {
-      unsubDeepSheets = onSnapshot(
-        query(
-          collection(db, 'agencies', agencyId, 'sheets'),
-          where('ancestorMasterIds', 'array-contains', masterPartyId),
-          limit(150)
-        ),
-        (snap) => {
-          deepSheetMap.clear();
-          snap.docs.forEach((d) => {
-            const s = d.data() as CloudPartySheetDoc;
-            deepSheetMap.set(s.partyId, s);
-          });
-          emitSheets();
-        },
-        () => {
-          // Fallback silently; direct sheet listener remains active.
-        }
-      );
-    }
-  };
-
   const unsubDirectParties = onSnapshot(
     query(
       collection(db, 'agencies', agencyId, 'parties'),
-      where('parentMasterId', '==', masterPartyId),
-      limit(150)
+      where('parentMasterId', '==', masterPartyId)
     ),
     (snap) => {
       directPartyMap.clear();
-      let hasSubMaster = false;
       snap.docs.forEach((d) => {
         const p = d.data() as CloudPartyDoc;
         directPartyMap.set(p.partyId, p);
-        if (p.role === 'master') hasSubMaster = true;
       });
-      ensureDeepChainListeners(hasSubMaster);
       emitParties();
     },
     (err) => {
@@ -2657,40 +2526,73 @@ export function subscribeMasterSubChain(
     }
   );
 
-  // Single partyPrivate listener by parentMasterId (with lazy UID fallback only if needed)
-  let unsubPrivatesFallback: Unsubscribe | null = null;
-  const unsubPrivatesPrimary = onSnapshot(
+  const unsubDeepParties = onSnapshot(
     query(
-      collection(db, 'agencies', agencyId, 'partyPrivate'),
-      where('parentMasterId', '==', masterPartyId),
-      limit(150)
+      collection(db, 'agencies', agencyId, 'parties'),
+      where('ancestorMasterIds', 'array-contains', masterPartyId)
     ),
     (snap) => {
-      callbacks.onSubPrivates(snap.docs.map((d) => d.data() as CloudPartyPrivateDoc));
+      deepPartyMap.clear();
+      snap.docs.forEach((d) => {
+        const p = d.data() as CloudPartyDoc;
+        deepPartyMap.set(p.partyId, p);
+      });
+      emitParties();
     },
     () => {
-      if (disposed || unsubPrivatesFallback) return;
-      unsubPrivatesFallback = onSnapshot(
-        query(
-          collection(db, 'agencies', agencyId, 'partyPrivate'),
-          where('parentMasterUid', '==', queryUid),
-          limit(150)
-        ),
-        (snap) => {
-          callbacks.onSubPrivates(snap.docs.map((d) => d.data() as CloudPartyPrivateDoc));
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyPrivate`);
-        }
-      );
+      // Fallback silently if ancestor query index/permission not yet backfilled; direct listener remains active.
+    }
+  );
+
+  const uidPrivMap = new Map<string, CloudPartyPrivateDoc>();
+  const idPrivMap = new Map<string, CloudPartyPrivateDoc>();
+  const emitPrivates = () => {
+    const merged = new Map<string, CloudPartyPrivateDoc>();
+    for (const [id, pr] of uidPrivMap.entries()) merged.set(id, pr);
+    for (const [id, pr] of idPrivMap.entries()) merged.set(id, pr);
+    callbacks.onSubPrivates(Array.from(merged.values()));
+  };
+
+  const unsubPrivatesByUid = onSnapshot(
+    query(
+      collection(db, 'agencies', agencyId, 'partyPrivate'),
+      where('parentMasterUid', '==', queryUid)
+    ),
+    (snap) => {
+      uidPrivMap.clear();
+      snap.docs.forEach((d) => {
+        const pr = d.data() as CloudPartyPrivateDoc;
+        uidPrivMap.set(pr.partyId, pr);
+      });
+      emitPrivates();
+    },
+    (err) => {
+      handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyPrivate`);
+    }
+  );
+
+  const unsubPrivatesByMasterId = onSnapshot(
+    query(
+      collection(db, 'agencies', agencyId, 'partyPrivate'),
+      where('parentMasterId', '==', masterPartyId)
+    ),
+    (snap) => {
+      idPrivMap.clear();
+      snap.docs.forEach((d) => {
+        const pr = d.data() as CloudPartyPrivateDoc;
+        idPrivMap.set(pr.partyId, pr);
+      });
+      emitPrivates();
+    },
+    () => {
+      // Fallback silently; UID listener remains active.
     }
   );
 
   const unsubDirectSheets = onSnapshot(
     query(
       collection(db, 'agencies', agencyId, 'sheets'),
-      where('parentMasterId', '==', masterPartyId),
-      limit(150)
+      where('parentMasterId', '==', masterPartyId)
     ),
     (snap) => {
       directSheetMap.clear();
@@ -2705,14 +2607,31 @@ export function subscribeMasterSubChain(
     }
   );
 
+  const unsubDeepSheets = onSnapshot(
+    query(
+      collection(db, 'agencies', agencyId, 'sheets'),
+      where('ancestorMasterIds', 'array-contains', masterPartyId)
+    ),
+    (snap) => {
+      deepSheetMap.clear();
+      snap.docs.forEach((d) => {
+        const s = d.data() as CloudPartySheetDoc;
+        deepSheetMap.set(s.partyId, s);
+      });
+      emitSheets();
+    },
+    () => {
+      // Fallback silently; direct sheet listener remains active.
+    }
+  );
+
   return () => {
-    disposed = true;
     unsubDirectParties();
-    unsubDeepParties?.();
-    unsubPrivatesPrimary();
-    unsubPrivatesFallback?.();
+    unsubDeepParties();
+    unsubPrivatesByUid();
+    unsubPrivatesByMasterId();
     unsubDirectSheets();
-    unsubDeepSheets?.();
+    unsubDeepSheets();
   };
 }
 
@@ -2734,35 +2653,6 @@ export interface CloudPartyArchiveDoc {
 
 const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-function sanitizePartyArchiveEntryRows(
-  rows: TicketEntryRow[] | undefined,
-  maxRows = 600
-): TicketEntryRow[] {
-  if (!Array.isArray(rows) || maxRows <= 0) return [];
-  const out: TicketEntryRow[] = [];
-  for (const r of rows) {
-    if (!r || typeof r !== 'object') continue;
-    const start = String(r.start || '').trim().slice(0, 20);
-    const end = String(r.end || '').trim().slice(0, 20);
-    const qtyOverride = String(r.qtyOverride || '').trim().slice(0, 20);
-    const rangeOverride = String(r.rangeOverride || '').trim().slice(0, 20);
-    if (!start && !end && !qtyOverride && !rangeOverride) continue;
-    out.push({
-      id: String(r.id || `row-${out.length}`).slice(0, 96),
-      name: String(r.name || '').trim().slice(0, 60),
-      item: String(r.item || '').trim().slice(0, 20),
-      start,
-      end,
-      qtyOverride,
-      rangeOverride,
-    });
-    if (out.length >= maxRows) break;
-  }
-  return out;
-}
-
-const MAX_PARTY_ARCHIVE_PAYLOAD_BYTES = 740_000;
-
 function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cleanDate: string): DaySnapshot {
   const summaries = (snapshot.sellerSummaries || []).slice(0, 120).map((s) => ({
     name: String(s.name || '').slice(0, 60),
@@ -2777,7 +2667,7 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
     due: Number(s.due) || 0,
     total: Number(s.total) || 0,
   }));
-  const allPrizes = (snapshot.prizeList || []).slice(0, 300).map((p) => ({
+  const prizes = (snapshot.prizeList || []).slice(0, 300).map((p) => ({
     id: String(p.id || '').slice(0, 64),
     time: (p.time === '6PM' || p.time === '8PM' ? p.time : '1PM') as SessionId,
     name: String(p.name || '').slice(0, 60),
@@ -2789,44 +2679,14 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
     svc: Number(p.svc) || 0,
     total: Number(p.total) || 0,
   }));
-  const sellers = (snapshot.sellers || []).slice(0, 120).map((s, idx) => ({
-    id: String(s.id || `seller-${idx}`).slice(0, 64),
-    name: String(s.name || '').trim().slice(0, 60),
-    mobile: '',
-    rate: Number(s.rate) || 0,
-    due: Number(s.due) || 0,
-    joma: Number(s.joma) || 0,
-  }));
-  const winningRaw = {
-    '1PM': String(snapshot.winningRaw?.['1PM'] || '').slice(0, 6000),
-    '6PM': String(snapshot.winningRaw?.['6PM'] || '').slice(0, 6000),
-    '8PM': String(snapshot.winningRaw?.['8PM'] || '').slice(0, 6000),
-  };
-  const adminAccountSummary = snapshot.adminAccountSummary
-    ? {
-        name: String(snapshot.adminAccountSummary.name || '').slice(0, 60),
-        mor: Number(snapshot.adminAccountSummary.mor) || 0,
-        day: Number(snapshot.adminAccountSummary.day) || 0,
-        eve: Number(snapshot.adminAccountSummary.eve) || 0,
-        sold: Number(snapshot.adminAccountSummary.sold) || 0,
-        bill: Number(snapshot.adminAccountSummary.bill) || 0,
-        prizeTotal: Number(snapshot.adminAccountSummary.prizeTotal) || 0,
-        fresh: Number(snapshot.adminAccountSummary.fresh) || 0,
-        joma: Number(snapshot.adminAccountSummary.joma) || 0,
-        due: Number(snapshot.adminAccountSummary.due) || 0,
-        total: Number(snapshot.adminAccountSummary.total) || 0,
-      }
-    : undefined;
-
-  const basePayload = {
+  return {
     id: cleanId,
     date: cleanDate,
     savedAt: String(snapshot.savedAt || new Date().toISOString()).slice(0, 64),
-    trigger: (
+    trigger:
       snapshot.trigger === 'day-close' || snapshot.trigger === 'daily-auto'
         ? snapshot.trigger
-        : 'manual'
-    ) as DaySnapshot['trigger'],
+        : 'manual',
     totalSold: Number(snapshot.totalSold) || 0,
     totalBill: Number(snapshot.totalBill) || 0,
     totalPrize: Number(snapshot.totalPrize) || 0,
@@ -2838,126 +2698,11 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
       '8PM': Number(snapshot.overLimitTotals?.['8PM']) || 0,
     },
     sellerSummaries: summaries,
-    ...(adminAccountSummary ? { adminAccountSummary } : {}),
-    limitPrizeGroups: [] as DaySnapshot['limitPrizeGroups'],
-    sellers,
-    winningRaw,
-  };
-
-  // Fast path: <= 400 total rows is guaranteed well below Firestore's 1 MiB document limit,
-  // avoiding expensive JSON.stringify serialization on every party during Sync IDs & Day Close.
-  const e1Full = sanitizePartyArchiveEntryRows(snapshot.entries?.['1PM'], 600);
-  const e6Full = sanitizePartyArchiveEntryRows(snapshot.entries?.['6PM'], 600);
-  const e8Full = sanitizePartyArchiveEntryRows(snapshot.entries?.['8PM'], 600);
-  const fullCandidate: DaySnapshot = {
-    ...basePayload,
-    prizeList: allPrizes,
-    entries: {
-      '1PM': e1Full,
-      '6PM': e6Full,
-      '8PM': e8Full,
-    },
-  };
-  const totalRowCount =
-    e1Full.length + e6Full.length + e8Full.length + allPrizes.length + summaries.length + sellers.length;
-  if (totalRowCount <= 400 || JSON.stringify(fullCandidate).length <= MAX_PARTY_ARCHIVE_PAYLOAD_BYTES) {
-    return fullCandidate;
-  }
-
-  // Heavy Master fallback (6,000+ tickets): shrink entries progressively so payload never exceeds 1 MiB
-  const shrinkCaps = [350, 150, 50, 0];
-  for (const cap of shrinkCaps) {
-    const candidate: DaySnapshot = {
-      ...basePayload,
-      prizeList: allPrizes,
-      entries: {
-        '1PM': e1Full.slice(0, cap),
-        '6PM': e6Full.slice(0, cap),
-        '8PM': e8Full.slice(0, cap),
-      },
-    };
-    if (JSON.stringify(candidate).length <= MAX_PARTY_ARCHIVE_PAYLOAD_BYTES) {
-      return candidate;
-    }
-  }
-
-  return {
-    ...basePayload,
-    prizeList: allPrizes.slice(0, 120),
+    prizeList: prizes,
+    limitPrizeGroups: [],
+    sellers: [],
     entries: { '1PM': [], '6PM': [], '8PM': [] },
-  };
-}
-
-/**
- * Generates a collision-free Firestore document ID for a party's daily archive.
- * Uses the trailing 24 chars of partyId PLUS an FNV-1a hash of the full partyId so
- * parties created in the same millisecond (e.g. `seller-gs-1763...`) NEVER collide.
- */
-export function makeUniquePartyArchiveId(
-  partyId: string,
-  cleanDate: string,
-  uniqueSalt?: string
-): string {
-  const cleanPid = String(partyId || 'party').replace(/[^a-zA-Z0-9_-]/g, '');
-  const dateCompact = sanitizeIsoDate(cleanDate).replace(/[^0-9]/g, '').slice(0, 8) || '00000000';
-  let h = 2166136261;
-  for (let i = 0; i < cleanPid.length; i += 1) {
-    h ^= cleanPid.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  const pidHash = (h >>> 0).toString(36);
-  const tail = cleanPid.slice(-24) || 'p';
-  const cleanSalt = uniqueSalt ? String(uniqueSalt).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 8) : '';
-  const raw = cleanSalt
-    ? `pa-${dateCompact}-${tail}-${pidHash}-${cleanSalt}`
-    : `pa-${dateCompact}-${tail}-${pidHash}`;
-  return raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
-}
-
-function buildPartyArchiveDocBody(
-  actorUid: string,
-  party: CloudPartyDoc,
-  targetId: string,
-  cleanDate: string,
-  targetPayload: DaySnapshot,
-  isAdminActor: boolean
-) {
-  const cleanAgencyId = (party.agencyId || AGENCY_ID).trim() || AGENCY_ID;
-  const cleanOwnerUid = (party.ownerUid || actorUid).trim();
-  const rawAdminUids =
-    Array.isArray(party.adminUids) && party.adminUids.length > 0
-      ? party.adminUids
-      : [cleanOwnerUid];
-  const adminUids = Array.from(
-    new Set([cleanOwnerUid, ...rawAdminUids].filter((u) => typeof u === 'string' && u.trim().length > 0))
-  ).slice(0, 10);
-  const cleanSavedAt = String(targetPayload.savedAt || new Date().toISOString()).slice(0, 64);
-  const cleanTrigger: DaySnapshot['trigger'] =
-    targetPayload.trigger === 'day-close' || targetPayload.trigger === 'daily-auto'
-      ? targetPayload.trigger
-      : 'manual';
-
-  return {
-    cleanAgencyId,
-    cleanOwnerUid,
-    adminUids,
-    body: {
-      agencyId: cleanAgencyId,
-      snapshotId: targetId,
-      partyId: party.partyId,
-      partyName: (party.name || 'SELLER').trim().slice(0, 60) || 'SELLER',
-      ownerUid: cleanOwnerUid,
-      adminUids,
-      assignedUid: isAdminActor ? party.assignedUid || '' : actorUid,
-      parentMasterId: party.parentMasterId || '',
-      parentMasterUid: party.parentMasterUid || '',
-      date: cleanDate,
-      savedAt: cleanSavedAt,
-      trigger: cleanTrigger,
-      payload: targetPayload,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    },
+    winningRaw: { '1PM': '', '6PM': '', '8PM': '' },
   };
 }
 
@@ -2967,66 +2712,47 @@ export async function savePartyArchiveCloud(
   snapshot: DaySnapshot,
   isAdminActor = false
 ): Promise<DaySnapshot> {
-  const cleanDate = sanitizeIsoDate(snapshot.date);
-  const safeSuffix = String(snapshot.id || '')
+  const safeSuffix = String(snapshot.id || `snap-${Date.now()}`)
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .slice(0, 64);
   const snapshotId =
     safeSuffix.length >= 4
       ? safeSuffix
-      : makeUniquePartyArchiveId(party.partyId, cleanDate, Math.random().toString(36).slice(2, 6));
+      : `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const cleanDate = sanitizeIsoDate(snapshot.date);
+  const cleanSavedAt = String(snapshot.savedAt || new Date().toISOString()).slice(0, 64);
+  const cleanTrigger: DaySnapshot['trigger'] =
+    snapshot.trigger === 'day-close' || snapshot.trigger === 'daily-auto'
+      ? snapshot.trigger
+      : 'manual';
   const payload = sanitizePartyArchivePayload(snapshot, snapshotId, cleanDate);
-  const { cleanAgencyId, body } = buildPartyArchiveDocBody(
-    actorUid,
-    party,
-    snapshotId,
-    cleanDate,
-    payload,
-    isAdminActor
-  );
+  const adminUids =
+    Array.isArray(party.adminUids) && party.adminUids.length > 0
+      ? party.adminUids.slice(0, 10)
+      : [party.ownerUid];
 
-  const ref = doc(db, 'agencies', cleanAgencyId, 'partyArchives', snapshotId);
+  const ref = doc(db, 'agencies', party.agencyId, 'partyArchives', snapshotId);
   try {
-    await setDoc(ref, body);
+    await setDoc(ref, {
+      agencyId: party.agencyId,
+      snapshotId,
+      partyId: party.partyId,
+      partyName: (party.name || 'SELLER').trim().slice(0, 60) || 'SELLER',
+      ownerUid: party.ownerUid,
+      adminUids,
+      assignedUid: isAdminActor ? party.assignedUid || '' : actorUid,
+      parentMasterId: party.parentMasterId || '',
+      parentMasterUid: party.parentMasterUid || '',
+      date: cleanDate,
+      savedAt: cleanSavedAt,
+      trigger: cleanTrigger,
+      payload,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
     return payload;
-  } catch (firstErr) {
-    // Idempotency & collision recovery: if a doc with `snapshotId` already exists in Firestore,
-    // `setDoc` hits `allow update` (which forbids modifying `createdAt` or `partyId`).
-    try {
-      const existingSnap = await getDoc(ref);
-      if (existingSnap.exists()) {
-        const existingData = existingSnap.data() as Partial<CloudPartyArchiveDoc>;
-        if (existingData?.partyId === party.partyId) {
-          await updateDoc(ref, {
-            date: cleanDate,
-            payload,
-            updatedAt: serverTimestamp(),
-          });
-          return payload;
-        }
-        // Different party owned that legacy ID -> mint a fresh unique ID and create cleanly
-        const freshId = makeUniquePartyArchiveId(
-          party.partyId,
-          cleanDate,
-          Math.random().toString(36).slice(2, 6)
-        );
-        const freshPayload = sanitizePartyArchivePayload(snapshot, freshId, cleanDate);
-        const freshBuilt = buildPartyArchiveDocBody(
-          actorUid,
-          party,
-          freshId,
-          cleanDate,
-          freshPayload,
-          isAdminActor
-        );
-        const freshRef = doc(db, 'agencies', cleanAgencyId, 'partyArchives', freshId);
-        await setDoc(freshRef, freshBuilt.body);
-        return freshPayload;
-      }
-    } catch {
-      // Fall through to report original error below
-    }
-    handleFirestoreError(firstErr, OperationType.CREATE, ref.path);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, ref.path);
   }
 }
 
@@ -3072,8 +2798,7 @@ export function subscribePartyArchives(
 ): Unsubscribe {
   const q = query(
     collection(db, 'agencies', agencyId, 'partyArchives'),
-    where('partyId', '==', partyId),
-    limit(40)
+    where('partyId', '==', partyId)
   );
   return onSnapshot(
     q,
@@ -3093,941 +2818,13 @@ export function subscribePartyArchives(
           trigger: data.trigger || data.payload.trigger || 'manual',
         });
       }
-      list.sort(
-        (a, b) =>
-          (b.date || '').localeCompare(a.date || '') ||
-          (b.savedAt || '').localeCompare(a.savedAt || '')
-      );
+      list.sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
       onSnapshots(list.slice(0, 60));
     },
     () => {
       // Keep local cached archives visible if offline or permission refresh pending
     }
   );
-}
-
-/**
- * Admin-only lightweight balance update on a party's current-day live document
- * (updates ONLY due, joma, updatedAt so live entries/date/winning remain 100% untouched).
- */
-export async function updatePartyBalancesAdminCloud(
-  agencyId: string,
-  partyId: string,
-  due: number,
-  joma: number
-): Promise<void> {
-  const safeDue = Math.max(-100000000, Math.min(100000000, round2(Number(due) || 0)));
-  const safeJoma = Math.max(-100000000, Math.min(100000000, round2(Number(joma) || 0)));
-  const ref = doc(db, 'agencies', agencyId, 'parties', partyId);
-  try {
-    await updateDoc(ref, {
-      due: safeDue,
-      joma: safeJoma,
-      updatedAt: serverTimestamp(),
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, ref.path);
-  }
-}
-
-function isTicketEntryRowBlank(r: TicketEntryRow | undefined | null): boolean {
-  if (!r) return true;
-  return (
-    !String(r.name || '').trim() &&
-    !String(r.item || '').trim() &&
-    !String(r.start || '').trim() &&
-    !String(r.end || '').trim() &&
-    !String(r.qtyOverride || '').trim() &&
-    !String(r.rangeOverride || '').trim()
-  );
-}
-
-async function fetchAllAgencyPartyArchives(
-  agencyId: string,
-  ownerUid: string,
-  actorUid: string,
-  activeParties: CloudPartyDoc[],
-  targetDate?: string
-): Promise<Array<{ docId: string; data: CloudPartyArchiveDoc }>> {
-  const byDocId = new Map<string, CloudPartyArchiveDoc>();
-  const addSnap = (snap: Awaited<ReturnType<typeof getDocs>>) => {
-    for (const d of snap.docs) {
-      const data = d.data() as CloudPartyArchiveDoc;
-      if (data && data.partyId) {
-        byDocId.set(d.id, data);
-      }
-    }
-  };
-
-  let fetchedPrimary = false;
-
-  // Ultra-fast single-date query (downloads ONLY the 1 target date instead of 30 days of archive docs!).
-  // Uses a single-field index on `date` (zero composite index required) and passes `isBootstrapAdminEmail()`.
-  if (targetDate) {
-    const cleanDate = sanitizeIsoDate(targetDate);
-    try {
-      const qDate = query(
-        collection(db, 'agencies', agencyId, 'partyArchives'),
-        where('date', '==', cleanDate)
-      );
-      addSnap(await getDocs(qDate));
-      fetchedPrimary = true;
-    } catch {
-      // Non-bootstrap co-admin fallback: try ownerUid / adminUids query below
-    }
-  }
-
-  if (!fetchedPrimary && ownerUid) {
-    try {
-      const qOwner = query(
-        collection(db, 'agencies', agencyId, 'partyArchives'),
-        where('ownerUid', '==', ownerUid)
-      );
-      addSnap(await getDocs(qOwner));
-      fetchedPrimary = true;
-    } catch {
-      // Fallback to adminUids / per-party query below
-    }
-  }
-
-  if (!fetchedPrimary && actorUid) {
-    try {
-      const qAdmin = query(
-        collection(db, 'agencies', agencyId, 'partyArchives'),
-        where('adminUids', 'array-contains', actorUid)
-      );
-      addSnap(await getDocs(qAdmin));
-      fetchedPrimary = true;
-    } catch {
-      // Fallback to per-party query below
-    }
-  }
-
-  // Only fall back to per-party queries if ALL primary collection queries failed
-  // (avoids firing up to 25 slow N+1 Firestore round-trips when the primary query already returned all docs!).
-  if (!fetchedPrimary && activeParties.length > 0) {
-    await Promise.all(
-      activeParties.slice(0, 40).map(async (p) => {
-        try {
-          const qParty = query(
-            collection(db, 'agencies', agencyId, 'partyArchives'),
-            where('partyId', '==', p.partyId)
-          );
-          addSnap(await getDocs(qParty));
-        } catch {
-          // Ignore individual party query failure when no docs exist or restricted
-        }
-      })
-    );
-  }
-
-  return Array.from(byDocId.entries()).map(([docId, data]) => ({ docId, data }));
-}
-
-async function syncSingleAdminArchiveAgainstExisting(
-  agencyId: string,
-  ownerUid: string,
-  restoredDate: string,
-  editedAdminSnap: DaySnapshot,
-  activeParties: CloudPartyDoc[],
-  config: AgencyConfig,
-  allPartyArchiveDocs: Array<{ docId: string; data: CloudPartyArchiveDoc }>,
-  createMissing = true
-): Promise<number> {
-  const cleanDate = sanitizeIsoDate(restoredDate);
-  if (activeParties.length === 0) return 0;
-
-  const existingByPartyId = new Map<string, Array<{ docId: string; data: CloudPartyArchiveDoc }>>();
-  for (const item of allPartyArchiveDocs) {
-    const docDate = item.data.date || item.data.payload?.date || '';
-    if (docDate !== cleanDate) continue;
-    const list = existingByPartyId.get(item.data.partyId) || [];
-    list.push(item);
-    existingByPartyId.set(item.data.partyId, list);
-  }
-
-  // Fast lookups from Admin's freshly edited restored snapshot
-  const adminSummaryByName = new Map<string, ArchivedSellerSummary>();
-  for (const sum of editedAdminSnap.sellerSummaries || []) {
-    const key = (sum.name || '').trim().toUpperCase();
-    if (key) adminSummaryByName.set(key, sum);
-  }
-  const adminSellerByName = new Map<string, Seller>();
-  for (const s of editedAdminSnap.sellers || []) {
-    const key = (s.name || '').trim().toUpperCase();
-    if (key) adminSellerByName.set(key, s);
-  }
-  const adminPrizesByName = new Map<string, PrizeListRow[]>();
-  for (const pr of editedAdminSnap.prizeList || []) {
-    const key = (pr.name || '').trim().toUpperCase();
-    if (!key) continue;
-    const list = adminPrizesByName.get(key) || [];
-    list.push(pr);
-    adminPrizesByName.set(key, list);
-  }
-
-  const topOwnRowsByName = new Map<string, Record<SessionId, TicketEntryRow[]>>();
-  const subRowsByPartyId = new Map<string, Record<SessionId, TicketEntryRow[]>>();
-  const ensureBucket = (
-    map: Map<string, Record<SessionId, TicketEntryRow[]>>,
-    key: string
-  ): Record<SessionId, TicketEntryRow[]> => {
-    let b = map.get(key);
-    if (!b) {
-      b = { '1PM': [], '6PM': [], '8PM': [] };
-      map.set(key, b);
-    }
-    return b;
-  };
-
-  for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-    const rows = editedAdminSnap.entries?.[sid] || [];
-    let lastResolved = '';
-    for (const r of rows) {
-      if (isTicketEntryRowBlank(r)) continue;
-      const explicit = (r.name || '').trim();
-      const resolved = explicit || lastResolved;
-      if (explicit) lastResolved = explicit;
-      if (r.id && r.id.startsWith('sub::')) {
-        const parts = r.id.split('::');
-        const subPid = parts[1] || '';
-        const origId = parts.slice(2).join('::') || r.id;
-        if (subPid) {
-          ensureBucket(subRowsByPartyId, subPid)[sid].push({
-            ...r,
-            id: origId,
-          });
-        }
-      } else if (resolved) {
-        ensureBucket(topOwnRowsByName, resolved.toUpperCase())[sid].push({
-          ...r,
-          name: resolved,
-        });
-      }
-    }
-  }
-
-  const adminHasSubTracking = subRowsByPartyId.size > 0;
-
-  const winningRaw: Record<SessionId, string> = {
-    '1PM': editedAdminSnap.winningRaw?.['1PM'] || '',
-    '6PM': editedAdminSnap.winningRaw?.['6PM'] || '',
-    '8PM': editedAdminSnap.winningRaw?.['8PM'] || '',
-  };
-  const parsedWinning = parseWinningNumbers(winningRaw);
-
-  const directChildrenByParentId = new Map<string, CloudPartyDoc[]>();
-  for (const p of activeParties) {
-    if (!p.parentMasterId) continue;
-    const list = directChildrenByParentId.get(p.parentMasterId) || [];
-    list.push(p);
-    directChildrenByParentId.set(p.parentMasterId, list);
-  }
-
-  const getDescendants = (rootPartyId: string): CloudPartyDoc[] => {
-    const result: CloudPartyDoc[] = [];
-    const seen = new Set<string>([rootPartyId]);
-    const qIds = [rootPartyId];
-    while (qIds.length > 0) {
-      const cur = qIds.shift()!;
-      for (const child of directChildrenByParentId.get(cur) || []) {
-        if (seen.has(child.partyId)) continue;
-        seen.add(child.partyId);
-        result.push(child);
-        qIds.push(child.partyId);
-      }
-    }
-    return result;
-  };
-
-  type PendingArchiveWriteOp =
-    | {
-        kind: 'update';
-        party: CloudPartyDoc;
-        item: { docId: string; data: CloudPartyArchiveDoc };
-        payload: DaySnapshot;
-        approxBytes: number;
-      }
-    | {
-        kind: 'create';
-        party: CloudPartyDoc;
-        payload: DaySnapshot;
-        approxBytes: number;
-      };
-
-  const estimatePayloadBytes = (snap: DaySnapshot): number => {
-    const entryCount =
-      (snap.entries?.['1PM']?.length || 0) +
-      (snap.entries?.['6PM']?.length || 0) +
-      (snap.entries?.['8PM']?.length || 0);
-    const prizeCount = snap.prizeList?.length || 0;
-    const sellerCount = (snap.sellers?.length || 0) + (snap.sellerSummaries?.length || 0);
-    return 4096 + entryCount * 240 + prizeCount * 180 + sellerCount * 220;
-  };
-
-  let syncedCount = 0;
-  const pendingOps: PendingArchiveWriteOp[] = [];
-  const failedParties: string[] = [];
-
-  for (const party of activeParties) {
-    const partyUpper = (party.name || '').trim().toUpperCase();
-    const isTopLevel = !party.parentMasterId;
-    const directSubs = directChildrenByParentId.get(party.partyId) || [];
-    const descendants = party.role === 'master' ? getDescendants(party.partyId) : [];
-    const existingDocs = existingByPartyId.get(party.partyId) || [];
-
-    const adminSeller = isTopLevel ? adminSellerByName.get(partyUpper) : undefined;
-    const adminSummary = isTopLevel ? adminSummaryByName.get(partyUpper) : undefined;
-    const adminPrizes = isTopLevel ? adminPrizesByName.get(partyUpper) || [] : [];
-
-    const buildUpdatedPayloadForParty = (
-      existingSnap?: DaySnapshot
-    ): { payload: DaySnapshot; hasData: boolean } => {
-      const snapId = existingSnap?.id || makeUniquePartyArchiveId(party.partyId, cleanDate);
-
-      // Split existing snapshot entries into own vs sub::partyId:: buckets
-      const existingOwnEntries: Record<SessionId, TicketEntryRow[]> = {
-        '1PM': [],
-        '6PM': [],
-        '8PM': [],
-      };
-      const existingSubEntriesByPid = new Map<string, Record<SessionId, TicketEntryRow[]>>();
-      if (existingSnap?.entries) {
-        for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-          for (const r of existingSnap.entries[sid] || []) {
-            if (isTicketEntryRowBlank(r)) continue;
-            if (r.id && r.id.startsWith('sub::')) {
-              const parts = r.id.split('::');
-              const subPid = parts[1] || '';
-              const origId = parts.slice(2).join('::') || r.id;
-              if (subPid) {
-                ensureBucket(existingSubEntriesByPid, subPid)[sid].push({
-                  ...r,
-                  id: origId,
-                });
-              }
-            } else {
-              existingOwnEntries[sid].push(r);
-            }
-          }
-        }
-      }
-
-      // 1. Build party's own entries
-      const ownEntries: Record<SessionId, TicketEntryRow[]> = {
-        '1PM': [],
-        '6PM': [],
-        '8PM': [],
-      };
-      const ownAdminSubBucket = subRowsByPartyId.get(party.partyId);
-      for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-        if (isTopLevel) {
-          const fromAdmin = topOwnRowsByName.get(partyUpper)?.[sid] || [];
-          ownEntries[sid] = fromAdmin.map((r) => ({ ...r, name: party.name }));
-        } else if (ownAdminSubBucket || adminHasSubTracking) {
-          ownEntries[sid] = (ownAdminSubBucket?.[sid] || []).map((r) => ({
-            ...r,
-            name: party.name,
-          }));
-        } else {
-          ownEntries[sid] = existingOwnEntries[sid].map((r) => ({ ...r, name: party.name }));
-        }
-      }
-
-      // 2. Build merged entries (own + descendants tagged sub::dpId::)
-      const descendantEntriesByPid = new Map<string, Record<SessionId, TicketEntryRow[]>>();
-      for (const dp of descendants) {
-        const fromAdminSub = subRowsByPartyId.get(dp.partyId);
-        const fromExisting = existingSubEntriesByPid.get(dp.partyId);
-        const useAdminSub = Boolean(fromAdminSub) || adminHasSubTracking;
-        const chosen: Record<SessionId, TicketEntryRow[]> = {
-          '1PM': useAdminSub ? fromAdminSub?.['1PM'] || [] : fromExisting?.['1PM'] || [],
-          '6PM': useAdminSub ? fromAdminSub?.['6PM'] || [] : fromExisting?.['6PM'] || [],
-          '8PM': useAdminSub ? fromAdminSub?.['8PM'] || [] : fromExisting?.['8PM'] || [],
-        };
-        descendantEntriesByPid.set(dp.partyId, chosen);
-      }
-
-      const mergedEntries: Record<SessionId, TicketEntryRow[]> = {
-        '1PM': [...ownEntries['1PM']],
-        '6PM': [...ownEntries['6PM']],
-        '8PM': [...ownEntries['8PM']],
-      };
-      const handledSubIds = new Set<string>();
-      for (const dp of descendants) {
-        handledSubIds.add(dp.partyId);
-        const bucket = descendantEntriesByPid.get(dp.partyId);
-        if (!bucket) continue;
-        for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-          for (const r of bucket[sid]) {
-            mergedEntries[sid].push({
-              ...r,
-              id: `sub::${dp.partyId}::${r.id}`,
-              name: dp.name,
-            });
-          }
-        }
-      }
-      // Preserve any historical sub:: entries for removed sub-sellers
-      for (const [subPid, bucket] of existingSubEntriesByPid.entries()) {
-        if (handledSubIds.has(subPid)) continue;
-        for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-          for (const r of bucket[sid]) {
-            mergedEntries[sid].push({
-              ...r,
-              id: `sub::${subPid}::${r.id}`,
-            });
-          }
-        }
-      }
-
-      // 3. Build updated sellers array (own party updated from Admin's restored edit; sub-sellers preserved)
-      const existingOwnSeller = (existingSnap?.sellers || []).find(
-        (s) => s.id === party.partyId || (s.name || '').trim().toUpperCase() === partyUpper
-      );
-      const updatedOwnSeller: Seller = {
-        id: party.partyId,
-        name: party.name,
-        mobile: '',
-        rate: adminSeller
-          ? adminSeller.rate
-          : existingOwnSeller
-            ? existingOwnSeller.rate
-            : party.rate,
-        due: adminSeller
-          ? adminSeller.due
-          : existingOwnSeller
-            ? existingOwnSeller.due
-            : party.due,
-        joma: adminSeller
-          ? adminSeller.joma
-          : existingOwnSeller
-            ? existingOwnSeller.joma
-            : party.joma,
-      };
-
-      const updatedSellers: Seller[] = [updatedOwnSeller];
-      const seenSellerIds = new Set<string>([party.partyId]);
-      const existingSubSellerMap = new Map<string, Seller>();
-      for (const s of existingSnap?.sellers || []) {
-        if (!s || s.id === party.partyId || (s.name || '').trim().toUpperCase() === partyUpper) {
-          continue;
-        }
-        existingSubSellerMap.set(s.id, s);
-      }
-      for (const dp of descendants) {
-        if (seenSellerIds.has(dp.partyId)) continue;
-        seenSellerIds.add(dp.partyId);
-        const prevSub = existingSubSellerMap.get(dp.partyId);
-        updatedSellers.push({
-          id: dp.partyId,
-          name: dp.name,
-          mobile: '',
-          rate: prevSub ? prevSub.rate : dp.rate,
-          due: prevSub ? prevSub.due : dp.due,
-          joma: prevSub ? prevSub.joma : dp.joma,
-        });
-      }
-      for (const [sidKey, prevSub] of existingSubSellerMap.entries()) {
-        if (seenSellerIds.has(sidKey)) continue;
-        seenSellerIds.add(sidKey);
-        updatedSellers.push(prevSub);
-      }
-
-      // 4. Build updated sellerSummaries & prizeList
-      let updatedSummaries: ArchivedSellerSummary[] = [];
-      let updatedPrizes: PrizeListRow[] = [];
-
-      if (party.role === 'master' && directSubs.length > 0) {
-        const hasOwnRows =
-          ownEntries['1PM'].length > 0 ||
-          ownEntries['6PM'].length > 0 ||
-          ownEntries['8PM'].length > 0;
-        if (hasOwnRows) {
-          const ownComps: Record<SessionId, SessionComputation> = {
-            '1PM': processSessionRows(ownEntries['1PM'], '1PM', config),
-            '6PM': processSessionRows(ownEntries['6PM'], '6PM', config),
-            '8PM': processSessionRows(ownEntries['8PM'], '8PM', config),
-          };
-          const ownPrizeData = generatePrizeAndLimitData(ownComps, parsedWinning, config);
-          updatedPrizes.push(...ownPrizeData.prizeList);
-        }
-
-        for (const sp of directSubs) {
-          const spBranchIds = new Set<string>([sp.partyId]);
-          const spDescendants = getDescendants(sp.partyId);
-          for (const d of spDescendants) spBranchIds.add(d.partyId);
-
-          const collectBranchRows = (sid: SessionId): TicketEntryRow[] => {
-            const out: TicketEntryRow[] = [];
-            for (const bid of spBranchIds) {
-              const bucket = descendantEntriesByPid.get(bid);
-              for (const r of bucket?.[sid] || []) {
-                out.push({
-                  ...r,
-                  id: `branch::${bid}::${r.id}`,
-                  name: sp.name,
-                });
-              }
-            }
-            return out;
-          };
-
-          const spSeller =
-            updatedSellers.find((s) => s.id === sp.partyId) || {
-              id: sp.partyId,
-              name: sp.name,
-              mobile: '',
-              rate: sp.rate,
-              due: sp.due,
-              joma: sp.joma,
-            };
-
-          const r1 = collectBranchRows('1PM');
-          const r6 = collectBranchRows('6PM');
-          const r8 = collectBranchRows('8PM');
-          if (r1.length === 0 && r6.length === 0 && r8.length === 0) {
-            const dueVal = round2(Number(spSeller.due) || 0);
-            const jomaVal = round2(Number(spSeller.joma) || 0);
-            updatedSummaries.push({
-              name: spSeller.name,
-              mor: 0,
-              day: 0,
-              eve: 0,
-              sold: 0,
-              bill: 0,
-              prizeTotal: 0,
-              fresh: 0,
-              joma: jomaVal,
-              due: dueVal,
-              total: round2(dueVal - jomaVal),
-            });
-            continue;
-          }
-
-          const spComps: Record<SessionId, SessionComputation> = {
-            '1PM': processSessionRows(r1, '1PM', config),
-            '6PM': processSessionRows(r6, '6PM', config),
-            '8PM': processSessionRows(r8, '8PM', config),
-          };
-          const spPrizeData = generatePrizeAndLimitData(spComps, parsedWinning, config);
-          updatedPrizes.push(...spPrizeData.prizeList);
-
-          const [spBill] = computeSellerBills([spSeller], spComps, spPrizeData.prizeList, cleanDate);
-          if (spBill) {
-            updatedSummaries.push({
-              name: spBill.name,
-              mor: spBill.mor,
-              day: spBill.day,
-              eve: spBill.eve,
-              sold: spBill.sold,
-              bill: spBill.bill,
-              prizeTotal: spBill.prizeTotal,
-              fresh: spBill.fresh,
-              joma: spBill.joma,
-              due: spBill.due,
-              total: spBill.total,
-            });
-          }
-        }
-
-        // If no sub-seller had any activity on this date and Admin has a summary for this Master, show Master's Admin summary
-        const subsHaveActivity = updatedSummaries.some(
-          (s) => s.sold > 0 || s.bill !== 0 || s.prizeTotal !== 0 || s.due !== 0 || s.joma !== 0
-        );
-        if (!subsHaveActivity && adminSummary) {
-          updatedSummaries = [adminSummary];
-          if (adminPrizes.length > 0) {
-            updatedPrizes = adminPrizes;
-          }
-        }
-      } else if (isTopLevel && adminSummary) {
-        // Top-level Direct Seller or Master without sub-sellers (e.g. RIJU): mirror Admin's exact edited summary & prizes
-        updatedSummaries = [adminSummary];
-        updatedPrizes = adminPrizes;
-      } else {
-        // Sub-Seller / Leaf party: fast-path empty sheets or recompute own bill with updated entries + winning numbers
-        const hasOwnRows =
-          ownEntries['1PM'].length > 0 ||
-          ownEntries['6PM'].length > 0 ||
-          ownEntries['8PM'].length > 0;
-        if (!hasOwnRows) {
-          const dueVal = round2(Number(updatedOwnSeller.due) || 0);
-          const jomaVal = round2(Number(updatedOwnSeller.joma) || 0);
-          updatedPrizes = [];
-          updatedSummaries = [
-            {
-              name: updatedOwnSeller.name,
-              mor: 0,
-              day: 0,
-              eve: 0,
-              sold: 0,
-              bill: 0,
-              prizeTotal: 0,
-              fresh: 0,
-              joma: jomaVal,
-              due: dueVal,
-              total: round2(dueVal - jomaVal),
-            },
-          ];
-        } else {
-          const ownComps: Record<SessionId, SessionComputation> = {
-            '1PM': processSessionRows(ownEntries['1PM'], '1PM', config),
-            '6PM': processSessionRows(ownEntries['6PM'], '6PM', config),
-            '8PM': processSessionRows(ownEntries['8PM'], '8PM', config),
-          };
-          const ownPrizeData = generatePrizeAndLimitData(ownComps, parsedWinning, config);
-          updatedPrizes = ownPrizeData.prizeList;
-          const [ownBill] = computeSellerBills([updatedOwnSeller], ownComps, updatedPrizes, cleanDate);
-          if (ownBill) {
-            updatedSummaries = [
-              {
-                name: ownBill.name,
-                mor: ownBill.mor,
-                day: ownBill.day,
-                eve: ownBill.eve,
-                sold: ownBill.sold,
-                bill: ownBill.bill,
-                prizeTotal: ownBill.prizeTotal,
-                fresh: ownBill.fresh,
-                joma: ownBill.joma,
-                due: ownBill.due,
-                total: ownBill.total,
-              },
-            ];
-          }
-        }
-      }
-
-      if (updatedSummaries.length === 0) {
-        const netBal = round2((updatedOwnSeller.due || 0) - (updatedOwnSeller.joma || 0));
-        updatedSummaries = [
-          {
-            name: updatedOwnSeller.name,
-            mor: 0,
-            day: 0,
-            eve: 0,
-            sold: 0,
-            bill: 0,
-            prizeTotal: 0,
-            fresh: 0,
-            joma: updatedOwnSeller.joma || 0,
-            due: updatedOwnSeller.due || 0,
-            total: netBal,
-          },
-        ];
-      }
-
-      const totalSold = round2(updatedSummaries.reduce((a, b) => a + b.sold, 0));
-      const totalBill = round2(updatedSummaries.reduce((a, b) => a + b.bill, 0));
-      const totalPrize = round2(updatedSummaries.reduce((a, b) => a + b.prizeTotal, 0));
-      const totalNetPayable = round2(updatedSummaries.reduce((a, b) => a + b.total, 0));
-
-      const hasData =
-        updatedOwnSeller.due !== 0 ||
-        updatedOwnSeller.joma !== 0 ||
-        updatedSummaries.some(
-          (s) => s.sold > 0 || s.bill !== 0 || s.prizeTotal !== 0 || s.due !== 0 || s.joma !== 0
-        ) ||
-        mergedEntries['1PM'].length > 0 ||
-        mergedEntries['6PM'].length > 0 ||
-        mergedEntries['8PM'].length > 0;
-
-      const attachAdminAccountSummary =
-        isTopLevel &&
-        adminSummary &&
-        party.role === 'master' &&
-        directSubs.length > 0 &&
-        !updatedSummaries.some((s) => (s.name || '').trim().toUpperCase() === partyUpper);
-
-      const rawSnap: DaySnapshot = {
-        id: snapId,
-        date: cleanDate,
-        savedAt: existingSnap?.savedAt || editedAdminSnap.savedAt || new Date().toISOString(),
-        trigger: existingSnap?.trigger || editedAdminSnap.trigger || 'manual',
-        totalSold,
-        totalBill,
-        totalPrize,
-        totalNetPayable,
-        limitGrandTotal: 0,
-        overLimitTotals: { '1PM': 0, '6PM': 0, '8PM': 0 },
-        sellerSummaries: updatedSummaries,
-        ...(attachAdminAccountSummary ? { adminAccountSummary: adminSummary } : {}),
-        prizeList: updatedPrizes,
-        limitPrizeGroups: [],
-        sellers: updatedSellers,
-        entries: mergedEntries,
-        winningRaw,
-      };
-
-      return {
-        payload: sanitizePartyArchivePayload(rawSnap, snapId, cleanDate),
-        hasData,
-      };
-    };
-
-    if (existingDocs.length > 0) {
-      for (const item of existingDocs) {
-        const existingSnap: DaySnapshot = {
-          ...item.data.payload,
-          id: item.data.snapshotId || item.docId,
-          date: item.data.date || cleanDate,
-          savedAt: item.data.savedAt || item.data.payload.savedAt,
-          trigger: item.data.trigger || item.data.payload.trigger || 'manual',
-        };
-        const normalizedExisting = sanitizePartyArchivePayload(
-          existingSnap,
-          existingSnap.id,
-          cleanDate
-        );
-        const { payload } = buildUpdatedPayloadForParty(existingSnap);
-        const prevSig = JSON.stringify(normalizedExisting);
-        const nextSig = JSON.stringify(payload);
-        if (prevSig === nextSig) continue;
-
-        pendingOps.push({
-          kind: 'update',
-          party,
-          item,
-          payload,
-          approxBytes: estimatePayloadBytes(payload),
-        });
-      }
-    } else if (createMissing) {
-      // Backfill missing archive for EVERY active Master, Sub-Master, Direct Seller & Sub-Seller
-      const { payload } = buildUpdatedPayloadForParty(undefined);
-      pendingOps.push({
-        kind: 'create',
-        party,
-        payload,
-        approxBytes: estimatePayloadBytes(payload),
-      });
-    }
-  }
-
-  // Pack writes into Firestore `writeBatch` chunks (max 15 ops or ~2.5 MiB per batch)
-  // and commit all batches in parallel for ~5x-10x faster Sync IDs!
-  const MAX_BATCH_OPS = 15;
-  const MAX_BATCH_BYTES = 2_500_000;
-  const batches: PendingArchiveWriteOp[][] = [];
-  let currentBatch: PendingArchiveWriteOp[] = [];
-  let currentBytes = 0;
-
-  for (const op of pendingOps) {
-    if (
-      currentBatch.length > 0 &&
-      (currentBatch.length >= MAX_BATCH_OPS || currentBytes + op.approxBytes > MAX_BATCH_BYTES)
-    ) {
-      batches.push(currentBatch);
-      currentBatch = [];
-      currentBytes = 0;
-    }
-    currentBatch.push(op);
-    currentBytes += op.approxBytes;
-  }
-  if (currentBatch.length > 0) batches.push(currentBatch);
-
-  const runOpIndividually = async (op: PendingArchiveWriteOp): Promise<void> => {
-    if (op.kind === 'update') {
-      const ref = doc(db, 'agencies', agencyId, 'partyArchives', op.item.docId);
-      try {
-        await updateDoc(ref, {
-          payload: op.payload,
-          updatedAt: serverTimestamp(),
-        });
-        op.item.data = { ...op.item.data, payload: op.payload };
-        syncedCount++;
-      } catch (err) {
-        failedParties.push(op.party.name || op.party.partyId);
-        console.error('[KK Agency] Could not update partyArchive:', op.party.name, err);
-      }
-    } else {
-      try {
-        const saved = await savePartyArchiveCloud(ownerUid, op.party, op.payload, true);
-        allPartyArchiveDocs.push({
-          docId: saved.id,
-          data: {
-            agencyId,
-            snapshotId: saved.id,
-            partyId: op.party.partyId,
-            partyName: op.party.name,
-            ownerUid: op.party.ownerUid || ownerUid,
-            adminUids: op.party.adminUids || [ownerUid],
-            assignedUid: op.party.assignedUid || '',
-            parentMasterId: op.party.parentMasterId || '',
-            parentMasterUid: op.party.parentMasterUid || '',
-            date: cleanDate,
-            savedAt: saved.savedAt,
-            trigger: saved.trigger,
-            payload: saved,
-          },
-        });
-        syncedCount++;
-      } catch (err) {
-        failedParties.push(op.party.name || op.party.partyId);
-        console.error('[KK Agency] Could not create missing partyArchive:', op.party.name, err);
-      }
-    }
-  };
-
-  await Promise.all(
-    batches.map(async (ops) => {
-      try {
-        const batch = writeBatch(db);
-        const createdMeta: Array<{
-          docId: string;
-          op: Extract<PendingArchiveWriteOp, { kind: 'create' }>;
-          ownerUid: string;
-          adminUids: string[];
-        }> = [];
-        for (const op of ops) {
-          if (op.kind === 'update') {
-            const ref = doc(db, 'agencies', agencyId, 'partyArchives', op.item.docId);
-            batch.update(ref, {
-              payload: op.payload,
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            const targetId = op.payload.id || makeUniquePartyArchiveId(op.party.partyId, cleanDate);
-            const built = buildPartyArchiveDocBody(
-              ownerUid,
-              op.party,
-              targetId,
-              cleanDate,
-              op.payload,
-              true
-            );
-            const ref = doc(db, 'agencies', built.cleanAgencyId, 'partyArchives', targetId);
-            batch.set(ref, built.body);
-            createdMeta.push({
-              docId: targetId,
-              op,
-              ownerUid: built.cleanOwnerUid,
-              adminUids: built.adminUids,
-            });
-          }
-        }
-        await batch.commit();
-        for (const op of ops) {
-          if (op.kind === 'update') {
-            op.item.data = { ...op.item.data, payload: op.payload };
-          }
-          syncedCount++;
-        }
-        for (const meta of createdMeta) {
-          allPartyArchiveDocs.push({
-            docId: meta.docId,
-            data: {
-              agencyId,
-              snapshotId: meta.docId,
-              partyId: meta.op.party.partyId,
-              partyName: meta.op.party.name,
-              ownerUid: meta.ownerUid,
-              adminUids: meta.adminUids,
-              assignedUid: meta.op.party.assignedUid || '',
-              parentMasterId: meta.op.party.parentMasterId || '',
-              parentMasterUid: meta.op.party.parentMasterUid || '',
-              date: cleanDate,
-              savedAt: meta.op.payload.savedAt,
-              trigger: meta.op.payload.trigger,
-              payload: meta.op.payload,
-            },
-          });
-        }
-      } catch {
-        // If any single doc in the batch collided or failed rules, fall back cleanly per-op
-        await Promise.all(ops.map((op) => runOpIndividually(op)));
-      }
-    })
-  );
-
-  if (failedParties.length > 0 && syncedCount === 0) {
-    throw new Error(`Archive sync failed for: ${failedParties.slice(0, 4).join(', ')}`);
-  }
-
-  return syncedCount;
-}
-
-/**
- * Propagates Admin's edits on a restored archive date (e.g. Joma, Due, Rate, Entries, Winning Numbers)
- * to EVERY active Master, Sub-Master, Direct Seller, and Sub-Seller's `partyArchives` for that date.
- */
-export async function syncAdminRestoredArchiveToPartiesCloud(
-  agencyId: string,
-  ownerUid: string,
-  restoredDate: string,
-  editedAdminSnap: DaySnapshot,
-  parties: CloudPartyDoc[],
-  config: AgencyConfig,
-  actorUid?: string
-): Promise<number> {
-  const activeParties = parties.filter((p) => p.active !== false && p.role !== 'admin');
-  if (activeParties.length === 0) return 0;
-
-  // Query ONLY the single target date so Sync IDs finishes in <1s instead of scanning 30 days!
-  const allDocs = await fetchAllAgencyPartyArchives(
-    agencyId,
-    ownerUid,
-    actorUid || ownerUid,
-    activeParties,
-    restoredDate
-  );
-
-  return syncSingleAdminArchiveAgainstExisting(
-    agencyId,
-    ownerUid,
-    restoredDate,
-    editedAdminSnap,
-    activeParties,
-    config,
-    allDocs,
-    true
-  );
-}
-
-/**
- * Batch-reconciles multiple Admin Archive snapshots against every party's `partyArchives`
- * using a single Firestore read pass and writing ONLY documents whose payload actually changed.
- */
-export async function syncAdminArchivesBatchToPartiesCloud(
-  agencyId: string,
-  ownerUid: string,
-  actorUid: string,
-  snapshots: DaySnapshot[],
-  parties: CloudPartyDoc[],
-  config: AgencyConfig,
-  createMissing = false
-): Promise<number> {
-  const activeParties = parties.filter((p) => p.active !== false && p.role !== 'admin');
-  if (activeParties.length === 0 || snapshots.length === 0) return 0;
-
-  // Deduplicate by date (keep the newest/first Admin snapshot per date)
-  const seenDates = new Set<string>();
-  const uniqueSnaps: DaySnapshot[] = [];
-  for (const snap of snapshots) {
-    const cleanDate = sanitizeIsoDate(snap.date);
-    if (seenDates.has(cleanDate)) continue;
-    seenDates.add(cleanDate);
-    uniqueSnaps.push(snap);
-  }
-  if (uniqueSnaps.length === 0) return 0;
-
-  const allDocs = await fetchAllAgencyPartyArchives(agencyId, ownerUid, actorUid, activeParties);
-
-  let totalSynced = 0;
-  for (const snap of uniqueSnaps) {
-    totalSynced += await syncSingleAdminArchiveAgainstExisting(
-      agencyId,
-      ownerUid,
-      snap.date,
-      snap,
-      activeParties,
-      config,
-      allDocs,
-      createMissing
-    );
-  }
-  return totalSynced;
 }
 
 export async function carryForwardSubSellerBalancesCloud(
@@ -4050,907 +2847,4 @@ export async function carryForwardSubSellerBalancesCloud(
     });
   }
 }
-
-const PUBLIC_ANNOUNCEMENT_CACHE_PREFIX = 'kk-public-announcement-cache:v1:';
-
-function sanitizeAnnouncementKind(raw: unknown): CloudAnnouncementKind {
-  if (raw === 'urgent' || raw === 'notice' || raw === 'offer') return raw;
-  return 'offer';
-}
-
-export function readCachedPublicAnnouncement(
-  agencyId = AGENCY_ID
-): CloudPublicAnnouncement | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(`${PUBLIC_ANNOUNCEMENT_CACHE_PREFIX}${agencyId}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<CloudPublicAnnouncement> | null;
-    if (!parsed || typeof parsed !== 'object') return null;
-    return {
-      agencyId: typeof parsed.agencyId === 'string' && parsed.agencyId ? parsed.agencyId : agencyId,
-      active: Boolean(parsed.active),
-      kind: sanitizeAnnouncementKind(parsed.kind),
-      title: typeof parsed.title === 'string' ? parsed.title.slice(0, 120) : '',
-      message: typeof parsed.message === 'string' ? parsed.message.slice(0, 1000) : '',
-      ownerUid: typeof parsed.ownerUid === 'string' ? parsed.ownerUid : '',
-      updatedByUid: typeof parsed.updatedByUid === 'string' ? parsed.updatedByUid : '',
-      updatedAtMs: typeof parsed.updatedAtMs === 'number' ? parsed.updatedAtMs : 0,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedPublicAnnouncement(
-  agencyId: string,
-  announcement: CloudPublicAnnouncement | null
-): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const key = `${PUBLIC_ANNOUNCEMENT_CACHE_PREFIX}${agencyId}`;
-    if (!announcement) {
-      window.localStorage.removeItem(key);
-    } else {
-      window.localStorage.setItem(key, JSON.stringify(announcement));
-    }
-  } catch {
-    // Ignore localStorage quota/private-mode errors
-  }
-}
-
-function parseTimestampMs(raw: unknown): number {
-  if (!raw) return 0;
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  if (
-    typeof raw === 'object' &&
-    raw !== null &&
-    'toMillis' in raw &&
-    typeof (raw as { toMillis: unknown }).toMillis === 'function'
-  ) {
-    try {
-      return (raw as { toMillis: () => number }).toMillis();
-    } catch {
-      return 0;
-    }
-  }
-  return 0;
-}
-
-export function subscribePublicAnnouncement(
-  agencyId: string,
-  onAnnouncement: (announcement: CloudPublicAnnouncement | null) => void
-): Unsubscribe {
-  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const ref = doc(db, 'publicAnnouncements', cleanAgencyId);
-  return onSnapshot(
-    ref,
-    (snap) => {
-      if (!snap.exists()) {
-        writeCachedPublicAnnouncement(cleanAgencyId, null);
-        onAnnouncement(null);
-        return;
-      }
-      const data = snap.data();
-      const parsed: CloudPublicAnnouncement = {
-        agencyId: typeof data.agencyId === 'string' ? data.agencyId : cleanAgencyId,
-        active: Boolean(data.active),
-        kind: sanitizeAnnouncementKind(data.kind),
-        title: typeof data.title === 'string' ? data.title.slice(0, 120) : '',
-        message: typeof data.message === 'string' ? data.message.slice(0, 1000) : '',
-        ownerUid: typeof data.ownerUid === 'string' ? data.ownerUid : '',
-        updatedByUid: typeof data.updatedByUid === 'string' ? data.updatedByUid : '',
-        updatedAtMs: parseTimestampMs(data.updatedAt) || Date.now(),
-      };
-      writeCachedPublicAnnouncement(cleanAgencyId, parsed);
-      onAnnouncement(parsed);
-    },
-    () => {
-      // Keep cached announcement visible if offline or transient network hiccup
-    }
-  );
-}
-
-export async function savePublicAnnouncementCloud(
-  adminUid: string,
-  agencyId: string,
-  ownerUid: string,
-  input: {
-    active: boolean;
-    kind: CloudAnnouncementKind;
-    title: string;
-    message: string;
-  }
-): Promise<CloudPublicAnnouncement> {
-  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const cleanTitle = input.title.trim().slice(0, 120);
-  const cleanMessage = input.message.trim().slice(0, 1000);
-  const cleanKind = sanitizeAnnouncementKind(input.kind);
-  const cleanActive = Boolean(input.active && (cleanTitle || cleanMessage));
-
-  const ref = doc(db, 'publicAnnouncements', cleanAgencyId);
-  let existsNow = false;
-  try {
-    const snap = await getDoc(ref);
-    existsNow = snap.exists();
-  } catch {
-    existsNow = false;
-  }
-
-  try {
-    if (existsNow) {
-      await updateDoc(ref, {
-        active: cleanActive,
-        kind: cleanKind,
-        title: cleanTitle,
-        message: cleanMessage,
-        updatedByUid: adminUid,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(ref, {
-        agencyId: cleanAgencyId,
-        active: cleanActive,
-        kind: cleanKind,
-        title: cleanTitle,
-        message: cleanMessage,
-        ownerUid,
-        updatedByUid: adminUid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-    const result: CloudPublicAnnouncement = {
-      agencyId: cleanAgencyId,
-      active: cleanActive,
-      kind: cleanKind,
-      title: cleanTitle,
-      message: cleanMessage,
-      ownerUid,
-      updatedByUid: adminUid,
-      updatedAtMs: Date.now(),
-    };
-    writeCachedPublicAnnouncement(cleanAgencyId, result);
-    return result;
-  } catch (err) {
-    handleFirestoreError(err, existsNow ? OperationType.UPDATE : OperationType.CREATE, ref.path);
-  }
-}
-
-// =============================================================================
-// PERMANENT ADMIN CLOUD VAULT (1PM/6PM/8PM Chunks, Private Config & Archives)
-// Guarantees 100% of Admin data survives app delete, phone change, or domain switch.
-// =============================================================================
-
-const ADMIN_LEDGER_CHUNK_SIZE = 800;
-const ADMIN_LEDGER_MAX_CHUNKS_PER_SESSION = 100;
-
-export interface CloudAdminPrivateConfigDoc {
-  agencyId: string;
-  ownerUid: string;
-  whatsappNumber: string;
-  autoArchiveDaily: boolean;
-  pausedAutoArchiveDate: string;
-  extraNames: string[];
-  updatedAtMs: number;
-}
-
-export interface AdminCloudVaultData {
-  agency: CloudAgencyDoc | null;
-  agencyUpdatedAtMs: number;
-  privateConfig: CloudAdminPrivateConfigDoc | null;
-  entries: Record<SessionId, TicketEntryRow[]>;
-  ledgerDate: string;
-  ledgerRevisionMs: number;
-  chunkSigs: Record<string, string>;
-  chunkIds: string[];
-  history: DaySnapshot[];
-  recycleBin: DaySnapshot[];
-  archiveSigs: Record<string, string>;
-  archiveDocIds: string[];
-}
-
-function sanitizeChunkRowsForCloud(rows: TicketEntryRow[]): TicketEntryRow[] {
-  const out: TicketEntryRow[] = [];
-  if (!Array.isArray(rows)) return out;
-  for (let i = 0; i < rows.length; i += 1) {
-    const r = rows[i];
-    if (!r) continue;
-    const name = String(r.name || '');
-    const item = String(r.item || '');
-    const start = String(r.start || '');
-    const end = String(r.end || '');
-    const qtyOverride = String(r.qtyOverride || '');
-    const rangeOverride = String(r.rangeOverride || '');
-    if (
-      !name.trim() &&
-      !item.trim() &&
-      !start.trim() &&
-      !end.trim() &&
-      !qtyOverride.trim() &&
-      !rangeOverride.trim()
-    ) {
-      continue;
-    }
-    out.push({
-      id: String(r.id || `r-${i}`),
-      name,
-      item,
-      start,
-      end,
-      qtyOverride,
-      rangeOverride,
-    });
-  }
-  return out;
-}
-
-function computeChunkSignature(
-  date: string,
-  sessionId: SessionId,
-  chunkIndex: number,
-  totalChunks: number,
-  rows: TicketEntryRow[]
-): string {
-  const compact = rows.map((r) => [
-    r.id,
-    r.name,
-    r.item,
-    r.start,
-    r.end,
-    r.qtyOverride,
-    r.rangeOverride,
-  ]);
-  return JSON.stringify([date, sessionId, chunkIndex, totalChunks, compact]);
-}
-
-interface DesiredLedgerChunk {
-  chunkId: string;
-  sessionId: SessionId;
-  chunkIndex: number;
-  totalChunks: number;
-  rows: TicketEntryRow[];
-  sig: string;
-}
-
-function buildDesiredLedgerChunks(
-  date: string,
-  entries: Record<SessionId, TicketEntryRow[]>
-): DesiredLedgerChunk[] {
-  const cleanDate = sanitizeIsoDate(date);
-  const chunks: DesiredLedgerChunk[] = [];
-  const sessions: SessionId[] = ['1PM', '6PM', '8PM'];
-
-  for (const sid of sessions) {
-    const cleaned = sanitizeChunkRowsForCloud(entries[sid] || []);
-    const totalChunks = Math.min(
-      ADMIN_LEDGER_MAX_CHUNKS_PER_SESSION,
-      Math.max(1, Math.ceil(cleaned.length / ADMIN_LEDGER_CHUNK_SIZE))
-    );
-    for (let idx = 0; idx < totalChunks; idx += 1) {
-      const start = idx * ADMIN_LEDGER_CHUNK_SIZE;
-      const slice = cleaned.slice(start, start + ADMIN_LEDGER_CHUNK_SIZE);
-      const chunkId = `${sid}_${idx}`;
-      chunks.push({
-        chunkId,
-        sessionId: sid,
-        chunkIndex: idx,
-        totalChunks,
-        rows: slice,
-        sig: computeChunkSignature(cleanDate, sid, idx, totalChunks, slice),
-      });
-    }
-  }
-  return chunks;
-}
-
-export function makeAdminArchiveDocId(snapshotId: string): string {
-  return sanitizeId(`snap-${snapshotId}`, `snap-${Date.now()}`);
-}
-
-function sanitizeArchiveTrigger(raw: unknown): 'manual' | 'daily-auto' | 'day-close' {
-  if (raw === 'daily-auto' || raw === 'day-close' || raw === 'manual') return raw;
-  return 'manual';
-}
-
-function stripUndefinedDeep<T>(value: T): T {
-  if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) {
-    return value.map((item) => stripUndefinedDeep(item)) as unknown as T;
-  }
-  if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (v !== undefined) {
-        out[k] = stripUndefinedDeep(v);
-      }
-    }
-    return out as T;
-  }
-  return value;
-}
-
-function buildSafeArchivePayload(
-  snap: DaySnapshot,
-  inRecycleBin: boolean
-): Record<string, unknown> {
-  const cleanSnap: DaySnapshot = {
-    ...snap,
-    entries: {
-      '1PM': sanitizeChunkRowsForCloud(snap.entries?.['1PM'] || []),
-      '6PM': sanitizeChunkRowsForCloud(snap.entries?.['6PM'] || []),
-      '8PM': sanitizeChunkRowsForCloud(snap.entries?.['8PM'] || []),
-    },
-    winningRaw: {
-      '1PM': String(snap.winningRaw?.['1PM'] || '').slice(0, 20000),
-      '6PM': String(snap.winningRaw?.['6PM'] || '').slice(0, 20000),
-      '8PM': String(snap.winningRaw?.['8PM'] || '').slice(0, 20000),
-    },
-  };
-
-  const basePayload: Record<string, unknown> = stripUndefinedDeep({
-    ...cleanSnap,
-    _inRecycleBin: inRecycleBin,
-  });
-
-  // Stay strictly below Firestore's 1MB document limit even on massive 30,000-row days
-  let jsonLen = JSON.stringify(basePayload).length;
-  if (jsonLen > 760000) {
-    const caps = [1800, 900, 350, 0];
-    for (const cap of caps) {
-      basePayload.entries = {
-        '1PM': cleanSnap.entries['1PM'].slice(0, cap),
-        '6PM': cleanSnap.entries['6PM'].slice(0, cap),
-        '8PM': cleanSnap.entries['8PM'].slice(0, cap),
-      };
-      jsonLen = JSON.stringify(basePayload).length;
-      if (jsonLen <= 760000) break;
-    }
-  }
-  return basePayload;
-}
-
-function computeArchiveSignature(snap: DaySnapshot, inRecycleBin: boolean): string {
-  const e1 = snap.entries?.['1PM']?.length || 0;
-  const e6 = snap.entries?.['6PM']?.length || 0;
-  const e8 = snap.entries?.['8PM']?.length || 0;
-  return JSON.stringify([
-    snap.id,
-    snap.date,
-    snap.savedAt,
-    snap.deletedAt || '',
-    snap.trigger,
-    inRecycleBin ? 1 : 0,
-    snap.totalSold,
-    snap.totalBill,
-    snap.totalPrize,
-    snap.totalNetPayable,
-    e1,
-    e6,
-    e8,
-  ]);
-}
-
-function parseArchiveSnapshotFromDoc(
-  docId: string,
-  data: Record<string, unknown>
-): { snapshot: DaySnapshot; inRecycleBin: boolean } | null {
-  const payload = data.payload;
-  if (!payload || typeof payload !== 'object') return null;
-  const p = payload as Record<string, unknown>;
-  const inRecycleBin = Boolean(p._inRecycleBin);
-  const rawEntries = (p.entries as Partial<Record<SessionId, TicketEntryRow[]>> | undefined) || {};
-  const rawWinning = (p.winningRaw as Partial<Record<SessionId, string>> | undefined) || {};
-
-  const snapshot: DaySnapshot = {
-    id: typeof p.id === 'string' && p.id ? p.id : docId,
-    date: typeof p.date === 'string' && p.date ? p.date : String(data.date || ''),
-    savedAt: typeof p.savedAt === 'string' && p.savedAt ? p.savedAt : String(data.savedAt || ''),
-    ...(typeof p.deletedAt === 'string' && p.deletedAt ? { deletedAt: p.deletedAt } : {}),
-    trigger: sanitizeArchiveTrigger(p.trigger ?? data.trigger),
-    totalSold: Number(p.totalSold) || 0,
-    totalBill: Number(p.totalBill) || 0,
-    totalPrize: Number(p.totalPrize) || 0,
-    totalNetPayable: Number(p.totalNetPayable) || 0,
-    limitGrandTotal: Number(p.limitGrandTotal) || 0,
-    overLimitTotals: {
-      '1PM': Number((p.overLimitTotals as Record<string, unknown> | undefined)?.['1PM']) || 0,
-      '6PM': Number((p.overLimitTotals as Record<string, unknown> | undefined)?.['6PM']) || 0,
-      '8PM': Number((p.overLimitTotals as Record<string, unknown> | undefined)?.['8PM']) || 0,
-    },
-    sellerSummaries: Array.isArray(p.sellerSummaries) ? (p.sellerSummaries as DaySnapshot['sellerSummaries']) : [],
-    prizeList: Array.isArray(p.prizeList) ? (p.prizeList as DaySnapshot['prizeList']) : [],
-    limitPrizeGroups: Array.isArray(p.limitPrizeGroups)
-      ? (p.limitPrizeGroups as DaySnapshot['limitPrizeGroups'])
-      : [],
-    sellers: Array.isArray(p.sellers) ? (p.sellers as Seller[]) : [],
-    entries: {
-      '1PM': sanitizeChunkRowsForCloud(rawEntries['1PM'] || []),
-      '6PM': sanitizeChunkRowsForCloud(rawEntries['6PM'] || []),
-      '8PM': sanitizeChunkRowsForCloud(rawEntries['8PM'] || []),
-    },
-    winningRaw: {
-      '1PM': String(rawWinning['1PM'] || ''),
-      '6PM': String(rawWinning['6PM'] || ''),
-      '8PM': String(rawWinning['8PM'] || ''),
-    },
-  };
-
-  return { snapshot, inRecycleBin };
-}
-
-/**
- * Loads Admin's complete cloud vault (agency config/winning, private settings,
- * chunked 1PM/6PM/8PM ledger rows, and archived history + recycle bin) for
- * automatic recovery after app uninstall, reinstall, or device switch.
- */
-export async function loadAdminCloudVault(
-  ownerUid: string,
-  agencyId = AGENCY_ID
-): Promise<AdminCloudVaultData> {
-  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const agencyPath = `agencies/${cleanAgencyId}`;
-  const privatePath = `agencies/${cleanAgencyId}/private/config`;
-  const chunksPath = `agencies/${cleanAgencyId}/adminLedgerChunks`;
-  const archivesPath = `agencies/${cleanAgencyId}/archives`;
-
-  const [agencySnap, privateSnap, chunksSnap, archivesSnap] = await Promise.all([
-    getDoc(doc(db, 'agencies', cleanAgencyId)).catch((err) => {
-      handleFirestoreError(err, OperationType.GET, agencyPath);
-    }),
-    getDoc(doc(db, 'agencies', cleanAgencyId, 'private', 'config')).catch((err) => {
-      handleFirestoreError(err, OperationType.GET, privatePath);
-    }),
-    getDocs(
-      query(
-        collection(db, 'agencies', cleanAgencyId, 'adminLedgerChunks'),
-        where('ownerUid', '==', ownerUid),
-        limit(120)
-      )
-    ).catch((err) => {
-      handleFirestoreError(err, OperationType.LIST, chunksPath);
-    }),
-    getDocs(
-      query(
-        collection(db, 'agencies', cleanAgencyId, 'archives'),
-        where('ownerUid', '==', ownerUid),
-        limit(60)
-      )
-    ).catch((err) => {
-      handleFirestoreError(err, OperationType.LIST, archivesPath);
-    }),
-  ]);
-
-  let agency: CloudAgencyDoc | null = null;
-  let agencyUpdatedAtMs = 0;
-  if (agencySnap && agencySnap.exists()) {
-    const raw = agencySnap.data();
-    agency = raw as CloudAgencyDoc;
-    agencyUpdatedAtMs = parseTimestampMs(raw.updatedAt);
-  }
-
-  let privateConfig: CloudAdminPrivateConfigDoc | null = null;
-  if (privateSnap && privateSnap.exists()) {
-    const raw = privateSnap.data();
-    privateConfig = {
-      agencyId: typeof raw.agencyId === 'string' ? raw.agencyId : cleanAgencyId,
-      ownerUid: typeof raw.ownerUid === 'string' ? raw.ownerUid : ownerUid,
-      whatsappNumber: typeof raw.whatsappNumber === 'string' ? raw.whatsappNumber : '',
-      autoArchiveDaily: Boolean(raw.autoArchiveDaily),
-      pausedAutoArchiveDate:
-        typeof raw.pausedAutoArchiveDate === 'string' ? raw.pausedAutoArchiveDate : '',
-      extraNames: Array.isArray(raw.extraNames)
-        ? raw.extraNames.map((n) => String(n || '').trim()).filter(Boolean)
-        : [],
-      updatedAtMs: parseTimestampMs(raw.updatedAt),
-    };
-  }
-
-  const chunksBySession: Record<
-    SessionId,
-    { chunkIndex: number; totalChunks: number; date: string; revisionMs: number; rows: TicketEntryRow[] }[]
-  > = {
-    '1PM': [],
-    '6PM': [],
-    '8PM': [],
-  };
-  const chunkSigs: Record<string, string> = {};
-  const chunkIds: string[] = [];
-  let ledgerRevisionMs = 0;
-  let ledgerDate = agency?.date || '';
-
-  if (chunksSnap) {
-    chunksSnap.forEach((docSnap) => {
-      const d = docSnap.data();
-      const sid = d.sessionId as SessionId;
-      if (sid !== '1PM' && sid !== '6PM' && sid !== '8PM') return;
-      const chunkId = typeof d.chunkId === 'string' && d.chunkId ? d.chunkId : docSnap.id;
-      const chunkIndex = Number(d.chunkIndex) || 0;
-      const totalChunks = Math.max(1, Number(d.totalChunks) || 1);
-      const dateStr = typeof d.date === 'string' ? d.date : agency?.date || '';
-      const revMs = Math.max(Number(d.revisionMs) || 0, parseTimestampMs(d.updatedAt));
-      const rows = sanitizeChunkRowsForCloud(Array.isArray(d.rows) ? (d.rows as TicketEntryRow[]) : []);
-
-      chunkIds.push(chunkId);
-      chunkSigs[chunkId] = computeChunkSignature(dateStr, sid, chunkIndex, totalChunks, rows);
-      chunksBySession[sid].push({
-        chunkIndex,
-        totalChunks,
-        date: dateStr,
-        revisionMs: revMs,
-        rows,
-      });
-      if (revMs > ledgerRevisionMs) {
-        ledgerRevisionMs = revMs;
-        if (dateStr) ledgerDate = dateStr;
-      }
-    });
-  }
-
-  const entries: Record<SessionId, TicketEntryRow[]> = {
-    '1PM': [],
-    '6PM': [],
-    '8PM': [],
-  };
-  for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-    const list = chunksBySession[sid];
-    if (list.length === 0) continue;
-    list.sort((a, b) => a.chunkIndex - b.chunkIndex);
-    // Respect totalChunks from chunk 0 (the freshest header) so stale tail chunks are ignored
-    const declaredTotal = list[0]?.totalChunks || list.length;
-    const assembled: TicketEntryRow[] = [];
-    for (const c of list) {
-      if (c.chunkIndex >= declaredTotal) continue;
-      for (let i = 0; i < c.rows.length; i += 1) {
-        assembled.push(c.rows[i]);
-      }
-    }
-    entries[sid] = assembled;
-  }
-
-  const history: DaySnapshot[] = [];
-  const recycleBin: DaySnapshot[] = [];
-  const archiveSigs: Record<string, string> = {};
-  const archiveDocIds: string[] = [];
-
-  if (archivesSnap) {
-    archivesSnap.forEach((docSnap) => {
-      const parsed = parseArchiveSnapshotFromDoc(docSnap.id, docSnap.data() as Record<string, unknown>);
-      if (!parsed) return;
-      archiveDocIds.push(docSnap.id);
-      archiveSigs[docSnap.id] = computeArchiveSignature(parsed.snapshot, parsed.inRecycleBin);
-      if (parsed.inRecycleBin) {
-        recycleBin.push(parsed.snapshot);
-      } else {
-        history.push(parsed.snapshot);
-      }
-    });
-  }
-
-  const sortNewest = (a: DaySnapshot, b: DaySnapshot) =>
-    String(b.savedAt || '').localeCompare(String(a.savedAt || ''));
-  history.sort(sortNewest);
-  recycleBin.sort(sortNewest);
-
-  return {
-    agency,
-    agencyUpdatedAtMs,
-    privateConfig,
-    entries,
-    ledgerDate,
-    ledgerRevisionMs,
-    chunkSigs,
-    chunkIds,
-    history,
-    recycleBin,
-    archiveSigs,
-    archiveDocIds,
-  };
-}
-
-/**
- * Persists Admin's private settings (WhatsApp number, extra seller names, auto-archive flags)
- * to /agencies/{agencyId}/private/config so they recover automatically on reinstall.
- */
-export async function syncAdminPrivateConfigCloud(
-  ownerUid: string,
-  state: AppState,
-  agencyId = AGENCY_ID
-): Promise<void> {
-  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const ref = doc(db, 'agencies', cleanAgencyId, 'private', 'config');
-  const whatsappNumber = String(state.config.whatsappNumber || '').slice(0, 30);
-  const autoArchiveDaily = Boolean(state.config.autoArchiveDaily);
-  const pausedAutoArchiveDate = String(state.config.pausedAutoArchiveDate || '').slice(0, 10);
-  const extraNames = sanitizeStringList(state.extraNames, 100);
-
-  let existsNow = false;
-  try {
-    const snap = await getDoc(ref);
-    existsNow = snap.exists();
-  } catch {
-    existsNow = false;
-  }
-
-  try {
-    if (existsNow) {
-      await updateDoc(ref, {
-        whatsappNumber,
-        autoArchiveDaily,
-        pausedAutoArchiveDate,
-        extraNames,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(ref, {
-        agencyId: cleanAgencyId,
-        ownerUid,
-        whatsappNumber,
-        autoArchiveDaily,
-        pausedAutoArchiveDate,
-        extraNames,
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (err) {
-    handleFirestoreError(err, existsNow ? OperationType.UPDATE : OperationType.CREATE, ref.path);
-  }
-}
-
-/**
- * Incrementally syncs Admin's full 1PM, 6PM, and 8PM ledger rows (including MY CHOICE,
- * manual/pasted rows, and up to 30,000+ rows) into chunked Admin-only Firestore docs.
- * Only writes changed chunks and deletes stale extra chunks.
- */
-export async function syncAdminLedgerChunksCloud(
-  adminUid: string,
-  ownerUid: string,
-  adminUids: string[],
-  date: string,
-  entries: Record<SessionId, TicketEntryRow[]>,
-  revisionMs: number,
-  knownChunkSigs: Record<string, string>,
-  knownChunkIds: Set<string>,
-  agencyId = AGENCY_ID
-): Promise<void> {
-  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const cleanDate = sanitizeIsoDate(date);
-  const safeAdminUids = adminUids.length > 0 ? adminUids.slice(0, 10) : [ownerUid];
-  const safeRevision = Math.max(0, Math.floor(revisionMs || Date.now()));
-
-  const desired = buildDesiredLedgerChunks(cleanDate, entries);
-  const desiredIdSet = new Set(desired.map((c) => c.chunkId));
-
-  const toWrite = desired.filter(
-    (c) => !knownChunkIds.has(c.chunkId) || knownChunkSigs[c.chunkId] !== c.sig
-  );
-  const toDelete = Array.from(knownChunkIds).filter((id) => !desiredIdSet.has(id));
-
-  if (toWrite.length === 0 && toDelete.length === 0) return;
-
-  const CONCURRENCY = 6;
-  for (let i = 0; i < toWrite.length; i += CONCURRENCY) {
-    const slice = toWrite.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      slice.map(async (chunk) => {
-        const ref = doc(db, 'agencies', cleanAgencyId, 'adminLedgerChunks', chunk.chunkId);
-        const existed = knownChunkIds.has(chunk.chunkId);
-        try {
-          if (existed) {
-            try {
-              await updateDoc(ref, {
-                sessionId: chunk.sessionId,
-                chunkIndex: chunk.chunkIndex,
-                totalChunks: chunk.totalChunks,
-                date: cleanDate,
-                revisionMs: safeRevision,
-                adminUids: safeAdminUids,
-                rows: chunk.rows,
-                updatedByUid: adminUid,
-                updatedAt: serverTimestamp(),
-              });
-            } catch (updateErr) {
-              const code =
-                typeof updateErr === 'object' && updateErr !== null && 'code' in updateErr
-                  ? String((updateErr as { code?: unknown }).code || '')
-                  : '';
-              if (code === 'not-found') {
-                await setDoc(ref, {
-                  agencyId: cleanAgencyId,
-                  chunkId: chunk.chunkId,
-                  sessionId: chunk.sessionId,
-                  chunkIndex: chunk.chunkIndex,
-                  totalChunks: chunk.totalChunks,
-                  date: cleanDate,
-                  revisionMs: safeRevision,
-                  ownerUid,
-                  adminUids: safeAdminUids,
-                  rows: chunk.rows,
-                  updatedByUid: adminUid,
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                });
-              } else {
-                throw updateErr;
-              }
-            }
-          } else {
-            await setDoc(ref, {
-              agencyId: cleanAgencyId,
-              chunkId: chunk.chunkId,
-              sessionId: chunk.sessionId,
-              chunkIndex: chunk.chunkIndex,
-              totalChunks: chunk.totalChunks,
-              date: cleanDate,
-              revisionMs: safeRevision,
-              ownerUid,
-              adminUids: safeAdminUids,
-              rows: chunk.rows,
-              updatedByUid: adminUid,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          }
-          knownChunkIds.add(chunk.chunkId);
-          knownChunkSigs[chunk.chunkId] = chunk.sig;
-        } catch (err) {
-          handleFirestoreError(err, existed ? OperationType.UPDATE : OperationType.CREATE, ref.path);
-        }
-      })
-    );
-  }
-
-  for (let i = 0; i < toDelete.length; i += CONCURRENCY) {
-    const slice = toDelete.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      slice.map(async (staleId) => {
-        const ref = doc(db, 'agencies', cleanAgencyId, 'adminLedgerChunks', staleId);
-        try {
-          await deleteDoc(ref);
-          knownChunkIds.delete(staleId);
-          delete knownChunkSigs[staleId];
-        } catch (err) {
-          handleFirestoreError(err, OperationType.DELETE, ref.path);
-        }
-      })
-    );
-  }
-}
-
-/**
- * Incrementally syncs Admin's Archive history & Recycle Bin snapshots to
- * /agencies/{agencyId}/archives/{snapshotId} so all past days survive app deletion.
- */
-export async function syncAdminArchivesCloud(
-  ownerUid: string,
-  adminUids: string[],
-  history: DaySnapshot[],
-  recycleBin: DaySnapshot[],
-  knownArchiveSigs: Record<string, string>,
-  knownArchiveDocIds: Set<string>,
-  agencyId = AGENCY_ID
-): Promise<void> {
-  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const safeAdminUids = adminUids.length > 0 ? adminUids.slice(0, 10) : [ownerUid];
-
-  const desiredMap = new Map<
-    string,
-    { docId: string; snap: DaySnapshot; inRecycleBin: boolean; sig: string }
-  >();
-
-  for (const snap of history) {
-    if (!snap || !snap.id) continue;
-    const docId = makeAdminArchiveDocId(snap.id);
-    desiredMap.set(docId, {
-      docId,
-      snap,
-      inRecycleBin: false,
-      sig: computeArchiveSignature(snap, false),
-    });
-  }
-  for (const snap of recycleBin) {
-    if (!snap || !snap.id) continue;
-    const docId = makeAdminArchiveDocId(snap.id);
-    if (desiredMap.has(docId)) continue;
-    desiredMap.set(docId, {
-      docId,
-      snap,
-      inRecycleBin: true,
-      sig: computeArchiveSignature(snap, true),
-    });
-  }
-
-  const toWrite = Array.from(desiredMap.values()).filter(
-    (item) => !knownArchiveDocIds.has(item.docId) || knownArchiveSigs[item.docId] !== item.sig
-  );
-  const toDelete = Array.from(knownArchiveDocIds).filter((id) => !desiredMap.has(id));
-
-  if (toWrite.length === 0 && toDelete.length === 0) return;
-
-  const CONCURRENCY = 4;
-  for (let i = 0; i < toWrite.length; i += CONCURRENCY) {
-    const slice = toWrite.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      slice.map(async ({ docId, snap, inRecycleBin, sig }) => {
-        const ref = doc(db, 'agencies', cleanAgencyId, 'archives', docId);
-        const cleanDate = sanitizeIsoDate(snap.date);
-        const cleanSavedAt = String(snap.savedAt || new Date().toISOString()).slice(0, 64);
-        const cleanTrigger = sanitizeArchiveTrigger(snap.trigger);
-        const payload = buildSafeArchivePayload(snap, inRecycleBin);
-        const existed = knownArchiveDocIds.has(docId);
-
-        try {
-          if (existed) {
-            try {
-              await updateDoc(ref, {
-                adminUids: safeAdminUids,
-                date: cleanDate,
-                savedAt: cleanSavedAt,
-                trigger: cleanTrigger,
-                payload,
-                updatedAt: serverTimestamp(),
-              });
-            } catch (updateErr) {
-              const code =
-                typeof updateErr === 'object' && updateErr !== null && 'code' in updateErr
-                  ? String((updateErr as { code?: unknown }).code || '')
-                  : '';
-              if (code === 'not-found') {
-                await setDoc(ref, {
-                  agencyId: cleanAgencyId,
-                  snapshotId: docId,
-                  ownerUid,
-                  adminUids: safeAdminUids,
-                  date: cleanDate,
-                  savedAt: cleanSavedAt,
-                  trigger: cleanTrigger,
-                  payload,
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                });
-              } else {
-                throw updateErr;
-              }
-            }
-          } else {
-            await setDoc(ref, {
-              agencyId: cleanAgencyId,
-              snapshotId: docId,
-              ownerUid,
-              adminUids: safeAdminUids,
-              date: cleanDate,
-              savedAt: cleanSavedAt,
-              trigger: cleanTrigger,
-              payload,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          }
-          knownArchiveDocIds.add(docId);
-          knownArchiveSigs[docId] = sig;
-        } catch (err) {
-          handleFirestoreError(err, existed ? OperationType.UPDATE : OperationType.CREATE, ref.path);
-        }
-      })
-    );
-  }
-
-  for (let i = 0; i < toDelete.length; i += CONCURRENCY) {
-    const slice = toDelete.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      slice.map(async (staleId) => {
-        const ref = doc(db, 'agencies', cleanAgencyId, 'archives', staleId);
-        try {
-          await deleteDoc(ref);
-          knownArchiveDocIds.delete(staleId);
-          delete knownArchiveSigs[staleId];
-        } catch (err) {
-          handleFirestoreError(err, OperationType.DELETE, ref.path);
-        }
-      })
-    );
-  }
-}
-
-
 

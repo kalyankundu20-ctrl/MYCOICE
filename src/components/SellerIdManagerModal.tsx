@@ -918,7 +918,7 @@ export function SellerIdManagerModal({
                                     onChange={(e) =>
                                       setEditLoginId(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''))
                                     }
-                                    placeholder="Enter Login ID"
+                                    placeholder="Login ID (e.g. SOMA)"
                                     className="sm:col-span-5 px-2.5 py-1.5 text-xs font-black font-mono-tabular uppercase bg-white border border-slate-300 rounded-lg outline-none focus:border-[var(--kk-brand)]"
                                   />
                                   <input

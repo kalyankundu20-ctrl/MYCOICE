@@ -1,9 +1,6 @@
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
-import { Archive, RefreshCw, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { AdminAnnouncementModal } from './components/AdminAnnouncementModal';
-import { AnnouncementBanner } from './components/AnnouncementBanner';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from './components/AppShell';
 import { ArchiveView } from './components/ArchiveView';
 import { GoogleSheetsSyncModal } from './components/GoogleSheetsSyncModal';
@@ -46,53 +43,37 @@ import {
   SheetsAuthExpiredError,
 } from './services/googleSheetsSync';
 import {
-  AGENCY_ID,
   bootstrapAdminAgency,
   CloudAgencyDoc,
-  CloudAnnouncementKind,
   CloudPartyDoc,
   CloudPartyPrivateDoc,
   CloudPartySheetDoc,
-  CloudPublicAnnouncement,
   computeFullAncestorChainFromParties,
   createOrSyncSellerParty,
   createSubSellerForMasterByAdmin,
   deleteSellerPartyCloud,
   deleteSubSellerParty,
-  fetchAdminPartiesAndSheetsOnce,
   generateEasyLoginId,
   generateEasyPassword,
-  loadAdminCloudVault,
   loadUserCloudSession,
   loginSellerWithIdPassword,
   lookupPartyInvite,
   makePartyIdFromSeller,
-  makeUniquePartyArchiveId,
   normalizeLoginId,
   pushAdminSheetRowsForParty,
-  readCachedPublicAnnouncement,
   resetSellerAccessKey,
   resolveTopLevelMasterParty,
   sanitizeSheetEntriesForCloud,
   savePartyArchiveCloud,
-  savePublicAnnouncementCloud,
   serializeSheetEntries,
   subscribeAdminParties,
   subscribeAdminPartyPrivates,
   subscribeAdminSheets,
-  subscribePublicAnnouncement,
   syncAdminAgencyState,
-  syncAdminArchivesBatchToPartiesCloud,
-  syncAdminArchivesCloud,
-  syncAdminLedgerChunksCloud,
-  syncAdminPrivateConfigCloud,
-  syncAdminRestoredArchiveToPartiesCloud,
   syncSubSellerChainLineage,
   toggleSellerChainRole,
   toggleSellerPartyActive,
-  updatePartyBalancesAdminCloud,
   updatePartyLoginCredentials,
-  updateSubSellerParty,
 } from './services/cloudSync';
 import {
   createBlankRows,
@@ -114,7 +95,6 @@ import {
 import {
   AgencyConfig,
   AppState,
-  ArchivedSellerSummary,
   DaySnapshot,
   PrizeListRow,
   Seller,
@@ -131,7 +111,6 @@ import {
   readPermanentSellersIdb,
   readPermanentSellersLocal,
   requestPersistentStorage,
-  scheduleIdlePersistence,
   STORAGE_KEY,
   writeIndexedDbEnvelope,
   writeLocalStorageSafe,
@@ -353,9 +332,6 @@ function normalizeLoadedState(parsed: Partial<AppState> | null | undefined): App
     history: preserveSavedSnapshots(
       Array.isArray(parsed.history) ? parsed.history : []
     ),
-    recycleBin: preserveSavedSnapshots(
-      Array.isArray(parsed.recycleBin) ? parsed.recycleBin : []
-    ),
   };
 }
 
@@ -416,151 +392,56 @@ export default function App() {
   const [state, setRawState] = useState<AppState>(initialRef.current.state);
   const latestStateRef = useRef<AppState>(initialRef.current.state);
   const lastSavedAtRef = useRef<number>(initialRef.current.updatedAt);
-  const persistTimerRef = useRef<number | null>(null);
 
-  const flushPersistNow = useCallback(() => {
-    if (persistTimerRef.current !== null) {
-      window.clearTimeout(persistTimerRef.current);
-      persistTimerRef.current = null;
-    }
-    const curr = latestStateRef.current;
-    const ts = lastSavedAtRef.current;
-    writeLocalStorageSafe(curr, ts);
-    void writeIndexedDbEnvelope(curr, ts);
+  const setState = useCallback((updater: AppState | ((prev: AppState) => AppState)) => {
+    setRawState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      if (next === prev) return prev;
+      const now = Math.max(Date.now(), lastSavedAtRef.current + 1);
+      latestStateRef.current = next;
+      lastSavedAtRef.current = now;
+      writeLocalStorageSafe(next, now);
+      void writeIndexedDbEnvelope(next, now);
+      if (next.sellers !== prev.sellers && next.sellers.length > 0) {
+        writePermanentSellers(next.sellers, now);
+      }
+      return next;
+    });
   }, []);
-
-  const setState = useCallback(
-    (updater: AppState | ((prev: AppState) => AppState)) => {
-      setRawState((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
-        if (next === prev) return prev;
-        const now = Math.max(Date.now(), lastSavedAtRef.current + 1);
-        latestStateRef.current = next;
-        lastSavedAtRef.current = now;
-        if (next.sellers !== prev.sellers && next.sellers.length > 0) {
-          writePermanentSellers(next.sellers, now);
-        }
-        const totalRows =
-          (next.entries['1PM']?.length || 0) +
-          (next.entries['6PM']?.length || 0) +
-          (next.entries['8PM']?.length || 0);
-        const delayMs = totalRows > 3000 ? 650 : totalRows > 300 ? 250 : 60;
-        if (persistTimerRef.current !== null) {
-          window.clearTimeout(persistTimerRef.current);
-        }
-        persistTimerRef.current = window.setTimeout(() => {
-          persistTimerRef.current = null;
-          scheduleIdlePersistence(() => {
-            writeLocalStorageSafe(latestStateRef.current, lastSavedAtRef.current);
-            void writeIndexedDbEnvelope(latestStateRef.current, lastSavedAtRef.current);
-          });
-        }, delayMs);
-        return next;
-      });
-    },
-    []
-  );
 
   const [activeTab, setActiveTab] = useState<SheetTab>('Seller Bill');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sellerIdsOpen, setSellerIdsOpen] = useState(false);
-  const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
-  const [announcementBusy, setAnnouncementBusy] = useState(false);
-  const [announcementError, setAnnouncementError] = useState('');
-  const [publicAnnouncement, setPublicAnnouncement] = useState<CloudPublicAnnouncement | null>(
-    () => readCachedPublicAnnouncement(AGENCY_ID)
-  );
   const [archiveNotice, setArchiveNotice] = useState('');
 
   // Cloud Multi-User & Seller Mobile ID State
-  const DEVICE_PORTAL_MODE_KEY = 'kk-device-portal-mode:v1';
-  const readDevicePortalMode = (): 'admin' | 'seller' | null => {
-    try {
-      const v = window.localStorage.getItem(DEVICE_PORTAL_MODE_KEY);
-      if (v === 'admin' || v === 'seller') return v;
-    } catch {
-      // Ignore storage errors
-    }
-    return null;
-  };
-  const writeDevicePortalMode = (mode: 'admin' | 'seller') => {
-    try {
-      window.localStorage.setItem(DEVICE_PORTAL_MODE_KEY, mode);
-    } catch {
-      // Ignore storage errors
-    }
-  };
-
   const initialUrlLoginParams = useMemo(() => {
     if (typeof window === 'undefined') {
-      return { loginId: '', legacySellerId: '', forceLogin: false, forceAdmin: false };
+      return { loginId: '', legacySellerId: '', forceLogin: false };
     }
     const sp = new URLSearchParams(window.location.search);
     const rawId = sp.get('id')?.trim() || '';
     const legacySellerId = sp.get('sellerId')?.trim() || '';
     const forceLogin = sp.get('login') === '1';
-    const forceAdmin = sp.get('admin') === '1';
     return {
       loginId: rawId ? normalizeLoginId(rawId) : '',
       legacySellerId,
       forceLogin,
-      forceAdmin,
     };
   }, []);
+  const initialUrlLoginId = initialUrlLoginParams.loginId;
   const hasUrlLoginTrigger = Boolean(
     initialUrlLoginParams.loginId ||
       initialUrlLoginParams.legacySellerId ||
       initialUrlLoginParams.forceLogin
   );
-  const [devicePortalMode, setDevicePortalMode] = useState<'admin' | 'seller' | null>(() => {
-    if (hasUrlLoginTrigger) {
-      writeDevicePortalMode('seller');
-      return 'seller';
-    }
-    if (initialUrlLoginParams.forceAdmin) {
-      writeDevicePortalMode('admin');
-      return 'admin';
-    }
-    return readDevicePortalMode();
-  });
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
-  type CloudSessionState =
+  const [cloudSession, setCloudSession] = useState<
     | { kind: 'none' }
     | { kind: 'admin'; agencyId: string; ownerUid: string }
-    | { kind: 'seller'; agencyId: string; partyId: string };
-  const [cloudSession, setCloudSessionRaw] = useState<CloudSessionState>(() => {
-    if (hasUrlLoginTrigger) return { kind: 'none' };
-    const cached = readCachedCloudSession();
-    if (!cached) return { kind: 'none' };
-    if (cached.kind === 'admin') {
-      return { kind: 'admin', agencyId: cached.agencyId, ownerUid: cached.ownerUid };
-    }
-    return { kind: 'seller', agencyId: cached.agencyId, partyId: cached.partyId };
-  });
-  const setCloudSession = useCallback((next: CloudSessionState) => {
-    setCloudSessionRaw((prev) => {
-      if (prev.kind !== next.kind) return next;
-      if (prev.kind === 'none') return prev;
-      if (
-        prev.kind === 'admin' &&
-        next.kind === 'admin' &&
-        prev.agencyId === next.agencyId &&
-        prev.ownerUid === next.ownerUid
-      ) {
-        return prev;
-      }
-      if (
-        prev.kind === 'seller' &&
-        next.kind === 'seller' &&
-        prev.agencyId === next.agencyId &&
-        prev.partyId === next.partyId
-      ) {
-        return prev;
-      }
-      return next;
-    });
-  }, []);
+    | { kind: 'seller'; agencyId: string; partyId: string }
+  >({ kind: 'none' });
   const [sellerLoginMode, setSellerLoginMode] = useState<boolean>(hasUrlLoginTrigger);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudError, setCloudError] = useState('');
@@ -569,22 +450,12 @@ export default function App() {
   const [cloudPrivates, setCloudPrivates] = useState<CloudPartyPrivateDoc[]>([]);
   const [cloudSheets, setCloudSheets] = useState<CloudPartySheetDoc[]>([]);
   const [cloudHydrated, setCloudHydrated] = useState(false);
-  const [localIdbReady, setLocalIdbReady] = useState(false);
-  const [adminVaultHydrated, setAdminVaultHydrated] = useState(false);
-  const [vaultRetryNonce, setVaultRetryNonce] = useState(0);
   const [adminPreviewParty, setAdminPreviewParty] = useState<{
     agencyId: string;
     partyId: string;
   } | null>(null);
 
   const lastAgencySigRef = useRef<string>('');
-  const lastPrivateConfigSigRef = useRef<string>('');
-  const adminChunkSigsRef = useRef<Record<string, string>>({});
-  const adminChunkIdsRef = useRef<Set<string>>(new Set());
-  const adminArchiveSigsRef = useRef<Record<string, string>>({});
-  const adminArchiveDocIdsRef = useRef<Set<string>>(new Set());
-  const wasFreshLocalBootRef = useRef<boolean>(false);
-  const adminVaultHydratedRef = useRef<boolean>(false);
   const lastCloudSheetSigRef = useRef<Record<string, string>>({});
   const lastAdminPushSigRef = useRef<Record<string, string>>({});
   const subSheetMergedSigRef = useRef<Record<string, string>>({});
@@ -594,69 +465,12 @@ export default function App() {
   const cloudSheetsRef = useRef<CloudPartySheetDoc[]>([]);
   const cloudAgencyRef = useRef<CloudAgencyDoc | null>(null);
 
-  adminVaultHydratedRef.current = adminVaultHydrated;
   cloudPartiesRef.current = cloudParties;
   cloudPrivatesRef.current = cloudPrivates;
   cloudSheetsRef.current = cloudSheets;
   cloudAgencyRef.current = cloudAgency;
 
   const skipAutoRolloverDateRef = useRef<string | null>(null);
-
-  // Admin-only Restored Archive Mode (persisted locally so page reload NEVER overwrites
-  // live Master / Sub-Master cloud date or live sheets with an old restored date,
-  // while Admin edits on the restored date auto-sync to all Master/Sub-Master archives
-  // and cleanly cascade Due/Joma balances to the live current day).
-  type AdminRestoredArchiveMode = {
-    restoredDate: string;
-    restoredSnapId?: string;
-    restoredTrigger?: DaySnapshot['trigger'];
-    restoredOriginalTotals?: Record<string, number>;
-    liveDate: string;
-    liveBackup: DaySnapshot;
-    liveOriginalSellers?: Seller[];
-    intermediateOriginalHistory?: DaySnapshot[];
-  };
-  const ADMIN_RESTORED_MODE_KEY = 'kk-admin-restored-archive-mode:v1';
-  const [adminRestoredMode, setAdminRestoredMode] = useState<AdminRestoredArchiveMode | null>(() => {
-    try {
-      const raw = window.localStorage.getItem(ADMIN_RESTORED_MODE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as AdminRestoredArchiveMode;
-      if (parsed && parsed.restoredDate && parsed.liveDate && parsed.liveBackup) {
-        return parsed;
-      }
-    } catch {
-      // Ignore corrupt local flag
-    }
-    return null;
-  });
-  const isAdminRestoredView = Boolean(adminRestoredMode);
-  const isAdminRestoredViewRef = useRef<boolean>(isAdminRestoredView);
-  isAdminRestoredViewRef.current = isAdminRestoredView;
-  const adminRestoredModeRef = useRef<AdminRestoredArchiveMode | null>(adminRestoredMode);
-  adminRestoredModeRef.current = adminRestoredMode;
-  const lastRestoredEditSigRef = useRef<string>('');
-  const [restoredSyncState, setRestoredSyncState] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
-  const pendingRestoredCloudPromiseRef = useRef<Promise<void> | null>(null);
-  const reconciledHistorySigRef = useRef<string>('');
-
-  const updateAdminRestoredMode = useCallback(
-    (next: AdminRestoredArchiveMode | null) => {
-      isAdminRestoredViewRef.current = Boolean(next);
-      adminRestoredModeRef.current = next;
-      setAdminRestoredMode(next);
-      try {
-        if (next) {
-          window.localStorage.setItem(ADMIN_RESTORED_MODE_KEY, JSON.stringify(next));
-        } else {
-          window.localStorage.removeItem(ADMIN_RESTORED_MODE_KEY);
-        }
-      } catch {
-        // Ignore storage quota errors
-      }
-    },
-    []
-  );
   const [recentlyPastedIds, setRecentlyPastedIds] = useState<Record<SessionId, string[]>>({
     '1PM': [],
     '6PM': [],
@@ -720,22 +534,6 @@ export default function App() {
   const gsheetAuthPausedRef = useRef(false);
   const gsheetSilentTriedRef = useRef(false);
   const lastGsheetSigRef = useRef<string>('');
-  const prevGsheetCountsRef = useRef<Record<SessionId, number>>((() => {
-    try {
-      const raw = window.localStorage.getItem('kk_agency_gsheet_prev_counts_v1');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return {
-          '1PM': Number(parsed?.['1PM']) || 0,
-          '6PM': Number(parsed?.['6PM']) || 0,
-          '8PM': Number(parsed?.['8PM']) || 0,
-        };
-      }
-    } catch {
-      // ignore storage read error
-    }
-    return { '1PM': 0, '6PM': 0, '8PM': 0 };
-  })());
   const gsheetConfigRef = useRef(gsheetConfig);
   gsheetConfigRef.current = gsheetConfig;
 
@@ -756,76 +554,18 @@ export default function App() {
     (
       entriesBySession: Record<SessionId, TicketEntryRow[]>,
       sellerNames: string[],
-      tabMapping: Record<SessionId, string>,
-      silentToast = false,
-      manualTrigger = false
+      silentToast = false
     ) => {
-      const sessions: SessionId[] = ['1PM', '6PM', '8PM'];
-      const mappedSessions = sessions.filter((sid) => Boolean((tabMapping[sid] || '').trim()));
-      const currEntries = latestStateRef.current.entries;
-
-      const normalizedIncoming: Record<SessionId, TicketEntryRow[]> = {
-        '1PM': (tabMapping['1PM'] || '').trim() ? entriesBySession['1PM'] || [] : [],
-        '6PM': (tabMapping['6PM'] || '').trim() ? entriesBySession['6PM'] || [] : [],
-        '8PM': (tabMapping['8PM'] || '').trim() ? entriesBySession['8PM'] || [] : [],
-      };
-      const actualCurrentGsheet: Record<SessionId, TicketEntryRow[]> = {
-        '1PM': (tabMapping['1PM'] || '').trim()
-          ? (currEntries['1PM'] || []).filter((r) => isGoogleSheetRowId(r.id))
-          : [],
-        '6PM': (tabMapping['6PM'] || '').trim()
-          ? (currEntries['6PM'] || []).filter((r) => isGoogleSheetRowId(r.id))
-          : [],
-        '8PM': (tabMapping['8PM'] || '').trim()
-          ? (currEntries['8PM'] || []).filter((r) => isGoogleSheetRowId(r.id))
-          : [],
-      };
-
-      const sig = JSON.stringify(normalizedIncoming);
-      const prevCountsSnapshot: Record<SessionId, number> = {
-        '1PM': prevGsheetCountsRef.current['1PM'] || 0,
-        '6PM': prevGsheetCountsRef.current['6PM'] || 0,
-        '8PM': prevGsheetCountsRef.current['8PM'] || 0,
-      };
-
-      const clearedSessions: SessionId[] = [];
-      for (const sid of mappedSessions) {
-        const incomingEmpty = normalizedIncoming[sid].length === 0;
-        const hadGsheetInState = actualCurrentGsheet[sid].length > 0;
-        const hadGsheetPreviously = prevCountsSnapshot[sid] > 0;
-        const hasAdminNonMobileRows = (currEntries[sid] || []).some(
-          (r) => !isRowBlank(r) && !r.id.startsWith('seller::') && !r.id.startsWith('sub::')
-        );
-        if (
-          incomingEmpty &&
-          (hadGsheetInState || hadGsheetPreviously || (manualTrigger && hasAdminNonMobileRows))
-        ) {
-          clearedSessions.push(sid);
-        }
-      }
-
-      if (sig === lastGsheetSigRef.current && clearedSessions.length === 0) {
+      const sig = JSON.stringify(entriesBySession);
+      if (sig === lastGsheetSigRef.current) {
         return false;
       }
-
       lastGsheetSigRef.current = sig;
-      for (const sid of mappedSessions) {
-        prevGsheetCountsRef.current[sid] = normalizedIncoming[sid].length;
-      }
-      try {
-        window.localStorage.setItem(
-          'kk_agency_gsheet_prev_counts_v1',
-          JSON.stringify(prevGsheetCountsRef.current)
-        );
-      } catch {
-        // ignore storage write error
-      }
 
-      const clearedSet = new Set<SessionId>(clearedSessions);
-      const totalIncoming =
-        normalizedIncoming['1PM'].length +
-        normalizedIncoming['6PM'].length +
-        normalizedIncoming['8PM'].length;
+      let totalIncoming = 0;
+      (['1PM', '6PM', '8PM'] as SessionId[]).forEach((sid) => {
+        totalIncoming += entriesBySession[sid].length;
+      });
 
       setState((prev) => {
         const excludedUpper = new Set(
@@ -853,34 +593,6 @@ export default function App() {
 
         const mergeSession = (sid: SessionId): TicketEntryRow[] => {
           const existing = prev.entries[sid] || [];
-          // Leave unmapped / skipped tabs completely untouched
-          if (!(tabMapping[sid] || '').trim()) {
-            return existing.length > 0 ? existing : createBlankRows(1);
-          }
-
-          const hasGsheetInPrev = existing.some((r) => isGoogleSheetRowId(r.id));
-          const isClearedNow =
-            normalizedIncoming[sid].length === 0 &&
-            (clearedSet.has(sid) || hasGsheetInPrev);
-
-          if (isClearedNow) {
-            // Google Sheet tab was cleared -> clear ALL Google Sheet & Admin's own rows on this session,
-            // while keeping live mobile Seller/Sub-Seller phone rows (seller:: / sub::) intact.
-            const preservedMobileRows = existing.filter(
-              (r) =>
-                (r.id.startsWith('seller::') || r.id.startsWith('sub::')) &&
-                Boolean(
-                  r.name.trim() ||
-                    r.item.trim() ||
-                    r.start.trim() ||
-                    r.end.trim() ||
-                    r.qtyOverride.trim() ||
-                    r.rangeOverride.trim()
-                )
-            );
-            return preservedMobileRows.length > 0 ? preservedMobileRows : createBlankRows(1);
-          }
-
           // Keep ALL non-Google-Sheet rows (Admin manual/pasted + Seller/Sub-Seller phone rows) 100% intact
           const preserved = existing.filter(
             (r) =>
@@ -894,7 +606,7 @@ export default function App() {
                   r.rangeOverride.trim()
               )
           );
-          const merged = [...normalizedIncoming[sid], ...preserved];
+          const merged = [...entriesBySession[sid], ...preserved];
           return merged.length > 0 ? merged : createBlankRows(1);
         };
 
@@ -909,17 +621,7 @@ export default function App() {
         };
       });
 
-      if (clearedSessions.length > 0 && totalIncoming === 0) {
-        AppSounds.remove();
-        showToast(
-          `Google Sheet clear hua — Admin data bhi clear ho gaya (${clearedSessions.join(', ')})`
-        );
-      } else if (clearedSessions.length > 0 && totalIncoming > 0) {
-        AppSounds.add();
-        showToast(
-          `Google Sheet synced: ${totalIncoming} rows (${clearedSessions.join(', ')} cleared)`
-        );
-      } else if (!silentToast && totalIncoming > 0) {
+      if (!silentToast && totalIncoming > 0) {
         AppSounds.add();
         showToast(`Google Sheet synced: ${totalIncoming} rows live`);
       }
@@ -939,7 +641,6 @@ export default function App() {
       setGsheetSyncing(true);
       if (manualTrigger) {
         gsheetAuthPausedRef.current = false;
-        lastGsheetSigRef.current = '';
         setGsheetError('');
       }
       try {
@@ -981,9 +682,7 @@ export default function App() {
         const changed = mergeGoogleSheetEntriesIntoState(
           result.entriesBySession,
           result.sellerNames,
-          cfg.tabMapping,
-          !manualTrigger && lastGsheetSigRef.current === '',
-          manualTrigger
+          !manualTrigger && lastGsheetSigRef.current === ''
         );
         if (manualTrigger && !changed) {
           const total =
@@ -1129,7 +828,6 @@ export default function App() {
     setGsheetError('');
     gsheetAuthPausedRef.current = false;
     lastGsheetSigRef.current = '';
-    prevGsheetCountsRef.current = { '1PM': 0, '6PM': 0, '8PM': 0 };
   }, []);
 
   const handleClearGoogleSheetRows = useCallback(() => {
@@ -1149,17 +847,14 @@ export default function App() {
     });
     setGsheetRowCounts({ '1PM': 0, '6PM': 0, '8PM': 0 });
     lastGsheetSigRef.current = '';
-    prevGsheetCountsRef.current = { '1PM': 0, '6PM': 0, '8PM': 0 };
     showToast('Google Sheet synced rows removed from app');
   }, [setState, showToast]);
 
-  // 24/7 Live Auto-Sync effect: waits for IndexedDB & Admin Cloud Vault hydration first so
-  // cleared Google Sheet tabs ALWAYS clear stale restored rows, then syncs every N seconds.
+  // 24/7 Live Auto-Sync effect: immediately syncs on app open, resume, reconnect, and every N seconds
+  // Uses Always-On Direct Sync automatically when no OAuth token is in memory so it NEVER disconnects!
   useEffect(() => {
     if (!gsheetConfig.spreadsheetId || !gsheetConfig.autoSync) return;
-    if (cloudSession.kind === 'seller' || isAdminRestoredView) return;
-    if (!localIdbReady) return;
-    if (cloudSession.kind === 'admin' && !adminVaultHydrated) return;
+    if (cloudSession.kind === 'seller') return;
 
     gsheetAuthPausedRef.current = false;
     void runGoogleSheetsSync(undefined, false);
@@ -1167,19 +862,17 @@ export default function App() {
     const intervalMs = Math.max(5, gsheetConfig.pollSeconds || 10) * 1000;
     const tick = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      if (isAdminRestoredViewRef.current) return;
       void runGoogleSheetsSync(undefined, false);
     };
 
     const timer = window.setInterval(tick, intervalMs);
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && !isAdminRestoredViewRef.current) {
+      if (document.visibilityState === 'visible') {
         gsheetAuthPausedRef.current = false;
         void runGoogleSheetsSync(undefined, false);
       }
     };
     const onOnline = () => {
-      if (isAdminRestoredViewRef.current) return;
       gsheetAuthPausedRef.current = false;
       void runGoogleSheetsSync(undefined, false);
     };
@@ -1197,9 +890,6 @@ export default function App() {
     gsheetConfig.autoSync,
     gsheetConfig.pollSeconds,
     cloudSession.kind,
-    localIdbReady,
-    adminVaultHydrated,
-    isAdminRestoredView,
     runGoogleSheetsSync,
   ]);
 
@@ -1228,7 +918,7 @@ export default function App() {
     if (typeof window === 'undefined') return;
     const cleanUrl = new URL(window.location.href);
     let changed = false;
-    ['id', 'sellerId', 'login', 'admin'].forEach((k) => {
+    ['id', 'sellerId', 'login'].forEach((k) => {
       if (cleanUrl.searchParams.has(k)) {
         cleanUrl.searchParams.delete(k);
         changed = true;
@@ -1256,8 +946,6 @@ export default function App() {
             prevCached?.kind === 'seller' && prevCached.uid === user.uid
               ? prevCached.loginId
               : undefined;
-          writeDevicePortalMode('seller');
-          setDevicePortalMode('seller');
           setCloudSession(resolved);
           writeCachedCloudSession({
             uid: user.uid,
@@ -1298,8 +986,6 @@ export default function App() {
             agencyId: agencyDoc.agencyId,
             ownerUid: agencyDoc.ownerUid,
           };
-          writeDevicePortalMode('admin');
-          setDevicePortalMode('admin');
           setCloudSession(nextAdminSession);
           writeCachedCloudSession({
             uid: user.uid,
@@ -1326,10 +1012,6 @@ export default function App() {
         return;
       } catch (err) {
         lastErr = err;
-        const msg = err instanceof Error ? err.message.toLowerCase() : String(err || '').toLowerCase();
-        if (msg.includes('quota') || msg.includes('resource-exhausted')) {
-          break;
-        }
         if (attempt < 2) {
           await new Promise((resolve) => window.setTimeout(resolve, 900 * (attempt + 1)));
         }
@@ -1372,13 +1054,6 @@ export default function App() {
         setCloudPrivates([]);
         setCloudSheets([]);
         setCloudHydrated(false);
-        setAdminVaultHydrated(false);
-        wasFreshLocalBootRef.current = false;
-        adminChunkSigsRef.current = {};
-        adminChunkIdsRef.current = new Set();
-        adminArchiveSigsRef.current = {};
-        adminArchiveDocIdsRef.current = new Set();
-        lastPrivateConfigSigRef.current = '';
         setAuthReady(true);
         return;
       }
@@ -1410,19 +1085,6 @@ export default function App() {
     return () => unsub();
   }, [hydrateCloudSessionForUser]);
 
-  // Global live listener for Admin's Advertisement / Offer / Urgent Message
-  // Works on Login Link, Installed App, Admin Dashboard, and all Master / Sub-Master / Sub-Seller portals
-  const activeAnnouncementAgencyId =
-    cloudSession.kind === 'admin' || cloudSession.kind === 'seller'
-      ? cloudSession.agencyId
-      : AGENCY_ID;
-  useEffect(() => {
-    const unsub = subscribePublicAnnouncement(activeAnnouncementAgencyId, (ad) => {
-      setPublicAnnouncement(ad);
-    });
-    return () => unsub();
-  }, [activeAnnouncementAgencyId]);
-
   // Silent Keep-Alive & Auto-Reconnect: refresh auth token on wake/online and every 45 mins
   // so Admin & Seller logins stay permanently active without ever logging out unexpectedly.
   useEffect(() => {
@@ -1432,9 +1094,6 @@ export default function App() {
       void user.getIdToken(false).catch(() => {});
       if (!cloudAgencyRef.current) {
         void hydrateCloudSessionForUser(user);
-      }
-      if (!adminVaultHydratedRef.current) {
-        setVaultRetryNonce((n) => n + 1);
       }
     };
 
@@ -1540,20 +1199,15 @@ export default function App() {
     []
   );
 
-  const adminSessionOwnerUid = cloudSession.kind === 'admin' ? cloudSession.ownerUid : '';
-  const adminSessionAgencyId = cloudSession.kind === 'admin' ? cloudSession.agencyId : '';
-  const authUserUid = authUser?.uid || '';
-  const hasCloudAgency = Boolean(cloudAgency);
-
   // Admin Real-time Subscriptions: parties, private contacts, and live seller sheets!
   useEffect(() => {
-    if (!adminSessionOwnerUid || !authUserUid) {
+    if (cloudSession.kind !== 'admin' || !authUser) {
       setCloudHydrated(false);
       sheetsHydratedOnceRef.current = false;
       subSheetMergedSigRef.current = {};
       return;
     }
-    const ownerUid = adminSessionOwnerUid;
+    const ownerUid = cloudSession.ownerUid;
     let gotParties = false;
     let gotPrivates = false;
     let gotSheets = false;
@@ -1588,24 +1242,14 @@ export default function App() {
       unsubPrivates();
       unsubSheets();
     };
-  }, [adminSessionOwnerUid, authUserUid]);
+  }, [cloudSession, authUser]);
 
   // Reactive Live Merge: once BOTH cloudParties and cloudSheets are hydrated,
   // merge every Direct Seller & Multi-Level Chain Sub-Seller sheet live into Admin's ledger
   // (including Admin Preview entries and deep L2/L3/L4/L5+ sub-sellers).
   useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !authUser ||
-      !cloudHydrated ||
-      !adminVaultHydrated ||
-      isAdminRestoredView
-    ) {
-      return;
-    }
+    if (cloudSession.kind !== 'admin' || !authUser || !cloudHydrated) return;
     const adminUid = authUser.uid;
-    const currentLiveDate = latestStateRef.current.date;
-    const emptySig = serializeSheetEntries([], [], []);
     const isInitialHydration = !sheetsHydratedOnceRef.current;
     sheetsHydratedOnceRef.current = true;
 
@@ -1615,33 +1259,14 @@ export default function App() {
       rootMasterName: string;
       isSubSheet: boolean;
     }[] = [];
-    const staleSheetsToClear: CloudPartySheetDoc[] = [];
 
     for (const sheet of cloudSheets) {
-      const isSubSheet = Boolean(sheet.parentMasterId);
-
-      // CRITICAL GUARD: NEVER merge stale previous-day Seller/Sub-Seller sheets into today's live date!
-      // Instead, clear that stale sheet in Firestore and strip any lingering stale rows from today's ledger.
-      if (sheet.date && currentLiveDate && sheet.date < currentLiveDate) {
-        staleSheetsToClear.push(sheet);
-        if (isSubSheet) {
-          const rootMaster =
-            resolveTopLevelMasterParty(sheet.partyId, cloudParties) ||
-            cloudParties.find((p) => p.partyId === sheet.parentMasterId);
-          const effectiveSellerName = (rootMaster?.name || sheet.partyName).trim();
-          subSheetMergedSigRef.current[sheet.partyId] = `${effectiveSellerName.toUpperCase()}::${emptySig}`;
-        } else {
-          lastCloudSheetSigRef.current[sheet.partyId] = emptySig;
-          lastAdminPushSigRef.current[sheet.partyId] = emptySig;
-        }
-        continue;
-      }
-
       const sig = serializeSheetEntries(
         sheet.entries1PM || [],
         sheet.entries6PM || [],
         sheet.entries8PM || []
       );
+      const isSubSheet = Boolean(sheet.parentMasterId);
 
       if (isSubSheet) {
         const rootMaster =
@@ -1686,59 +1311,6 @@ export default function App() {
         } else if (prevSig === undefined) {
           lastCloudSheetSigRef.current[sheet.partyId] = sig;
         }
-      }
-    }
-
-    // Proactively wipe any stale previous-day cloud sheets in Firestore & strip their stale rows from today's ledger
-    if (staleSheetsToClear.length > 0) {
-      const partyById = new Map(cloudParties.map((p) => [p.partyId, p] as const));
-      const stalePartyIds = new Set(staleSheetsToClear.map((s) => s.partyId));
-
-      setState((prev) => {
-        let removedAny = false;
-        const stripStale = (rows: TicketEntryRow[]): TicketEntryRow[] => {
-          const kept = rows.filter((r) => {
-            if (isRowBlank(r)) return false;
-            if (r.id.startsWith('seller::')) {
-              const pid = r.id.split('::')[1] || '';
-              if (stalePartyIds.has(pid)) {
-                removedAny = true;
-                return false;
-              }
-            }
-            if (r.id.startsWith('sub::')) {
-              const pid = r.id.split('::')[1] || '';
-              if (stalePartyIds.has(pid)) {
-                removedAny = true;
-                return false;
-              }
-            }
-            return true;
-          });
-          return normalizeRowsKeepOneTrailing(kept);
-        };
-        const next1 = stripStale(prev.entries['1PM'] || []);
-        const next6 = stripStale(prev.entries['6PM'] || []);
-        const next8 = stripStale(prev.entries['8PM'] || []);
-        if (!removedAny) return prev;
-        return {
-          ...prev,
-          entries: { '1PM': next1, '6PM': next6, '8PM': next8 },
-        };
-      });
-
-      for (const staleSheet of staleSheetsToClear) {
-        const party = partyById.get(staleSheet.partyId);
-        if (!party) continue;
-        void pushAdminSheetRowsForParty(
-          adminUid,
-          party,
-          currentLiveDate,
-          [],
-          [],
-          [],
-          true
-        ).catch(() => {});
       }
     }
 
@@ -1814,16 +1386,11 @@ export default function App() {
             }
           }
 
-          // On initial hydration of a fresh/second Admin device, restore Admin's cloud-backed manual rows if missing locally.
-          // Skip resurrecting old Google Sheet rows when Google Sheet live sync is active (live Sheet is source of truth).
-          const hasLiveGsheet = Boolean(gsheetConfigRef.current.spreadsheetId);
+          // On initial hydration of a fresh/second Admin device, restore Admin's cloud-backed manual rows if missing locally
           const restoredAdminRows: TicketEntryRow[] = [];
           if (isInitialHydration) {
             for (const r of incomingAdminRows) {
               const rawAdminId = r.id.slice('admin::'.length);
-              if (hasLiveGsheet && (isGoogleSheetRowId(r.id) || isGoogleSheetRowId(rawAdminId))) {
-                continue;
-              }
               if (rawAdminId && !keptIds.has(rawAdminId) && !keptIds.has(r.id)) {
                 restoredAdminRows.push({ ...r, id: rawAdminId });
                 keptIds.add(rawAdminId);
@@ -1865,340 +1432,11 @@ export default function App() {
       AppSounds.add();
       showToast(`Live Entry synced: ${names}`);
     }
-  }, [
-    cloudSession,
-    authUser,
-    cloudHydrated,
-    adminVaultHydrated,
-    cloudParties,
-    cloudSheets,
-    isAdminRestoredView,
-    state.date,
-    setState,
-    showToast,
-  ]);
-
-  // Permanent Admin Cloud Vault Hydration:
-  // Runs AFTER local IndexedDB recovery and BEFORE any Admin -> Cloud writes are allowed,
-  // so deleting the app, reinstalling, or opening on a new phone/domain NEVER overwrites
-  // cloud data with empty sheets and automatically restores 100% of Admin's data!
-  useEffect(() => {
-    if (!adminSessionOwnerUid || !adminSessionAgencyId || !authUserUid || !hasCloudAgency || !localIdbReady) {
-      if (!adminSessionOwnerUid || !authUserUid) {
-        setAdminVaultHydrated(false);
-      }
-      return;
-    }
-
-    let cancelled = false;
-    const ownerUid = adminSessionOwnerUid;
-    const agencyId = adminSessionAgencyId;
-
-    const hydrateAdminVault = async () => {
-      try {
-        const vault = await loadAdminCloudVault(ownerUid, agencyId);
-        if (cancelled) return;
-
-        // Seed incremental chunk & archive tracking maps from Firestore snapshot
-        adminChunkSigsRef.current = { ...vault.chunkSigs };
-        adminChunkIdsRef.current = new Set(vault.chunkIds);
-        adminArchiveSigsRef.current = { ...vault.archiveSigs };
-        adminArchiveDocIdsRef.current = new Set(vault.archiveDocIds);
-
-        const local = latestStateRef.current;
-        const localUpdatedAt = lastSavedAtRef.current;
-
-        const countFilled = (entriesObj: Record<SessionId, TicketEntryRow[]>) => {
-          let n = 0;
-          for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-            const list = entriesObj[sid] || [];
-            for (let i = 0; i < list.length; i += 1) {
-              if (!isRowBlank(list[i])) n += 1;
-            }
-          }
-          return n;
-        };
-
-        const localFilledCount = countFilled(local.entries);
-        const localHasWinning = Boolean(
-          local.winningRaw['1PM'].trim() ||
-            local.winningRaw['6PM'].trim() ||
-            local.winningRaw['8PM'].trim()
-        );
-        const localHasHistory =
-          local.history.length > 0 || (local.recycleBin?.length || 0) > 0;
-
-        const cloudFilledCount = countFilled(vault.entries);
-        const cloudHasWinning = Boolean(
-          (vault.agency?.winning1PM || '').trim() ||
-            (vault.agency?.winning6PM || '').trim() ||
-            (vault.agency?.winning8PM || '').trim()
-        );
-        const cloudHasHistory = vault.history.length > 0 || vault.recycleBin.length > 0;
-        const cloudHasAnyData =
-          cloudFilledCount > 0 ||
-          cloudHasWinning ||
-          cloudHasHistory ||
-          Boolean(vault.privateConfig?.extraNames?.length);
-
-        const isFreshLocalDevice =
-          localUpdatedAt === 0 ||
-          (localFilledCount === 0 && !localHasWinning && !localHasHistory);
-
-        // Guard against resurrecting yesterday's cloud ledger chunks onto a newer local live date (e.g. right after Close Day)
-        const vaultLedgerIsOlderThanLocal = Boolean(
-          vault.ledgerDate && local.date && vault.ledgerDate < local.date
-        );
-        const vaultAgencyDate = vault.agency?.date || '';
-        const vaultLedgerIsOlderThanAgency = Boolean(
-          vault.ledgerDate && vaultAgencyDate && vault.ledgerDate < vaultAgencyDate
-        );
-
-        const cloudIsStrictlyNewer =
-          !vaultLedgerIsOlderThanLocal &&
-          !vaultLedgerIsOlderThanAgency &&
-          vault.ledgerRevisionMs > localUpdatedAt + 2500 &&
-          (cloudFilledCount > 0 || cloudHasWinning);
-
-        const unionSnapshots = (primary: DaySnapshot[], secondary: DaySnapshot[]): DaySnapshot[] => {
-          const byId = new Map<string, DaySnapshot>();
-          for (const s of primary) {
-            if (s && s.id) byId.set(s.id, s);
-          }
-          for (const s of secondary) {
-            if (s && s.id && !byId.has(s.id)) byId.set(s.id, s);
-          }
-          return Array.from(byId.values()).sort((a, b) =>
-            String(b.savedAt || '').localeCompare(String(a.savedAt || ''))
-          );
-        };
-
-        if (isFreshLocalDevice && cloudHasAnyData && !isAdminRestoredViewRef.current) {
-          wasFreshLocalBootRef.current = true;
-          const agency = vault.agency;
-          const priv = vault.privateConfig;
-          const restoredDate = agency?.date || vault.ledgerDate || local.date;
-          const restoredWinning = {
-            '1PM': agency?.winning1PM ?? local.winningRaw['1PM'],
-            '6PM': agency?.winning6PM ?? local.winningRaw['6PM'],
-            '8PM': agency?.winning8PM ?? local.winningRaw['8PM'],
-          };
-          const useVaultEntries = !vaultLedgerIsOlderThanAgency && !vaultLedgerIsOlderThanLocal;
-          const restoredEntries: Record<SessionId, TicketEntryRow[]> = useVaultEntries
-            ? {
-                '1PM': normalizeRowsKeepOneTrailing(vault.entries['1PM']),
-                '6PM': normalizeRowsKeepOneTrailing(vault.entries['6PM']),
-                '8PM': normalizeRowsKeepOneTrailing(vault.entries['8PM']),
-              }
-            : {
-                '1PM': createBlankRows(1),
-                '6PM': createBlankRows(1),
-                '8PM': createBlankRows(1),
-              };
-          const restoredConfig: AgencyConfig = {
-            ...local.config,
-            limitThreshold:
-              typeof agency?.limitThreshold === 'number' && agency.limitThreshold >= 1
-                ? agency.limitThreshold
-                : local.config.limitThreshold,
-            sellerLimitThreshold:
-              typeof agency?.sellerLimitThreshold === 'number' && agency.sellerLimitThreshold >= 1
-                ? agency.sellerLimitThreshold
-                : local.config.sellerLimitThreshold ?? 20,
-            excludedPrizeNames:
-              Array.isArray(agency?.excludedPrizeNames) && agency.excludedPrizeNames.length > 0
-                ? agency.excludedPrizeNames
-                : local.config.excludedPrizeNames,
-            itemOptions:
-              Array.isArray(agency?.itemOptions) && agency.itemOptions.length > 0
-                ? agency.itemOptions
-                : local.config.itemOptions,
-            whatsappNumber:
-              priv && priv.whatsappNumber.trim()
-                ? priv.whatsappNumber
-                : local.config.whatsappNumber,
-            autoArchiveDaily: priv ? Boolean(priv.autoArchiveDaily) : local.config.autoArchiveDaily,
-            pausedAutoArchiveDate: priv
-              ? priv.pausedAutoArchiveDate
-              : local.config.pausedAutoArchiveDate,
-          };
-          const restoredExtraNames =
-            priv && priv.extraNames.length > 0 ? priv.extraNames : local.extraNames;
-          const restoredHistory = unionSnapshots(vault.history, local.history);
-          const restoredRecycleBin = unionSnapshots(vault.recycleBin, local.recycleBin || []);
-
-          // Pre-seed agency & private signatures so restoring doesn't bounce redundant writes
-          lastAgencySigRef.current = JSON.stringify({
-            date: restoredDate,
-            limitThreshold: restoredConfig.limitThreshold,
-            sellerLimitThreshold: restoredConfig.sellerLimitThreshold ?? 20,
-            excludedPrizeNames: restoredConfig.excludedPrizeNames,
-            itemOptions: restoredConfig.itemOptions,
-            winning1PM: restoredWinning['1PM'],
-            winning6PM: restoredWinning['6PM'],
-            winning8PM: restoredWinning['8PM'],
-          });
-          lastPrivateConfigSigRef.current = JSON.stringify({
-            whatsappNumber: restoredConfig.whatsappNumber,
-            autoArchiveDaily: restoredConfig.autoArchiveDaily,
-            pausedAutoArchiveDate: restoredConfig.pausedAutoArchiveDate || '',
-            extraNames: restoredExtraNames,
-          });
-
-          const nextRestored: AppState = {
-            ...local,
-            date: restoredDate,
-            config: restoredConfig,
-            extraNames: restoredExtraNames,
-            entries: restoredEntries,
-            winningRaw: restoredWinning,
-            history: restoredHistory,
-            recycleBin: restoredRecycleBin,
-          };
-          const ts = Math.max(Date.now(), vault.ledgerRevisionMs, vault.agencyUpdatedAtMs);
-          latestStateRef.current = nextRestored;
-          lastSavedAtRef.current = ts;
-          writeLocalStorageSafe(nextRestored, ts);
-          void writeIndexedDbEnvelope(nextRestored, ts);
-          lastGsheetSigRef.current = '';
-          setRawState(nextRestored);
-          AppSounds.success();
-          showToast('Cloud Backup Restored — Sab Admin Data Wapas Aa Gaya!');
-        } else if (cloudIsStrictlyNewer && !isAdminRestoredViewRef.current) {
-          const agency = vault.agency;
-          const priv = vault.privateConfig;
-          const mergedDate = agency?.date || vault.ledgerDate || local.date;
-          const mergedWinning = {
-            '1PM': agency?.winning1PM ?? local.winningRaw['1PM'],
-            '6PM': agency?.winning6PM ?? local.winningRaw['6PM'],
-            '8PM': agency?.winning8PM ?? local.winningRaw['8PM'],
-          };
-          const mergedEntries: Record<SessionId, TicketEntryRow[]> = {
-            '1PM': normalizeRowsKeepOneTrailing(vault.entries['1PM']),
-            '6PM': normalizeRowsKeepOneTrailing(vault.entries['6PM']),
-            '8PM': normalizeRowsKeepOneTrailing(vault.entries['8PM']),
-          };
-          const mergedConfig: AgencyConfig = {
-            ...local.config,
-            limitThreshold:
-              typeof agency?.limitThreshold === 'number' && agency.limitThreshold >= 1
-                ? agency.limitThreshold
-                : local.config.limitThreshold,
-            sellerLimitThreshold:
-              typeof agency?.sellerLimitThreshold === 'number' && agency.sellerLimitThreshold >= 1
-                ? agency.sellerLimitThreshold
-                : local.config.sellerLimitThreshold ?? 20,
-            excludedPrizeNames:
-              Array.isArray(agency?.excludedPrizeNames) && agency.excludedPrizeNames.length > 0
-                ? agency.excludedPrizeNames
-                : local.config.excludedPrizeNames,
-            itemOptions:
-              Array.isArray(agency?.itemOptions) && agency.itemOptions.length > 0
-                ? agency.itemOptions
-                : local.config.itemOptions,
-            whatsappNumber:
-              priv && priv.whatsappNumber.trim()
-                ? priv.whatsappNumber
-                : local.config.whatsappNumber,
-          };
-          const mergedExtraNames =
-            priv && priv.extraNames.length > 0
-              ? Array.from(new Set([...local.extraNames, ...priv.extraNames]))
-              : local.extraNames;
-          const mergedHistory = unionSnapshots(vault.history, local.history);
-          const mergedRecycleBin = unionSnapshots(vault.recycleBin, local.recycleBin || []);
-
-          lastAgencySigRef.current = JSON.stringify({
-            date: mergedDate,
-            limitThreshold: mergedConfig.limitThreshold,
-            sellerLimitThreshold: mergedConfig.sellerLimitThreshold ?? 20,
-            excludedPrizeNames: mergedConfig.excludedPrizeNames,
-            itemOptions: mergedConfig.itemOptions,
-            winning1PM: mergedWinning['1PM'],
-            winning6PM: mergedWinning['6PM'],
-            winning8PM: mergedWinning['8PM'],
-          });
-
-          const nextMerged: AppState = {
-            ...local,
-            date: mergedDate,
-            config: mergedConfig,
-            extraNames: mergedExtraNames,
-            entries: mergedEntries,
-            winningRaw: mergedWinning,
-            history: mergedHistory,
-            recycleBin: mergedRecycleBin,
-          };
-          const ts = Math.max(Date.now(), vault.ledgerRevisionMs);
-          latestStateRef.current = nextMerged;
-          lastSavedAtRef.current = ts;
-          writeLocalStorageSafe(nextMerged, ts);
-          void writeIndexedDbEnvelope(nextMerged, ts);
-          lastGsheetSigRef.current = '';
-          setRawState(nextMerged);
-          showToast('Latest Admin Data Synced from Cloud');
-        } else {
-          // Local has current/newer data: safely union-merge any cloud archives missing locally
-          const missingHistory = vault.history.filter(
-            (ch) => !local.history.some((lh) => lh.id === ch.id)
-          );
-          const localBin = local.recycleBin || [];
-          const missingBin = vault.recycleBin.filter(
-            (cb) =>
-              !localBin.some((lb) => lb.id === cb.id) &&
-              !local.history.some((lh) => lh.id === cb.id)
-          );
-          const missingExtra = (vault.privateConfig?.extraNames || []).filter(
-            (n) => !local.extraNames.some((ln) => ln.toUpperCase() === n.toUpperCase())
-          );
-
-          if (missingHistory.length > 0 || missingBin.length > 0 || missingExtra.length > 0) {
-            setState((prev) => ({
-              ...prev,
-              extraNames:
-                missingExtra.length > 0
-                  ? Array.from(new Set([...prev.extraNames, ...missingExtra]))
-                  : prev.extraNames,
-              history:
-                missingHistory.length > 0
-                  ? unionSnapshots(prev.history, missingHistory)
-                  : prev.history,
-              recycleBin:
-                missingBin.length > 0
-                  ? unionSnapshots(prev.recycleBin || [], missingBin)
-                  : prev.recycleBin,
-            }));
-          }
-        }
-
-        if (!cancelled) {
-          setAdminVaultHydrated(true);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setCloudError(err instanceof Error ? err.message : 'Admin cloud vault load error');
-        }
-      }
-    };
-
-    void hydrateAdminVault();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [adminSessionOwnerUid, adminSessionAgencyId, authUserUid, hasCloudAgency, localIdbReady, vaultRetryNonce, setState, showToast]);
+  }, [cloudSession, authUser, cloudHydrated, cloudParties, cloudSheets, setState, showToast]);
 
   // Admin -> Cloud Sync: Date, Limit Threshold, Item Options & Official Winning Numbers
-  // Strictly gated on adminVaultHydrated and paused while Admin is viewing a locally restored Archive date.
   useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !cloudAgency ||
-      !adminVaultHydrated ||
-      isAdminRestoredView
-    ) {
-      return;
-    }
+    if (cloudSession.kind !== 'admin' || !cloudAgency) return;
     const sig = JSON.stringify({
       date: state.date,
       limitThreshold: state.config.limitThreshold,
@@ -2212,7 +1450,6 @@ export default function App() {
     if (sig === lastAgencySigRef.current) return;
 
     const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
       lastAgencySigRef.current = sig;
       void syncAdminAgencyState(latestStateRef.current).catch((err) => {
         setCloudError(err instanceof Error ? err.message : 'Agency sync error');
@@ -2223,8 +1460,6 @@ export default function App() {
   }, [
     cloudSession,
     cloudAgency,
-    adminVaultHydrated,
-    isAdminRestoredView,
     state.date,
     state.config.limitThreshold,
     state.config.sellerLimitThreshold,
@@ -2233,144 +1468,9 @@ export default function App() {
     state.winningRaw,
   ]);
 
-  // Admin -> Cloud Vault Sync: Private Settings (WhatsApp Dispatch Number & Extra Seller Names)
-  useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !cloudAgency ||
-      !adminVaultHydrated ||
-      isAdminRestoredView
-    ) {
-      return;
-    }
-    const sig = JSON.stringify({
-      whatsappNumber: state.config.whatsappNumber,
-      autoArchiveDaily: state.config.autoArchiveDaily,
-      pausedAutoArchiveDate: state.config.pausedAutoArchiveDate || '',
-      extraNames: state.extraNames,
-    });
-    if (sig === lastPrivateConfigSigRef.current) return;
-
-    const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
-      lastPrivateConfigSigRef.current = sig;
-      void syncAdminPrivateConfigCloud(
-        cloudSession.ownerUid,
-        latestStateRef.current,
-        cloudSession.agencyId
-      ).catch(() => {});
-    }, 600);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    cloudSession,
-    cloudAgency,
-    adminVaultHydrated,
-    isAdminRestoredView,
-    state.config.whatsappNumber,
-    state.config.autoArchiveDaily,
-    state.config.pausedAutoArchiveDate,
-    state.extraNames,
-  ]);
-
-  // Admin -> Cloud Vault Sync: Complete 1PM, 6PM & 8PM Ledger Backup (Chunked, Incremental, 30,000+ rows safe)
-  // Backs up EVERY row including MY CHOICE, manual/pasted entries, and unassigned rows.
-  useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !authUser ||
-      !cloudAgency ||
-      !adminVaultHydrated ||
-      isAdminRestoredView
-    ) {
-      return;
-    }
-    const adminUid = authUser.uid;
-    const ownerUid = cloudSession.ownerUid;
-    const agencyId = cloudSession.agencyId;
-    const adminUids = cloudAgency.adminUids;
-    const totalRows =
-      (state.entries['1PM']?.length || 0) +
-      (state.entries['6PM']?.length || 0) +
-      (state.entries['8PM']?.length || 0);
-    const debounceMs = totalRows > 3000 ? 1400 : 750;
-
-    const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
-      const curr = latestStateRef.current;
-      const revMs = Math.max(Date.now(), lastSavedAtRef.current);
-      void syncAdminLedgerChunksCloud(
-        adminUid,
-        ownerUid,
-        adminUids,
-        curr.date,
-        curr.entries,
-        revMs,
-        adminChunkSigsRef.current,
-        adminChunkIdsRef.current,
-        agencyId
-      ).catch(() => {});
-    }, debounceMs);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    cloudSession,
-    authUser,
-    cloudAgency,
-    adminVaultHydrated,
-    isAdminRestoredView,
-    state.entries,
-    state.date,
-  ]);
-
-  // Admin -> Cloud Vault Sync: All Archive History & Recycle Bin Snapshots
-  useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !cloudAgency ||
-      !adminVaultHydrated ||
-      isAdminRestoredView
-    ) {
-      return;
-    }
-    const ownerUid = cloudSession.ownerUid;
-    const agencyId = cloudSession.agencyId;
-    const adminUids = cloudAgency.adminUids;
-
-    const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
-      const curr = latestStateRef.current;
-      void syncAdminArchivesCloud(
-        ownerUid,
-        adminUids,
-        curr.history,
-        curr.recycleBin || [],
-        adminArchiveSigsRef.current,
-        adminArchiveDocIdsRef.current,
-        agencyId
-      ).catch(() => {});
-    }, 550);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    cloudSession,
-    cloudAgency,
-    adminVaultHydrated,
-    isAdminRestoredView,
-    state.history,
-    state.recycleBin,
-  ]);
-
   // Admin -> Cloud Sync: Sellers (Name, Rate, Due, Joma, Mobile) & Easy Login ID/Password creation
   const syncAllSellersToCloud = useCallback(async () => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !authUser ||
-      !cloudAgencyRef.current ||
-      isAdminRestoredViewRef.current
-    ) {
-      return;
-    }
+    if (cloudSession.kind !== 'admin' || !authUser || !cloudAgencyRef.current) return;
     setCloudBusy(true);
     setCloudError('');
     try {
@@ -2443,68 +1543,21 @@ export default function App() {
     }
   }, [cloudSession, authUser, extractSellerRowsFromEntries]);
 
-  // Cloud -> Local Hydration: restore direct sellers already saved in Firestore (e.g. after app delete / fresh phone)
+  // Cloud -> Local Hydration: restore any direct sellers already saved in Firestore (e.g. on a fresh browser/phone)
   useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !cloudHydrated ||
-      !adminVaultHydrated ||
-      cloudParties.length === 0
-    ) {
-      return;
-    }
-
-    const isFreshBoot = wasFreshLocalBootRef.current;
+    if (cloudSession.kind !== 'admin' || !cloudHydrated || cloudParties.length === 0) return;
 
     setState((prev) => {
-      const directParties = cloudParties.filter((p) => p.role !== 'admin' && !p.parentMasterId);
-      if (directParties.length === 0) return prev;
-
-      const privByPartyId = new Map<string, CloudPartyPrivateDoc>();
-      for (const pr of cloudPrivates) {
-        privByPartyId.set(pr.partyId, pr);
-      }
-
-      let changed = false;
-      const nextSellers: Seller[] = prev.sellers.map((s) => {
-        if (!isFreshBoot) return s;
-        const up = s.name.trim().toUpperCase();
-        const match =
-          directParties.find((p) => p.partyId === s.id) ||
-          directParties.find((p) => p.name.trim().toUpperCase() === up);
-        if (!match) return s;
-        const priv = privByPartyId.get(match.partyId);
-        const nextRate = Number.isFinite(match.rate) ? match.rate : s.rate;
-        const nextDue = Number.isFinite(match.due) ? match.due : s.due;
-        const nextJoma = Number.isFinite(match.joma) ? match.joma : s.joma;
-        const nextMobile = priv?.mobile ?? s.mobile;
-        if (
-          nextRate === s.rate &&
-          nextDue === s.due &&
-          nextJoma === s.joma &&
-          nextMobile === s.mobile
-        ) {
-          return s;
-        }
-        changed = true;
-        return {
-          ...s,
-          rate: nextRate,
-          due: nextDue,
-          joma: nextJoma,
-          mobile: nextMobile,
-        };
-      });
-
-      const existingIds = new Set(nextSellers.map((s) => s.id));
-      const existingNames = new Set(nextSellers.map((s) => s.name.trim().toUpperCase()));
+      const existingIds = new Set(prev.sellers.map((s) => s.id));
+      const existingNames = new Set(prev.sellers.map((s) => s.name.trim().toUpperCase()));
       const restoredFromCloud: Seller[] = [];
 
-      for (const party of directParties) {
+      for (const party of cloudParties) {
+        if (party.role === 'admin' || party.parentMasterId) continue;
         const upperName = party.name.trim().toUpperCase();
         if (!upperName) continue;
         if (existingIds.has(party.partyId) || existingNames.has(upperName)) continue;
-        const priv = privByPartyId.get(party.partyId);
+        const priv = cloudPrivates.find((pr) => pr.partyId === party.partyId);
         restoredFromCloud.push({
           id: party.partyId,
           name: upperName,
@@ -2515,117 +1568,44 @@ export default function App() {
         });
       }
 
-      if (isFreshBoot) {
-        wasFreshLocalBootRef.current = false;
-      }
-
-      if (!changed && restoredFromCloud.length === 0) return prev;
+      if (restoredFromCloud.length === 0) return prev;
       return {
         ...prev,
-        sellers: [...nextSellers, ...restoredFromCloud],
+        sellers: [...prev.sellers, ...restoredFromCloud],
       };
     });
-  }, [cloudSession, cloudHydrated, adminVaultHydrated, cloudParties, cloudPrivates, setState]);
+  }, [cloudSession, cloudHydrated, cloudParties, cloudPrivates, setState]);
 
   useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !authUser ||
-      !cloudAgency ||
-      !cloudHydrated ||
-      !adminVaultHydrated ||
-      isAdminRestoredView
-    ) {
-      return;
-    }
+    if (cloudSession.kind !== 'admin' || !authUser || !cloudAgency || !cloudHydrated) return;
     const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
       void syncAllSellersToCloud();
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [
-    cloudSession,
-    authUser,
-    cloudAgency,
-    cloudHydrated,
-    adminVaultHydrated,
-    isAdminRestoredView,
-    state.sellers,
-    syncAllSellersToCloud,
-  ]);
+  }, [cloudSession, authUser, cloudAgency, cloudHydrated, state.sellers, syncAllSellersToCloud]);
 
   // Admin -> Cloud Sync: Push Admin's edits for a seller's 1PM/6PM/8PM rows to that seller's sheet
-  // Optimized to a single O(N) pass across all 30,000+ rows instead of scanning per seller.
-  // Strictly gated on adminVaultHydrated and paused while Admin is viewing a locally restored Archive date.
   useEffect(() => {
     if (
       cloudSession.kind !== 'admin' ||
       !authUser ||
       !cloudHydrated ||
-      !adminVaultHydrated ||
-      cloudParties.length === 0 ||
-      isAdminRestoredView
+      cloudParties.length === 0
     ) {
       return;
     }
     const adminUid = authUser.uid;
-    const totalRows =
-      (state.entries['1PM']?.length || 0) +
-      (state.entries['6PM']?.length || 0) +
-      (state.entries['8PM']?.length || 0);
-    const debounceMs = totalRows > 3000 ? 1100 : 450;
-
     const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current) return;
       const currState = latestStateRef.current;
       const existingSheetIds = new Set(cloudSheetsRef.current.map((s) => s.partyId));
-      const directParties = cloudPartiesRef.current.filter((p) => !p.parentMasterId);
-      if (directParties.length === 0) return;
 
-      // Single O(N) grouping pass per session by resolved seller name
-      const partyByUpperName = new Map<string, CloudPartyDoc>();
-      for (const party of directParties) {
-        const up = party.name.trim().toUpperCase();
-        if (up) partyByUpperName.set(up, party);
-      }
-
-      const grouped: Record<
-        string,
-        { '1PM': TicketEntryRow[]; '6PM': TicketEntryRow[]; '8PM': TicketEntryRow[] }
-      > = {};
-      for (const party of directParties) {
-        grouped[party.partyId] = { '1PM': [], '6PM': [], '8PM': [] };
-      }
-
-      for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-        const rows = currState.entries[sid] || [];
-        let lastValidName = '';
-        for (let i = 0; i < rows.length; i++) {
-          const row = rows[i];
-          const currName = row.name.trim();
-          if (currName !== '') {
-            lastValidName = currName;
-          }
-          if (isRowBlank(row)) continue;
-          if (row.id.startsWith('sub::')) continue;
-          const resolvedName = currName !== '' ? currName : lastValidName;
-          if (!resolvedName) continue;
-          const party = partyByUpperName.get(resolvedName.toUpperCase());
-          if (!party) continue;
-
-          const sellerPrefix = `seller::${party.partyId}::`;
-          let cloudRowId = row.id;
-          if (row.id.startsWith(sellerPrefix)) {
-            cloudRowId = row.id.slice(sellerPrefix.length) || row.id;
-          } else {
-            cloudRowId = row.id.startsWith('admin::') ? row.id : `admin::${row.id}`;
-          }
-          grouped[party.partyId][sid].push({ ...row, id: cloudRowId, name: party.name });
-        }
-      }
-
-      for (const party of directParties) {
-        const sliced = grouped[party.partyId];
+      for (const party of cloudPartiesRef.current) {
+        if (party.parentMasterId) continue;
+        const sliced = extractSellerRowsFromEntries(
+          currState.entries,
+          party.name,
+          party.partyId
+        );
         const clean1 = sanitizeSheetEntriesForCloud(sliced['1PM'], party.name);
         const clean6 = sanitizeSheetEntriesForCloud(sliced['6PM'], party.name);
         const clean8 = sanitizeSheetEntriesForCloud(sliced['8PM'], party.name);
@@ -2644,18 +1624,17 @@ export default function App() {
           ).catch(() => {});
         }
       }
-    }, debounceMs);
+    }, 450);
 
     return () => window.clearTimeout(timer);
   }, [
     cloudSession,
     authUser,
     cloudHydrated,
-    adminVaultHydrated,
     cloudParties,
-    isAdminRestoredView,
     state.entries,
     state.date,
+    extractSellerRowsFromEntries,
   ]);
 
   // Admin Handoff & Multi-Level Lineage Backfill: keep parentMasterUid, ancestorMasterIds,
@@ -2736,8 +1715,6 @@ export default function App() {
       }
       const agencyDoc = await bootstrapAdminAgency(user.uid, latestStateRef.current);
       setCloudAgency(agencyDoc);
-      writeDevicePortalMode('admin');
-      setDevicePortalMode('admin');
       setCloudSession({
         kind: 'admin',
         agencyId: agencyDoc.agencyId,
@@ -2749,8 +1726,6 @@ export default function App() {
         agencyId: agencyDoc.agencyId,
         ownerUid: agencyDoc.ownerUid,
       });
-      setSellerLoginMode(false);
-      clearLoginQueryParams();
       AppSounds.success();
       showToast('Admin Cloud Sync Activated — Auto-Login Saved!');
     } catch (err) {
@@ -2761,69 +1736,20 @@ export default function App() {
   };
 
   const handleCloudSignOut = async () => {
-    const wasSellerSession = cloudSession.kind === 'seller' || devicePortalMode === 'seller';
     setCloudBusy(true);
     try {
       clearCachedCloudSession();
-      updateAdminRestoredMode(null);
       await signOut(auth);
       setCloudSession({ kind: 'none' });
       setCloudAgency(null);
       setCloudParties([]);
       setCloudPrivates([]);
       setCloudSheets([]);
-      setAdminVaultHydrated(false);
-      wasFreshLocalBootRef.current = false;
-      adminChunkSigsRef.current = {};
-      adminChunkIdsRef.current = new Set();
-      adminArchiveSigsRef.current = {};
-      adminArchiveDocIdsRef.current = new Set();
-      lastPrivateConfigSigRef.current = '';
       setAdminPreviewParty(null);
       clearLoginQueryParams();
-      if (wasSellerSession) {
-        writeDevicePortalMode('seller');
-        setDevicePortalMode('seller');
-        setSellerLoginMode(true);
-      } else {
-        setSellerLoginMode(false);
-      }
+      setSellerLoginMode(false);
     } finally {
       setCloudBusy(false);
-    }
-  };
-
-  const handleSavePublicAnnouncement = async (input: {
-    active: boolean;
-    kind: CloudAnnouncementKind;
-    title: string;
-    message: string;
-  }) => {
-    if (cloudSession.kind !== 'admin' || !authUser) {
-      setAnnouncementError('Pehle Admin Google Sign-In karein.');
-      return;
-    }
-    setAnnouncementBusy(true);
-    setAnnouncementError('');
-    try {
-      const saved = await savePublicAnnouncementCloud(
-        authUser.uid,
-        cloudSession.agencyId,
-        cloudSession.ownerUid,
-        input
-      );
-      setPublicAnnouncement(saved);
-      AppSounds.success();
-      if (saved.active) {
-        showToast('Advertisement / Message sabhi App, Link, Master & Sub-Master par LIVE ho gaya!');
-        setAnnouncementModalOpen(false);
-      } else {
-        showToast('Advertisement hide / clear kar diya gaya.');
-      }
-    } catch (err) {
-      setAnnouncementError(formatFirebaseAuthError(err));
-    } finally {
-      setAnnouncementBusy(false);
     }
   };
 
@@ -2835,8 +1761,6 @@ export default function App() {
       const anonUser = await ensureAnonymousSellerAuth();
       const claimed = await loginSellerWithIdPassword(anonUser.uid, loginId, password);
       clearLoginQueryParams();
-      writeDevicePortalMode('seller');
-      setDevicePortalMode('seller');
       setCloudSession({
         kind: 'seller',
         agencyId: claimed.agencyId,
@@ -3091,22 +2015,15 @@ export default function App() {
       } else if (!lsEnv && lastSavedAtRef.current > 0) {
         writeLocalStorageSafe(latestStateRef.current, lastSavedAtRef.current);
       }
-
-      if (!cancelled) {
-        setLocalIdbReady(true);
-      }
     };
 
-    void syncFromNewestStore().catch(() => {
-      if (!cancelled) {
-        setLocalIdbReady(true);
-      }
-    });
+    void syncFromNewestStore();
 
     const flushCurrent = () => {
       const ts = Math.max(Date.now(), lastSavedAtRef.current);
       lastSavedAtRef.current = ts;
-      flushPersistNow();
+      writeLocalStorageSafe(latestStateRef.current, ts);
+      void writeIndexedDbEnvelope(latestStateRef.current, ts);
       if (latestStateRef.current.sellers.length > 0) {
         writePermanentSellers(latestStateRef.current.sellers, ts);
       }
@@ -3140,40 +2057,23 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      flushCurrent();
       window.removeEventListener('pagehide', flushCurrent);
       window.removeEventListener('beforeunload', flushCurrent);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pageshow', handlePageShow);
       window.removeEventListener('storage', handleStorage);
     };
-  }, [flushPersistNow]);
+  }, []);
 
-  // Core Lottery Calculations — split per session so editing 1PM NEVER recomputes 6PM or 8PM!
-  const comp1PM = useMemo(
-    () => processSessionRows(state.entries['1PM'], '1PM', state.config),
-    [state.entries['1PM'], state.config]
-  );
-  const comp6PM = useMemo(
-    () => processSessionRows(state.entries['6PM'], '6PM', state.config),
-    [state.entries['6PM'], state.config]
-  );
-  const comp8PM = useMemo(
-    () => processSessionRows(state.entries['8PM'], '8PM', state.config),
-    [state.entries['8PM'], state.config]
-  );
-
+  // Core Lottery Calculations
   const sessionComputations = useMemo<Record<SessionId, SessionComputation>>(
     () => ({
-      '1PM': comp1PM,
-      '6PM': comp6PM,
-      '8PM': comp8PM,
+      '1PM': processSessionRows(state.entries['1PM'], '1PM', state.config),
+      '6PM': processSessionRows(state.entries['6PM'], '6PM', state.config),
+      '8PM': processSessionRows(state.entries['8PM'], '8PM', state.config),
     }),
-    [comp1PM, comp6PM, comp8PM]
+    [state.entries, state.config]
   );
-
-  // Defer secondary bill & prize recalculations during rapid 30,000-row sheet entry so typing stays 60fps
-  const deferredSessionComputations = useDeferredValue(sessionComputations);
 
   const parsedWinning = useMemo(
     () => parseWinningNumbers(state.winningRaw),
@@ -3181,8 +2081,8 @@ export default function App() {
   );
 
   const { prizeList, limitPrizeGroups, limitGrandTotal } = useMemo(
-    () => generatePrizeAndLimitData(deferredSessionComputations, parsedWinning, state.config),
-    [deferredSessionComputations, parsedWinning, state.config]
+    () => generatePrizeAndLimitData(sessionComputations, parsedWinning, state.config),
+    [sessionComputations, parsedWinning, state.config]
   );
 
   const visibleSellersForBill = useMemo(
@@ -3191,14 +2091,8 @@ export default function App() {
   );
 
   const sellerBills = useMemo(
-    () =>
-      computeSellerBills(
-        visibleSellersForBill,
-        deferredSessionComputations,
-        prizeList,
-        state.date
-      ),
-    [visibleSellersForBill, deferredSessionComputations, prizeList, state.date]
+    () => computeSellerBills(visibleSellersForBill, sessionComputations, prizeList, state.date),
+    [visibleSellersForBill, sessionComputations, prizeList, state.date]
   );
 
   const availableNames = useMemo(() => {
@@ -3215,11 +2109,6 @@ export default function App() {
   const limitPrizeCount = useMemo(
     () => limitPrizeGroups.reduce((acc, g) => acc + g.rows.length, 0),
     [limitPrizeGroups]
-  );
-
-  const prizeTotalAmount = useMemo(
-    () => prizeList.reduce((sum, p) => sum + p.total, 0),
-    [prizeList]
   );
 
   const commitSessionRows = useCallback(
@@ -3304,714 +2193,14 @@ export default function App() {
       };
     });
 
-  const applyCarryForwardDelta = useCallback(
-    (
-      currentDue: number,
-      currentJoma: number,
-      oldPrevTotal: number,
-      newPrevTotal: number
-    ): { due: number; joma: number } => {
-      const oldCarriedDue = oldPrevTotal > 0 ? round2(oldPrevTotal) : 0;
-      const oldCarriedJoma = oldPrevTotal < 0 ? round2(Math.abs(oldPrevTotal)) : 0;
-      const newCarriedDue = newPrevTotal > 0 ? round2(newPrevTotal) : 0;
-      const newCarriedJoma = newPrevTotal < 0 ? round2(Math.abs(newPrevTotal)) : 0;
-
-      const deltaDue = round2(newCarriedDue - oldCarriedDue);
-      const deltaJoma = round2(newCarriedJoma - oldCarriedJoma);
-
-      let nextDue = round2((Number(currentDue) || 0) + deltaDue);
-      let nextJoma = round2((Number(currentJoma) || 0) + deltaJoma);
-
-      if (nextDue < 0) {
-        nextJoma = round2(nextJoma + Math.abs(nextDue));
-        nextDue = 0;
-      }
-      if (nextJoma < 0) {
-        nextDue = round2(nextDue + Math.abs(nextJoma));
-        nextJoma = 0;
-      }
-      return { due: nextDue, joma: nextJoma };
-    },
-    []
-  );
-
-  const buildExactSnapshotFromState = useCallback(
-    (
-      curState: AppState,
-      trigger: DaySnapshot['trigger'],
-      preserveId?: string,
-      preserveSavedAt?: string
-    ): DaySnapshot => {
-      const comps: Record<SessionId, SessionComputation> = {
-        '1PM': processSessionRows(curState.entries['1PM'] || [], '1PM', curState.config),
-        '6PM': processSessionRows(curState.entries['6PM'] || [], '6PM', curState.config),
-        '8PM': processSessionRows(curState.entries['8PM'] || [], '8PM', curState.config),
-      };
-      const winMap = parseWinningNumbers(curState.winningRaw);
-      const pData = generatePrizeAndLimitData(comps, winMap, curState.config);
-      const bills = computeSellerBills(curState.sellers, comps, pData.prizeList, curState.date);
-      const totalSold = round2(bills.reduce((a, b) => a + b.sold, 0));
-      const totalBill = round2(bills.reduce((a, b) => a + b.bill, 0));
-      const totalPrize = round2(bills.reduce((a, b) => a + b.prizeTotal, 0));
-      const totalNetPayable = round2(bills.reduce((a, b) => a + b.total, 0));
-
-      return {
-        id: preserveId || `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        date: curState.date,
-        savedAt: preserveSavedAt || new Date().toISOString(),
-        trigger,
-        totalSold,
-        totalBill,
-        totalPrize,
-        totalNetPayable,
-        limitGrandTotal: pData.limitGrandTotal,
-        overLimitTotals: {
-          '1PM': comps['1PM'].overLimitTotal,
-          '6PM': comps['6PM'].overLimitTotal,
-          '8PM': comps['8PM'].overLimitTotal,
-        },
-        sellerSummaries: bills.map((b) => ({
-          name: b.name,
-          mor: b.mor,
-          day: b.day,
-          eve: b.eve,
-          sold: b.sold,
-          bill: b.bill,
-          prizeTotal: b.prizeTotal,
-          fresh: b.fresh,
-          joma: b.joma,
-          due: b.due,
-          total: b.total,
-        })),
-        prizeList: pData.prizeList,
-        limitPrizeGroups: pData.limitPrizeGroups,
-        sellers: curState.sellers,
-        entries: curState.entries,
-        winningRaw: curState.winningRaw,
-      };
-    },
-    []
-  );
-
-  const serializeRestoredWorkingSig = useCallback((curState: AppState): string => {
-    const sellersSig = curState.sellers
-      .map((s) => `${s.id}|${s.name.trim().toUpperCase()}|${s.rate}|${s.due}|${s.joma}`)
-      .join(';');
-    const winSig = `${curState.winningRaw['1PM'] || ''}|${curState.winningRaw['6PM'] || ''}|${curState.winningRaw['8PM'] || ''}`;
-    const entriesSig = (['1PM', '6PM', '8PM'] as SessionId[])
-      .map((sid) =>
-        (curState.entries[sid] || [])
-          .filter((r) => !isRowBlank(r))
-          .map((r) => `${r.id}:${r.name}:${r.item}:${r.start}:${r.end}:${r.qtyOverride}:${r.rangeOverride}`)
-          .join(',')
-      )
-      .join('||');
-    return `${curState.date}##${sellersSig}##${winSig}##${entriesSig}`;
-  }, []);
-
-  const cascadeRestoredEdit = useCallback(
-    (
-      editedRestoredSnap: DaySnapshot,
-      mode: AdminRestoredArchiveMode,
-      currentHistory: DaySnapshot[]
-    ): {
-      nextHistory: DaySnapshot[];
-      updatedLiveSellers: Seller[];
-      cascadedSnapshots: DaySnapshot[];
-    } => {
-      const nextHistory = [...currentHistory];
-      const existingRestoredIdx = nextHistory.findIndex(
-        (h) =>
-          (mode.restoredSnapId && h.id === mode.restoredSnapId) ||
-          h.date === editedRestoredSnap.date
-      );
-      const existingBaselineSnap =
-        existingRestoredIdx !== -1 ? nextHistory[existingRestoredIdx] : undefined;
-
-      // Baseline pre-edit totals on restoredDate
-      const baselinePrevTotals: Record<string, number> = {};
-      if (mode.restoredOriginalTotals) {
-        Object.assign(baselinePrevTotals, mode.restoredOriginalTotals);
-      } else if (existingBaselineSnap) {
-        for (const sum of existingBaselineSnap.sellerSummaries || []) {
-          const k = (sum.name || '').trim().toUpperCase();
-          if (k) baselinePrevTotals[k] = round2(sum.total);
-        }
-      }
-
-      // New edited totals on restoredDate
-      let prevOldTotals: Record<string, number> = { ...baselinePrevTotals };
-      let prevNewTotals: Record<string, number> = {};
-      for (const sum of editedRestoredSnap.sellerSummaries || []) {
-        const k = (sum.name || '').trim().toUpperCase();
-        if (k) prevNewTotals[k] = round2(sum.total);
-      }
-
-      if (existingRestoredIdx !== -1) {
-        nextHistory[existingRestoredIdx] = editedRestoredSnap;
-      } else {
-        nextHistory.unshift(editedRestoredSnap);
-      }
-
-      const cascadedSnapshots: DaySnapshot[] = [editedRestoredSnap];
-
-      // Cascade through any intermediate archived dates strictly between restoredDate and liveDate
-      const intermediateOriginals = (
-        mode.intermediateOriginalHistory && mode.intermediateOriginalHistory.length > 0
-          ? mode.intermediateOriginalHistory
-          : currentHistory.filter(
-              (h) => h.date > editedRestoredSnap.date && h.date < mode.liveDate
-            )
-      )
-        .slice()
-        .sort((a, b) => a.date.localeCompare(b.date));
-
-      for (const origInter of intermediateOriginals) {
-        const nextOldTotals: Record<string, number> = {};
-        const nextNewTotals: Record<string, number> = {};
-
-        const updatedInterSellers = (origInter.sellers || []).map((s) => {
-          const k = (s.name || '').trim().toUpperCase();
-          const oldPrev = prevOldTotals[k] ?? 0;
-          const newPrev = prevNewTotals[k] ?? 0;
-          if (Math.abs(newPrev - oldPrev) < 0.001) return s;
-          const { due, joma } = applyCarryForwardDelta(s.due, s.joma, oldPrev, newPrev);
-          return { ...s, due, joma };
-        });
-
-        const updatedInterSummaries = (origInter.sellerSummaries || []).map((sum) => {
-          const k = (sum.name || '').trim().toUpperCase();
-          const oldTotal = round2(sum.total);
-          if (k) nextOldTotals[k] = oldTotal;
-          const oldPrev = prevOldTotals[k] ?? 0;
-          const newPrev = prevNewTotals[k] ?? 0;
-          if (Math.abs(newPrev - oldPrev) < 0.001) {
-            if (k) nextNewTotals[k] = oldTotal;
-            return sum;
-          }
-          const { due, joma } = applyCarryForwardDelta(sum.due, sum.joma, oldPrev, newPrev);
-          const newTotal = round2(sum.fresh + due - joma);
-          if (k) nextNewTotals[k] = newTotal;
-          return { ...sum, due, joma, total: newTotal };
-        });
-
-        const updatedInterSnap: DaySnapshot = {
-          ...origInter,
-          sellers: updatedInterSellers,
-          sellerSummaries: updatedInterSummaries,
-          totalNetPayable: round2(updatedInterSummaries.reduce((a, b) => a + b.total, 0)),
-        };
-
-        const idx = nextHistory.findIndex(
-          (h) => h.id === origInter.id || h.date === origInter.date
-        );
-        if (idx !== -1) {
-          nextHistory[idx] = updatedInterSnap;
-        }
-        cascadedSnapshots.push(updatedInterSnap);
-        prevOldTotals = nextOldTotals;
-        prevNewTotals = nextNewTotals;
-      }
-
-      // Finally cascade carried-forward Due/Joma into Current Day (liveDate) sellers without touching live entries
-      const baseLiveSellers = mode.liveOriginalSellers || mode.liveBackup.sellers || [];
-      const updatedLiveSellers = baseLiveSellers.map((s) => {
-        const k = (s.name || '').trim().toUpperCase();
-        const oldPrev = prevOldTotals[k] ?? 0;
-        const newPrev = prevNewTotals[k] ?? 0;
-        if (Math.abs(newPrev - oldPrev) < 0.001) return s;
-        const { due, joma } = applyCarryForwardDelta(s.due, s.joma, oldPrev, newPrev);
-        return { ...s, due, joma };
-      });
-
-      return {
-        nextHistory: preserveSavedSnapshots(nextHistory).slice(0, 180),
-        updatedLiveSellers,
-        cascadedSnapshots,
-      };
-    },
-    [applyCarryForwardDelta]
-  );
-
-  const pushRestoredCascadeToCloud = useCallback(
-    async (
-      nextHistory: DaySnapshot[],
-      recycleBin: DaySnapshot[],
-      cascadedSnapshots: DaySnapshot[],
-      updatedLiveSellers: Seller[],
-      configSnapshot: AgencyConfig
-    ) => {
-      if (cloudSession.kind !== 'admin' || !authUser || !cloudAgencyRef.current) return;
-      const agencyId = cloudSession.agencyId;
-      const ownerUid = cloudAgencyRef.current.ownerUid || cloudSession.ownerUid;
-      const actorUid = authUser.uid;
-      const adminUids = cloudAgencyRef.current.adminUids;
-
-      setRestoredSyncState('syncing');
-      const runSync = async () => {
-        let hadFailure = false;
-        let syncedPartyDocs = 0;
-
-        // 1. Save Admin's updated archive history to Admin Cloud Vault
-        try {
-          await syncAdminArchivesCloud(
-            ownerUid,
-            adminUids,
-            nextHistory,
-            recycleBin,
-            adminArchiveSigsRef.current,
-            adminArchiveDocIdsRef.current,
-            agencyId
-          );
-        } catch (err) {
-          hadFailure = true;
-          console.error('[KK Agency] Restored Admin archive vault sync failed:', err);
-        }
-
-        // 2. Propagate every edited/cascaded archive date to ALL Master, Sub-Master & Seller partyArchives
-        try {
-          syncedPartyDocs = await syncAdminArchivesBatchToPartiesCloud(
-            agencyId,
-            ownerUid,
-            actorUid,
-            cascadedSnapshots,
-            cloudPartiesRef.current,
-            configSnapshot,
-            true
-          );
-        } catch (err) {
-          hadFailure = true;
-          console.error('[KK Agency] Restored partyArchives sync failed:', err);
-        }
-
-        // 3. Update affected top-level Masters / Sellers' LIVE Current Day Due & Joma in Firestore
-        //    (strictly due & joma only — current day date, sheets & winning numbers remain untouched!)
-        const liveByUpper = new Map<string, Seller>();
-        for (const s of updatedLiveSellers) {
-          const k = (s.name || '').trim().toUpperCase();
-          if (k) liveByUpper.set(k, s);
-        }
-        const directParties = cloudPartiesRef.current.filter(
-          (p) => p.active && !p.parentMasterId && p.role !== 'admin'
-        );
-        for (const party of directParties) {
-          const k = (party.name || '').trim().toUpperCase();
-          const target = liveByUpper.get(k);
-          if (!target) continue;
-          const nextDue = round2(target.due || 0);
-          const nextJoma = round2(target.joma || 0);
-          if (
-            Math.abs((party.due || 0) - nextDue) < 0.001 &&
-            Math.abs((party.joma || 0) - nextJoma) < 0.001
-          ) {
-            continue;
-          }
-          try {
-            await updatePartyBalancesAdminCloud(agencyId, party.partyId, nextDue, nextJoma);
-          } catch (err) {
-            hadFailure = true;
-            console.error('[KK Agency] Live Due/Joma carry-forward failed for', party.name, err);
-          }
-        }
-
-        if (hadFailure) {
-          setRestoredSyncState('error');
-          showToast('Cloud sync issue — please tap Sync Now to retry', 4200);
-        } else {
-          setRestoredSyncState('synced');
-          if (syncedPartyDocs > 0) {
-            reconciledHistorySigRef.current = '';
-          }
-        }
-      };
-
-      const promise = runSync();
-      pendingRestoredCloudPromiseRef.current = promise;
-      try {
-        await promise;
-      } finally {
-        if (pendingRestoredCloudPromiseRef.current === promise) {
-          pendingRestoredCloudPromiseRef.current = null;
-        }
-      }
-    },
-    [cloudSession, authUser, showToast]
-  );
-
-  const flushRestoredArchiveEditNow = useCallback(async () => {
-    const mode = adminRestoredModeRef.current;
-    const cur = latestStateRef.current;
-    if (!mode || cur.date !== mode.restoredDate) {
-      if (pendingRestoredCloudPromiseRef.current) {
-        await pendingRestoredCloudPromiseRef.current;
-      }
-      return;
-    }
-
-    lastRestoredEditSigRef.current = serializeRestoredWorkingSig(cur);
-    const existingSnap = cur.history.find(
-      (h) => (mode.restoredSnapId && h.id === mode.restoredSnapId) || h.date === mode.restoredDate
-    );
-    const editedSnap = buildExactSnapshotFromState(
-      cur,
-      mode.restoredTrigger || existingSnap?.trigger || 'manual',
-      mode.restoredSnapId || existingSnap?.id,
-      existingSnap?.savedAt
-    );
-
-    const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
-      editedSnap,
-      mode,
-      cur.history
-    );
-
-    updateAdminRestoredMode({
-      ...mode,
-      restoredSnapId: editedSnap.id,
-      liveBackup: {
-        ...mode.liveBackup,
-        sellers: updatedLiveSellers,
-      },
-    });
-
-    setState((prev) => ({
-      ...prev,
-      history: nextHistory,
-    }));
-
-    await pushRestoredCascadeToCloud(
-      nextHistory,
-      cur.recycleBin || [],
-      cascadedSnapshots,
-      updatedLiveSellers,
-      cur.config
-    );
-  }, [
-    serializeRestoredWorkingSig,
-    buildExactSnapshotFromState,
-    cascadeRestoredEdit,
-    updateAdminRestoredMode,
-    setState,
-    pushRestoredCascadeToCloud,
-  ]);
-
-  const handleSyncSingleArchiveToParties = useCallback(
-    async (snap: DaySnapshot) => {
-      if (cloudSession.kind !== 'admin' || !authUser || !cloudAgencyRef.current) {
-        showToast('Cloud Admin sign-in required to sync Master/Sub-Master archives');
-        return;
-      }
-      const agencyId = cloudSession.agencyId;
-      const ownerUid = cloudAgencyRef.current.ownerUid || cloudSession.ownerUid;
-      try {
-        let partiesToSync = cloudPartiesRef.current;
-        if (partiesToSync.length === 0) {
-          const fetched = await fetchAdminPartiesAndSheetsOnce(ownerUid, agencyId);
-          partiesToSync = fetched.parties;
-        }
-        const updatedCount = await syncAdminRestoredArchiveToPartiesCloud(
-          agencyId,
-          ownerUid,
-          snap.date,
-          snap,
-          partiesToSync,
-          latestStateRef.current.config,
-          authUser.uid
-        );
-        AppSounds.success();
-        if (updatedCount > 0) {
-          showToast(
-            `${formatDateDDMM(snap.date)} synced to ${updatedCount} Master / Seller archive${updatedCount === 1 ? '' : 's'} ✓`
-          );
-        } else {
-          showToast(`${formatDateDDMM(snap.date)} already up to date on all Master / Seller IDs ✓`);
-        }
-      } catch (err) {
-        console.error('[KK Agency] Manual archive sync failed:', err);
-        showToast('Sync failed — check connection and try again', 4000);
-      }
-    },
-    [cloudSession, authUser, showToast]
-  );
-
-  // Automatic Background Reconciliation (Admin-only, 1 read pass, writes ONLY diffs or missing dates):
-  // Ensures every Admin Archive (both Close Day snapshots and restored edits) is automatically synced
-  // to every Master, Sub-Master & Seller's `partyArchives` without needing manual re-edits.
-  const cloudAgencyOwnerUid = cloudAgency?.ownerUid || '';
-  useEffect(() => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !authUser ||
-      !cloudAgencyOwnerUid ||
-      !cloudHydrated ||
-      !adminVaultHydrated ||
-      isAdminRestoredView ||
-      cloudParties.length === 0 ||
-      state.history.length === 0
-    ) {
-      return;
-    }
-
-    const recentUnique: DaySnapshot[] = [];
-    const seenDates = new Set<string>();
-    for (const h of state.history) {
-      if (!h?.date || seenDates.has(h.date)) continue;
-      seenDates.add(h.date);
-      recentUnique.push(h);
-      if (recentUnique.length >= 14) break;
-    }
-    if (recentUnique.length === 0) return;
-
-    const historySig = recentUnique
-      .map(
-        (h) =>
-          `${h.date}:${h.totalSold}:${h.totalBill}:${h.totalPrize}:${h.totalNetPayable}:${(h.sellerSummaries || []).map((s) => `${s.name}=${s.sold}/${s.due}/${s.joma}/${s.total}`).join(',')}`
-      )
-      .join('|');
-    const partySig = cloudParties
-      .filter((p) => p.active !== false && p.role !== 'admin')
-      .map((p) => `${p.partyId}:${p.name}:${p.role}:${p.parentMasterId}`)
-      .sort()
-      .join(',');
-    const fullSig = `${historySig}##${partySig}`;
-    if (fullSig === reconciledHistorySigRef.current) return;
-
-    const ownerUid = cloudAgencyOwnerUid || cloudSession.ownerUid;
-    const agencyId = cloudSession.agencyId;
-    const actorUid = authUser.uid;
-    const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current) return;
-      reconciledHistorySigRef.current = fullSig;
-      void syncAdminArchivesBatchToPartiesCloud(
-        agencyId,
-        ownerUid,
-        actorUid,
-        recentUnique,
-        cloudPartiesRef.current,
-        latestStateRef.current.config,
-        true
-      )
-        .then((syncedCount) => {
-          if (syncedCount > 0) {
-            showToast(`Master / Sub-Master archives synced (${syncedCount} updated) ✓`, 3500);
-          }
-        })
-        .catch((err) => {
-          // Allow retry on next state change if offline or failed
-          reconciledHistorySigRef.current = '';
-          console.error('[KK Agency] Background archive reconcile skipped:', err);
-        });
-    }, 350);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    cloudSession,
-    authUser,
-    cloudAgencyOwnerUid,
-    cloudHydrated,
-    adminVaultHydrated,
-    isAdminRestoredView,
-    cloudParties,
-    state.history,
-    showToast,
-  ]);
-
-  // Admin-only Restored Archive Auto-Sync:
-  // Whenever Admin edits Joma, Due, Rate, Entries, or Winning numbers on a restored date (e.g. 24/11),
-  // automatically update Admin Archive, every Master/Sub-Master/Seller's Archive for that date,
-  // AND cleanly cascade the carry-forward Due/Joma adjustment to Current Day (liveDate) without touching live entries!
-  useEffect(() => {
-    if (!adminRestoredMode || state.date !== adminRestoredMode.restoredDate) return;
-
-    const sig = serializeRestoredWorkingSig(state);
-    if (!lastRestoredEditSigRef.current) {
-      lastRestoredEditSigRef.current = sig;
-      return;
-    }
-    if (sig === lastRestoredEditSigRef.current) return;
-
-    const timer = window.setTimeout(() => {
-      const mode = adminRestoredModeRef.current;
-      const cur = latestStateRef.current;
-      if (!mode || cur.date !== mode.restoredDate) return;
-
-      const latestSig = serializeRestoredWorkingSig(cur);
-      if (latestSig === lastRestoredEditSigRef.current) return;
-      lastRestoredEditSigRef.current = latestSig;
-
-      const existingSnap = cur.history.find(
-        (h) => (mode.restoredSnapId && h.id === mode.restoredSnapId) || h.date === mode.restoredDate
-      );
-      const editedSnap = buildExactSnapshotFromState(
-        cur,
-        mode.restoredTrigger || existingSnap?.trigger || 'manual',
-        mode.restoredSnapId || existingSnap?.id,
-        existingSnap?.savedAt
-      );
-
-      const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
-        editedSnap,
-        mode,
-        cur.history
-      );
-
-      // Persist updated liveBackup.sellers in restored mode so reload/Back-to-Live has exact current-day Due/Joma
-      updateAdminRestoredMode({
-        ...mode,
-        restoredSnapId: editedSnap.id,
-        liveBackup: {
-          ...mode.liveBackup,
-          sellers: updatedLiveSellers,
-        },
-      });
-
-      setState((prev) => ({
-        ...prev,
-        history: nextHistory,
-      }));
-
-      void pushRestoredCascadeToCloud(
-        nextHistory,
-        cur.recycleBin || [],
-        cascadedSnapshots,
-        updatedLiveSellers,
-        cur.config
-      );
-    }, 300);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    adminRestoredMode,
-    state.date,
-    state.sellers,
-    state.entries,
-    state.winningRaw,
-    serializeRestoredWorkingSig,
-    buildExactSnapshotFromState,
-    cascadeRestoredEdit,
-    updateAdminRestoredMode,
-    pushRestoredCascadeToCloud,
-    setState,
-  ]);
-
-  const handleExitAdminRestoredMode = () => {
-    if (!adminRestoredMode) return;
-    AppSounds.tap();
-    const mode = adminRestoredModeRef.current || adminRestoredMode;
-    const { liveBackup, liveDate } = mode;
-    const cur = latestStateRef.current;
-    const existingSnap = cur.history.find(
-      (h) => (mode.restoredSnapId && h.id === mode.restoredSnapId) || h.date === mode.restoredDate
-    );
-    const editedRestoredSnap = buildExactSnapshotFromState(
-      cur,
-      mode.restoredTrigger || existingSnap?.trigger || 'manual',
-      mode.restoredSnapId || existingSnap?.id,
-      existingSnap?.savedAt
-    );
-    const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
-      editedRestoredSnap,
-      mode,
-      cur.history
-    );
-
-    // Clear restored flag FIRST so cloud live sync can resume cleanly on the live date
-    lastRestoredEditSigRef.current = '';
-    setRestoredSyncState('idle');
-    updateAdminRestoredMode(null);
-    const today = getTodayIsoDate();
-    skipAutoRolloverDateRef.current = liveDate < today ? liveDate : null;
-
-    // Reset sheet tracking refs so any Master/Sub-Master entries submitted while Admin
-    // was viewing an old archive merge back into Admin's Live ledger immediately.
-    lastAgencySigRef.current = '';
-    lastCloudSheetSigRef.current = {};
-    lastAdminPushSigRef.current = {};
-    subSheetMergedSigRef.current = {};
-    sheetsHydratedOnceRef.current = false;
-
-    setState((prev) => {
-      const preservedCurrentSellers = prev.sellers.map((s) => ({
-        ...s,
-        due: 0,
-        joma: 0,
-      }));
-      const mergedLiveSellers = mergeWithPermanentSellers(
-        updatedLiveSellers,
-        preservedCurrentSellers
-      );
-
-      return {
-        ...prev,
-        date: liveDate,
-        config: {
-          ...prev.config,
-          pausedAutoArchiveDate: liveDate < today ? liveDate : undefined,
-        },
-        sellers: mergedLiveSellers,
-        entries: {
-          '1PM': normalizeRowsKeepOneTrailing(liveBackup.entries['1PM'] || []),
-          '6PM': normalizeRowsKeepOneTrailing(liveBackup.entries['6PM'] || []),
-          '8PM': normalizeRowsKeepOneTrailing(liveBackup.entries['8PM'] || []),
-        },
-        winningRaw: liveBackup.winningRaw,
-        history: nextHistory,
-      };
-    });
-
-    // Always reconcile & sync the restored date (and any cascaded dates/live Due-Joma)
-    // to all Master/Sub-Master/Seller partyArchives (skips unchanged docs cleanly with 0 wasted writes).
-    void pushRestoredCascadeToCloud(
-      nextHistory,
-      cur.recycleBin || [],
-      cascadedSnapshots,
-      updatedLiveSellers,
-      cur.config
-    );
-
-    setRecentlyPastedIds({ '1PM': [], '6PM': [], '8PM': [] });
-    setSessionHistory({
-      '1PM': { undo: [], redo: [] },
-      '6PM': { undo: [], redo: [] },
-      '8PM': { undo: [], redo: [] },
-    });
-    showToast(
-      `Back to Live (${formatDateDDMM(liveDate)}) · Archive & Current Day Due/Joma synced`
-    );
-  };
-
   const performArchiveAndRollover = (
     trigger: DaySnapshot['trigger'] = 'manual',
     explicitNextDate?: string
   ) => {
-    // Never accidentally close day / overwrite Master & Sub-Master while Admin is viewing a restored old archive
-    if (adminRestoredMode) {
-      const liveDateLabel = formatDateDDMM(adminRestoredMode.liveDate);
-      handleExitAdminRestoredMode();
-      showToast(
-        `Pehle Live date (${liveDateLabel}) par wapas aa gaye — ab dubara Close Day / Archive dabayein.`,
-        5200
-      );
-      return;
-    }
-
-    const closedDate = state.date;
-    const closedEntries = state.entries;
-    const closedWinningRaw = {
-      '1PM': state.winningRaw['1PM'] || '',
-      '6PM': state.winningRaw['6PM'] || '',
-      '8PM': state.winningRaw['8PM'] || '',
-    };
-    const closedConfig = state.config;
-    const closedSellerBills = sellerBills;
-    const closedPrizeList = prizeList;
-    const closedParsedWinning = parsedWinning;
-
     const snapshot = buildCurrentSnapshot(trigger);
-    const nextDate = explicitNextDate || getNextIsoDate(closedDate);
+    const nextDate = explicitNextDate || getNextIsoDate(state.date);
 
     skipAutoRolloverDateRef.current = null;
-    prevGsheetCountsRef.current = { '1PM': 0, '6PM': 0, '8PM': 0 };
     setRecentlyPastedIds({ '1PM': [], '6PM': [], '8PM': [] });
     setSessionHistory({
       '1PM': { undo: [], redo: [] },
@@ -4020,22 +2209,6 @@ export default function App() {
     });
 
     const nextSellers = carryForwardSellerBalances();
-    const nextAgencyState: AppState = {
-      ...state,
-      date: nextDate,
-      config: {
-        ...state.config,
-        pausedAutoArchiveDate: undefined,
-      },
-      sellers: nextSellers,
-      entries: {
-        '1PM': createBlankRows(1),
-        '6PM': createBlankRows(1),
-        '8PM': createBlankRows(1),
-      },
-      winningRaw: { '1PM': '', '6PM': '', '8PM': '' },
-      history: preserveSavedSnapshots([snapshot, ...state.history]).slice(0, 180),
-    };
 
     setState((prev) => ({
       ...prev,
@@ -4054,564 +2227,92 @@ export default function App() {
       history: preserveSavedSnapshots([snapshot, ...prev.history]).slice(0, 180),
     }));
 
-    // Reset Google Sheet sync tracking for the fresh new date
-    lastGsheetSigRef.current = '';
-    prevGsheetCountsRef.current = { '1PM': 0, '6PM': 0, '8PM': 0 };
-    try {
-      window.localStorage.setItem(
-        'kk_agency_gsheet_prev_counts_v1',
-        JSON.stringify({ '1PM': 0, '6PM': 0, '8PM': 0 })
-      );
-    } catch {
-      // ignore storage error
-    }
-
-    const activeActorUid = authUser?.uid || auth.currentUser?.uid || '';
-    if (cloudSession.kind === 'admin' && activeActorUid) {
-      const adminUid = activeActorUid;
-      const ownerUid = cloudAgencyRef.current?.ownerUid || cloudSession.ownerUid;
-      const agencyId = cloudSession.agencyId;
-      const adminUids = cloudAgencyRef.current?.adminUids || [ownerUid];
-
-      // Immediately push nextDate + cleared winning numbers to /agencies/kk-main
-      // so every Master, Sub-Master & Sub-Seller rolls over cleanly right away.
-      lastAgencySigRef.current = JSON.stringify({
-        date: nextDate,
-        limitThreshold: closedConfig.limitThreshold,
-        sellerLimitThreshold: closedConfig.sellerLimitThreshold ?? 20,
-        excludedPrizeNames: closedConfig.excludedPrizeNames,
-        itemOptions: closedConfig.itemOptions,
-        winning1PM: '',
-        winning6PM: '',
-        winning8PM: '',
-      });
-      void syncAdminAgencyState(nextAgencyState).catch((err) => {
-        console.error('[KK Agency] Day Close agency rollover sync failed:', err);
-      });
-
-      // Immediately flush cleared live ledger chunks + newly closed Admin archive to Cloud Vault
-      // (no debounce delay so a quick reload/switch can NEVER resurrect yesterday's ledger!)
-      const rolloverRevMs = Math.max(Date.now(), lastSavedAtRef.current);
-      void syncAdminLedgerChunksCloud(
-        adminUid,
-        ownerUid,
-        adminUids,
-        nextDate,
-        nextAgencyState.entries,
-        rolloverRevMs,
-        adminChunkSigsRef.current,
-        adminChunkIdsRef.current,
-        agencyId
-      ).catch((err) => {
-        console.error('[KK Agency] Day Close live ledger clear sync failed:', err);
-      });
-      void syncAdminArchivesCloud(
-        ownerUid,
-        adminUids,
-        nextAgencyState.history,
-        nextAgencyState.recycleBin || [],
-        adminArchiveSigsRef.current,
-        adminArchiveDocIdsRef.current,
-        agencyId
-      ).catch((err) => {
-        console.error('[KK Agency] Day Close Admin archive cloud sync failed:', err);
-      });
-
-      const initialParties = [...cloudPartiesRef.current];
-      const initialSheets = [...cloudSheetsRef.current];
+    if (cloudSession.kind === 'admin' && authUser) {
+      const existingSheetIds = new Set(cloudSheetsRef.current.map((s) => s.partyId));
       const emptySig = serializeSheetEntries([], [], []);
-
-      // Pre-mark ALL known party sheets to emptySig synchronously so no in-flight snapshot
-      // can re-merge yesterday's rows into nextDate while Day Close writes are running.
-      for (const party of initialParties) {
-        if (party.role === 'admin') continue;
-        lastCloudSheetSigRef.current[party.partyId] = emptySig;
-        lastAdminPushSigRef.current[party.partyId] = emptySig;
-        if (party.parentMasterId) {
-          const rootMaster =
-            resolveTopLevelMasterParty(party.partyId, initialParties) ||
-            initialParties.find((p) => p.partyId === party.parentMasterId);
-          const effectiveSellerName = (rootMaster?.name || party.name).trim();
-          subSheetMergedSigRef.current[party.partyId] = `${effectiveSellerName.toUpperCase()}::${emptySig}`;
-        }
-      }
-
-      showToast(
-        `Closing ${formatDateDDMM(closedDate)} — Admin + sab Master/Sub-Seller archive ho raha hai...`,
-        3200
+      const billByName = new Map(
+        sellerBills.map((b) => [b.name.trim().toUpperCase(), b] as const)
+      );
+      const sheetByPartyId = new Map(
+        cloudSheetsRef.current.map((s) => [s.partyId, s] as const)
       );
 
-      void (async () => {
-        let allParties = initialParties;
-        let allSheets = initialSheets;
+      // Auto-save isolated daily archive snapshot for every Master, Sub-Master & Sub-Seller
+      for (const party of cloudPartiesRef.current) {
+        if (!party.active) continue;
+        const matchedBill = billByName.get(party.name.trim().toUpperCase());
+        const directSubParties = cloudPartiesRef.current.filter(
+          (sp) => sp.parentMasterId === party.partyId
+        );
 
-        // Safety net: if live subscriptions haven't settled yet, fetch fresh parties & sheets from Firestore
-        if (allParties.length === 0) {
-          try {
-            const fetched = await fetchAdminPartiesAndSheetsOnce(ownerUid, agencyId);
-            allParties = fetched.parties;
-            allSheets = fetched.sheets;
-          } catch (err) {
-            console.error('[KK Agency] Could not load parties/sheets during Day Close:', err);
+        const partySummaries = [];
+        const collectedSubPrizes: PrizeListRow[] = [];
+        if (party.role === 'master' && directSubParties.length > 0) {
+          for (const sp of directSubParties) {
+            const subSheet = sheetByPartyId.get(sp.partyId);
+            const spEntries = {
+              '1PM': subSheet?.entries1PM || [],
+              '6PM': subSheet?.entries6PM || [],
+              '8PM': subSheet?.entries8PM || [],
+            };
+            const spComps: Record<SessionId, SessionComputation> = {
+              '1PM': processSessionRows(spEntries['1PM'], '1PM', state.config),
+              '6PM': processSessionRows(spEntries['6PM'], '6PM', state.config),
+              '8PM': processSessionRows(spEntries['8PM'], '8PM', state.config),
+            };
+            const spPrizeData = generatePrizeAndLimitData(
+              spComps,
+              parsedWinning,
+              state.config
+            );
+            collectedSubPrizes.push(...spPrizeData.prizeList);
+            const spSeller: Seller = {
+              id: sp.partyId,
+              name: sp.name,
+              mobile: '',
+              rate: sp.rate,
+              due: sp.due,
+              joma: sp.joma,
+            };
+            const [spBill] = computeSellerBills(
+              [spSeller],
+              spComps,
+              spPrizeData.prizeList,
+              state.date
+            );
+            if (spBill) {
+              partySummaries.push({
+                name: spBill.name,
+                mor: spBill.mor,
+                day: spBill.day,
+                eve: spBill.eve,
+                sold: spBill.sold,
+                bill: spBill.bill,
+                prizeTotal: spBill.prizeTotal,
+                fresh: spBill.fresh,
+                joma: spBill.joma,
+                due: spBill.due,
+                total: spBill.total,
+              });
+            }
           }
+        } else if (matchedBill) {
+          partySummaries.push({
+            name: matchedBill.name,
+            mor: matchedBill.mor,
+            day: matchedBill.day,
+            eve: matchedBill.eve,
+            sold: matchedBill.sold,
+            bill: matchedBill.bill,
+            prizeTotal: matchedBill.prizeTotal,
+            fresh: matchedBill.fresh,
+            joma: matchedBill.joma,
+            due: matchedBill.due,
+            total: matchedBill.total,
+          });
         }
 
-        const activeParties = allParties.filter((p) => p.active !== false && p.role !== 'admin');
-        const existingSheetIds = new Set(allSheets.map((s) => s.partyId));
-        const billByName = new Map(
-          closedSellerBills.map((b) => [b.name.trim().toUpperCase(), b] as const)
-        );
-        const sheetByPartyId = new Map(
-          allSheets.map((s) => [s.partyId, s] as const)
-        );
-        const resolvedNamesBySession: Record<SessionId, string[]> = {
-          '1PM': computeResolvedNames(closedEntries['1PM'] || []),
-          '6PM': computeResolvedNames(closedEntries['6PM'] || []),
-          '8PM': computeResolvedNames(closedEntries['8PM'] || []),
-        };
-
-        const carriedSubBalances = new Map<string, { party: CloudPartyDoc; due: number; joma: number }>();
-        const partyArchiveJobs: Array<{ party: CloudPartyDoc; snap: DaySnapshot }> = [];
-
-        // Build full isolated daily archive snapshot (bills + entries + prizes + winning numbers)
-        // for EVERY active Master, Sub-Master, Direct Seller & Sub-Seller so ALL of them get this closed date archived.
-        for (const party of activeParties) {
-          const partyUpper = party.name.trim().toUpperCase();
-          const ownSheet = sheetByPartyId.get(party.partyId);
-          const matchedTopBill = !party.parentMasterId ? billByName.get(partyUpper) : undefined;
-          const directSubParties = allParties.filter(
-            (sp) =>
-              sp.parentMasterId === party.partyId &&
-              sp.role !== 'admin' &&
-              (sp.active ||
-                Boolean(
-                  sheetByPartyId.get(sp.partyId)?.entries1PM?.length ||
-                    sheetByPartyId.get(sp.partyId)?.entries6PM?.length ||
-                    sheetByPartyId.get(sp.partyId)?.entries8PM?.length
-                ))
-          );
-
-          // Collect all descendant sub-parties under this party (L2, L3, L4...)
-          const descendantParties: CloudPartyDoc[] = [];
-          if (party.role === 'master' && directSubParties.length > 0) {
-            const queue = [...directSubParties];
-            const seenIds = new Set<string>([party.partyId]);
-            while (queue.length > 0) {
-              const cur = queue.shift()!;
-              if (seenIds.has(cur.partyId)) continue;
-              seenIds.add(cur.partyId);
-              descendantParties.push(cur);
-              for (const child of allParties) {
-                if (
-                  child.parentMasterId === cur.partyId &&
-                  child.role !== 'admin' &&
-                  !seenIds.has(child.partyId)
-                ) {
-                  queue.push(child);
-                }
-              }
-            }
-          }
-
-          const collectOwnSessionRows = (sid: SessionId): TicketEntryRow[] => {
-            const sheetRowsRaw =
-              sid === '1PM'
-                ? ownSheet?.entries1PM
-                : sid === '6PM'
-                  ? ownSheet?.entries6PM
-                  : ownSheet?.entries8PM;
-            const sheetRows = (sheetRowsRaw || []).filter((r) => !isRowBlank(r));
-
-            if (!party.parentMasterId) {
-              // For top-level Master/Seller: Admin's live closedEntries (with inherited blank names resolved)
-              // is the freshest source, plus any unmerged rows from their cloud sheet.
-              const sessionList = closedEntries[sid] || [];
-              const resolvedList = resolvedNamesBySession[sid] || [];
-              const adminMatched: TicketEntryRow[] = [];
-              const seenRawIds = new Set<string>();
-              const sellerPrefix = `seller::${party.partyId}::`;
-              for (let i = 0; i < sessionList.length; i += 1) {
-                const r = sessionList[i];
-                if (isRowBlank(r)) continue;
-                if (r.id.startsWith('sub::')) continue;
-                if ((resolvedList[i] || '').trim().toUpperCase() === partyUpper) {
-                  adminMatched.push({ ...r, name: party.name });
-                  seenRawIds.add(r.id);
-                  if (r.id.startsWith(sellerPrefix)) {
-                    seenRawIds.add(r.id.slice(sellerPrefix.length));
-                  }
-                  if (r.id.startsWith('admin::')) {
-                    seenRawIds.add(r.id.slice('admin::'.length));
-                  } else {
-                    seenRawIds.add(`admin::${r.id}`);
-                  }
-                }
-              }
-              for (const sr of sheetRows) {
-                const rawSrId = sr.id.startsWith('admin::') ? sr.id.slice('admin::'.length) : sr.id;
-                if (
-                  seenRawIds.has(sr.id) ||
-                  seenRawIds.has(rawSrId) ||
-                  seenRawIds.has(`${sellerPrefix}${sr.id}`)
-                ) {
-                  continue;
-                }
-                adminMatched.push({ ...sr, name: party.name });
-                seenRawIds.add(sr.id);
-              }
-              return adminMatched;
-            }
-
-            // For Sub-Seller / Sub-Master: prefer their cloud sheet, falling back to sub:: rows in Admin ledger
-            if (sheetRows.length > 0) {
-              return sheetRows;
-            }
-            const subPrefix = `sub::${party.partyId}::`;
-            return (closedEntries[sid] || [])
-              .filter((r) => !isRowBlank(r) && r.id.startsWith(subPrefix))
-              .map((r) => ({ ...r, name: party.name }));
-          };
-
-          const collectBranchEntriesForDirectSub = (
-            directSubId: string,
-            sid: SessionId
-          ): TicketEntryRow[] => {
-            const branchIds = new Set<string>([directSubId]);
-            const q = [directSubId];
-            while (q.length > 0) {
-              const curId = q.shift()!;
-              for (const child of allParties) {
-                if (child.parentMasterId === curId && !branchIds.has(child.partyId)) {
-                  branchIds.add(child.partyId);
-                  q.push(child.partyId);
-                }
-              }
-            }
-            const directParty = allParties.find((p) => p.partyId === directSubId);
-            const branchName = (directParty?.name || 'SUB').trim();
-            const rows: TicketEntryRow[] = [];
-            for (const bid of branchIds) {
-              const sh = sheetByPartyId.get(bid);
-              const list =
-                sid === '1PM' ? sh?.entries1PM : sid === '6PM' ? sh?.entries6PM : sh?.entries8PM;
-              const filled = (list || []).filter((r) => !isRowBlank(r));
-              if (filled.length > 0) {
-                for (const r of filled) {
-                  rows.push({
-                    ...r,
-                    id: `branch::${bid}::${r.id}`,
-                    name: branchName,
-                  });
-                }
-              } else {
-                const subPrefix = `sub::${bid}::`;
-                for (const r of closedEntries[sid] || []) {
-                  if (isRowBlank(r) || !r.id.startsWith(subPrefix)) continue;
-                  rows.push({
-                    ...r,
-                    id: `branch::${bid}::${r.id.slice(subPrefix.length)}`,
-                    name: branchName,
-                  });
-                }
-              }
-            }
-            return rows;
-          };
-
-          const partySummaries: ArchivedSellerSummary[] = [];
-          const collectedSubPrizes: PrizeListRow[] = [];
-          let adminAccountSummary: ArchivedSellerSummary | undefined;
-          const partyArchiveSellers: Seller[] = [
-            {
-              id: party.partyId,
-              name: party.name,
-              mobile: '',
-              rate: party.rate,
-              due: party.due,
-              joma: party.joma,
-            },
-          ];
-
-          if (party.role === 'master' && directSubParties.length > 0) {
-            const own1 = collectOwnSessionRows('1PM');
-            const own6 = collectOwnSessionRows('6PM');
-            const own8 = collectOwnSessionRows('8PM');
-            const ownCompsForPrizes: Record<SessionId, SessionComputation> = {
-              '1PM': processSessionRows(own1, '1PM', closedConfig),
-              '6PM': processSessionRows(own6, '6PM', closedConfig),
-              '8PM': processSessionRows(own8, '8PM', closedConfig),
-            };
-            const ownPrizes = generatePrizeAndLimitData(
-              ownCompsForPrizes,
-              closedParsedWinning,
-              closedConfig
-            );
-            collectedSubPrizes.push(...ownPrizes.prizeList);
-
-            for (const sp of directSubParties) {
-              partyArchiveSellers.push({
-                id: sp.partyId,
-                name: sp.name,
-                mobile: '',
-                rate: sp.rate,
-                due: sp.due,
-                joma: sp.joma,
-              });
-              const spComps: Record<SessionId, SessionComputation> = {
-                '1PM': processSessionRows(
-                  collectBranchEntriesForDirectSub(sp.partyId, '1PM'),
-                  '1PM',
-                  closedConfig
-                ),
-                '6PM': processSessionRows(
-                  collectBranchEntriesForDirectSub(sp.partyId, '6PM'),
-                  '6PM',
-                  closedConfig
-                ),
-                '8PM': processSessionRows(
-                  collectBranchEntriesForDirectSub(sp.partyId, '8PM'),
-                  '8PM',
-                  closedConfig
-                ),
-              };
-              const spPrizeData = generatePrizeAndLimitData(
-                spComps,
-                closedParsedWinning,
-                closedConfig
-              );
-              collectedSubPrizes.push(...spPrizeData.prizeList);
-              const spSeller: Seller = {
-                id: sp.partyId,
-                name: sp.name,
-                mobile: '',
-                rate: sp.rate,
-                due: sp.due,
-                joma: sp.joma,
-              };
-              const [spBill] = computeSellerBills(
-                [spSeller],
-                spComps,
-                spPrizeData.prizeList,
-                closedDate
-              );
-              if (spBill) {
-                partySummaries.push({
-                  name: spBill.name,
-                  mor: spBill.mor,
-                  day: spBill.day,
-                  eve: spBill.eve,
-                  sold: spBill.sold,
-                  bill: spBill.bill,
-                  prizeTotal: spBill.prizeTotal,
-                  fresh: spBill.fresh,
-                  joma: spBill.joma,
-                  due: spBill.due,
-                  total: spBill.total,
-                });
-                // Queue carry-forward (+Total -> Due, -Total -> Joma) for this Sub-Seller on new date
-                const netSub = round2(spBill.total);
-                const nextSubDue = netSub > 0 ? netSub : 0;
-                const nextSubJoma = netSub < 0 ? round2(Math.abs(netSub)) : 0;
-                if (sp.due !== nextSubDue || sp.joma !== nextSubJoma) {
-                  carriedSubBalances.set(sp.partyId, {
-                    party: sp,
-                    due: nextSubDue,
-                    joma: nextSubJoma,
-                  });
-                }
-              }
-            }
-
-            // Attach Master's exact account with Admin / Parent Master
-            if (matchedTopBill) {
-              adminAccountSummary = {
-                name: matchedTopBill.name,
-                mor: matchedTopBill.mor,
-                day: matchedTopBill.day,
-                eve: matchedTopBill.eve,
-                sold: matchedTopBill.sold,
-                bill: matchedTopBill.bill,
-                prizeTotal: matchedTopBill.prizeTotal,
-                fresh: matchedTopBill.fresh,
-                joma: matchedTopBill.joma,
-                due: matchedTopBill.due,
-                total: matchedTopBill.total,
-              };
-            } else {
-              // Sub-Master's own combined account with their Parent Master
-              const combinedForSelf = (sid: SessionId): TicketEntryRow[] => [
-                ...collectOwnSessionRows(sid).map((r) => ({ ...r, name: party.name })),
-                ...directSubParties.flatMap((sp) =>
-                  collectBranchEntriesForDirectSub(sp.partyId, sid).map((r) => ({
-                    ...r,
-                    name: party.name,
-                  }))
-                ),
-              ];
-              const selfBranchComps: Record<SessionId, SessionComputation> = {
-                '1PM': processSessionRows(combinedForSelf('1PM'), '1PM', closedConfig),
-                '6PM': processSessionRows(combinedForSelf('6PM'), '6PM', closedConfig),
-                '8PM': processSessionRows(combinedForSelf('8PM'), '8PM', closedConfig),
-              };
-              const selfBranchPrizes = generatePrizeAndLimitData(
-                selfBranchComps,
-                closedParsedWinning,
-                closedConfig
-              );
-              const [selfBranchBill] = computeSellerBills(
-                [partyArchiveSellers[0]],
-                selfBranchComps,
-                selfBranchPrizes.prizeList,
-                closedDate
-              );
-              if (selfBranchBill) {
-                adminAccountSummary = {
-                  name: selfBranchBill.name,
-                  mor: selfBranchBill.mor,
-                  day: selfBranchBill.day,
-                  eve: selfBranchBill.eve,
-                  sold: selfBranchBill.sold,
-                  bill: selfBranchBill.bill,
-                  prizeTotal: selfBranchBill.prizeTotal,
-                  fresh: selfBranchBill.fresh,
-                  joma: selfBranchBill.joma,
-                  due: selfBranchBill.due,
-                  total: selfBranchBill.total,
-                };
-              }
-            }
-
-            // If none of a Master's sub-sellers had activity on this date while Admin has a real bill for this Master,
-            // mirror Admin's summary into partySummaries so the Master's Archive card shows their actual Sold/Bill/Total.
-            const subsHaveActivity = partySummaries.some(
-              (s) => s.sold > 0 || s.bill !== 0 || s.prizeTotal !== 0 || s.due !== 0 || s.joma !== 0
-            );
-            if (!subsHaveActivity && adminAccountSummary) {
-              partySummaries.length = 0;
-              partySummaries.push(adminAccountSummary);
-            }
-
-            // Add any deeper descendant sellers so restored sheet names resolve accurately
-            for (const dp of descendantParties) {
-              if (!partyArchiveSellers.some((s) => s.id === dp.partyId)) {
-                partyArchiveSellers.push({
-                  id: dp.partyId,
-                  name: dp.name,
-                  mobile: '',
-                  rate: dp.rate,
-                  due: dp.due,
-                  joma: dp.joma,
-                });
-              }
-            }
-          } else if (matchedTopBill) {
-            partySummaries.push({
-              name: matchedTopBill.name,
-              mor: matchedTopBill.mor,
-              day: matchedTopBill.day,
-              eve: matchedTopBill.eve,
-              sold: matchedTopBill.sold,
-              bill: matchedTopBill.bill,
-              prizeTotal: matchedTopBill.prizeTotal,
-              fresh: matchedTopBill.fresh,
-              joma: matchedTopBill.joma,
-              due: matchedTopBill.due,
-              total: matchedTopBill.total,
-            });
-          } else {
-            // Sub-Seller / Sub-Master / Direct Seller without sub-sellers: compute their own bill
-            const ownComps: Record<SessionId, SessionComputation> = {
-              '1PM': processSessionRows(collectOwnSessionRows('1PM'), '1PM', closedConfig),
-              '6PM': processSessionRows(collectOwnSessionRows('6PM'), '6PM', closedConfig),
-              '8PM': processSessionRows(collectOwnSessionRows('8PM'), '8PM', closedConfig),
-            };
-            const ownPrizeData = generatePrizeAndLimitData(
-              ownComps,
-              closedParsedWinning,
-              closedConfig
-            );
-            collectedSubPrizes.push(...ownPrizeData.prizeList);
-            const [ownBill] = computeSellerBills(
-              [partyArchiveSellers[0]],
-              ownComps,
-              ownPrizeData.prizeList,
-              closedDate
-            );
-            if (ownBill) {
-              partySummaries.push({
-                name: ownBill.name,
-                mor: ownBill.mor,
-                day: ownBill.day,
-                eve: ownBill.eve,
-                sold: ownBill.sold,
-                bill: ownBill.bill,
-                prizeTotal: ownBill.prizeTotal,
-                fresh: ownBill.fresh,
-                joma: ownBill.joma,
-                due: ownBill.due,
-                total: ownBill.total,
-              });
-            }
-          }
-
-          // Guarantee every active party has at least their own summary row so closedDate is ALWAYS archived
-          if (partySummaries.length === 0) {
-            const netBal = round2((party.due || 0) - (party.joma || 0));
-            partySummaries.push({
-              name: party.name,
-              mor: 0,
-              day: 0,
-              eve: 0,
-              sold: 0,
-              bill: 0,
-              prizeTotal: 0,
-              fresh: 0,
-              joma: party.joma || 0,
-              due: party.due || 0,
-              total: netBal,
-            });
-          }
-
-          // Build full restorable entries (own rows + descendant sub-seller rows tagged with sub::partyId::)
-          const partyArchiveEntries: Record<SessionId, TicketEntryRow[]> = {
-            '1PM': [],
-            '6PM': [],
-            '8PM': [],
-          };
-          for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
-            const ownRows = collectOwnSessionRows(sid).map((r) => ({
-              ...r,
-              name: party.name,
-            }));
-            const descRows: TicketEntryRow[] = [];
-            for (const dp of descendantParties) {
-              const sh = sheetByPartyId.get(dp.partyId);
-              const list =
-                sid === '1PM' ? sh?.entries1PM : sid === '6PM' ? sh?.entries6PM : sh?.entries8PM;
-              const filled = (list || []).filter((r) => !isRowBlank(r));
-              if (filled.length > 0) {
-                for (const r of filled) {
-                  descRows.push({
-                    ...r,
-                    id: `sub::${dp.partyId}::${r.id}`,
-                    name: dp.name,
-                  });
-                }
-              } else {
-                const subPrefix = `sub::${dp.partyId}::`;
-                for (const r of closedEntries[sid] || []) {
-                  if (isRowBlank(r) || !r.id.startsWith(subPrefix)) continue;
-                  descRows.push({
-                    ...r,
-                    id: r.id,
-                    name: dp.name,
-                  });
-                }
-              }
-            }
-            partyArchiveEntries[sid] = [...ownRows, ...descRows];
-          }
-
+        if (partySummaries.length > 0) {
           const pSold = round2(partySummaries.reduce((a, b) => a + b.sold, 0));
           const pBill = round2(partySummaries.reduce((a, b) => a + b.bill, 0));
           const pPrize = round2(partySummaries.reduce((a, b) => a + b.prizeTotal, 0));
@@ -4620,11 +2321,10 @@ export default function App() {
           const partyPrizes =
             collectedSubPrizes.length > 0
               ? collectedSubPrizes
-              : closedPrizeList.filter((pr) => summaryNameSet.has(pr.name.trim().toUpperCase()));
-
+              : prizeList.filter((pr) => summaryNameSet.has(pr.name.trim().toUpperCase()));
           const partySnap: DaySnapshot = {
-            id: makeUniquePartyArchiveId(party.partyId, closedDate),
-            date: closedDate,
+            id: `snap-${party.partyId.slice(0, 14)}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+            date: state.date,
             savedAt: snapshot.savedAt,
             trigger,
             totalSold: pSold,
@@ -4634,142 +2334,33 @@ export default function App() {
             limitGrandTotal: 0,
             overLimitTotals: { '1PM': 0, '6PM': 0, '8PM': 0 },
             sellerSummaries: partySummaries,
-            ...(adminAccountSummary ? { adminAccountSummary } : {}),
             prizeList: partyPrizes,
             limitPrizeGroups: [],
-            sellers: partyArchiveSellers,
-            entries: partyArchiveEntries,
-            winningRaw: closedWinningRaw,
+            sellers: [],
+            entries: { '1PM': [], '6PM': [], '8PM': [] },
+            winningRaw: { '1PM': '', '6PM': '', '8PM': '' },
           };
-
-          partyArchiveJobs.push({ party, snap: partySnap });
+          void savePartyArchiveCloud(authUser.uid, party, partySnap, true).catch(() => {});
         }
+      }
 
-        // All closed sheet data is now snapshotted in memory inside `partyArchiveJobs` —
-        // Run Step 1 (save archives), Step 2 (carry forward sub-balances), AND Step 3 (clear ALL live sheets
-        // for active AND any inactive parties with an existing sheet doc) right away so live sheets clear
-        // immediately without waiting behind slow archive writes!
-        const CONCURRENCY = 6;
-        let savedCount = 0;
-        let failedCount = 0;
-
-        const saveArchivesTask = (async () => {
-          for (let i = 0; i < partyArchiveJobs.length; i += CONCURRENCY) {
-            const slice = partyArchiveJobs.slice(i, i + CONCURRENCY);
-            await Promise.all(
-              slice.map(async ({ party, snap }) => {
-                try {
-                  await savePartyArchiveCloud(adminUid, party, snap, true);
-                  savedCount += 1;
-                } catch (firstErr) {
-                  try {
-                    await savePartyArchiveCloud(adminUid, party, snap, true);
-                    savedCount += 1;
-                  } catch (retryErr) {
-                    failedCount += 1;
-                    console.error(
-                      '[KK Agency] Failed to archive party on Day Close:',
-                      party.name,
-                      party.partyId,
-                      retryErr || firstErr
-                    );
-                  }
-                }
-              })
-            );
-          }
-        })();
-
-        const carrySubBalancesTask = (async () => {
-          const carryItems = Array.from(carriedSubBalances.values());
-          for (let i = 0; i < carryItems.length; i += CONCURRENCY) {
-            const slice = carryItems.slice(i, i + CONCURRENCY);
-            await Promise.all(
-              slice.map(async (item) => {
-                try {
-                  await updateSubSellerParty(item.party, undefined, {
-                    due: item.due,
-                    joma: item.joma,
-                  });
-                } catch (err) {
-                  console.error('[KK Agency] Sub-seller balance carry-forward failed:', item.party.name, err);
-                }
-              })
-            );
-          }
-        })();
-
-        const partiesToClearSheets = allParties.filter(
-          (p) => p.role !== 'admin' && (p.active !== false || existingSheetIds.has(p.partyId))
-        );
-        const clearSheetsTask = (async () => {
-          for (let i = 0; i < partiesToClearSheets.length; i += CONCURRENCY) {
-            const slice = partiesToClearSheets.slice(i, i + CONCURRENCY);
-            await Promise.all(
-              slice.map(async (party) => {
-                lastCloudSheetSigRef.current[party.partyId] = emptySig;
-                lastAdminPushSigRef.current[party.partyId] = emptySig;
-                if (party.parentMasterId) {
-                  const rootMaster =
-                    resolveTopLevelMasterParty(party.partyId, allParties) ||
-                    allParties.find((p) => p.partyId === party.parentMasterId);
-                  const effectiveSellerName = (rootMaster?.name || party.name).trim();
-                  subSheetMergedSigRef.current[party.partyId] = `${effectiveSellerName.toUpperCase()}::${emptySig}`;
-                }
-                try {
-                  await pushAdminSheetRowsForParty(
-                    adminUid,
-                    party,
-                    nextDate,
-                    [],
-                    [],
-                    [],
-                    existingSheetIds.has(party.partyId)
-                  );
-                } catch (firstErr) {
-                  try {
-                    await pushAdminSheetRowsForParty(
-                      adminUid,
-                      party,
-                      nextDate,
-                      [],
-                      [],
-                      [],
-                      existingSheetIds.has(party.partyId)
-                    );
-                  } catch (retryErr) {
-                    console.error(
-                      '[KK Agency] Could not clear party sheet on Day Close:',
-                      party.name,
-                      retryErr || firstErr
-                    );
-                  }
-                }
-              })
-            );
-          }
-        })();
-
-        await Promise.all([saveArchivesTask, carrySubBalancesTask, clearSheetsTask]);
-
-        if (failedCount > 0) {
-          reconciledHistorySigRef.current = '';
-          showToast(
-            `Archived ${formatDateDDMM(closedDate)} (Admin + ${savedCount} IDs, ${failedCount} retry needed — Archive tab me "Sync IDs" dabayein)`,
-            6000
-          );
-        } else {
-          showToast(
-            `Archived ${formatDateDDMM(closedDate)} (Admin + ${savedCount} Master/Sub-Seller) · ${formatDateDDMM(nextDate)} ready`,
-            5000
-          );
-        }
-      })();
-      return;
+      for (const party of cloudPartiesRef.current) {
+        if (!party.parentMasterId) continue;
+        lastCloudSheetSigRef.current[party.partyId] = emptySig;
+        void pushAdminSheetRowsForParty(
+          authUser.uid,
+          party,
+          nextDate,
+          [],
+          [],
+          [],
+          existingSheetIds.has(party.partyId)
+        ).catch(() => {});
+      }
     }
 
     showToast(
-      `Archived ${formatDateDDMM(closedDate)} · ${formatDateDDMM(nextDate)} ready`
+      `Archived ${formatDateDDMM(state.date)} · ${formatDateDDMM(nextDate)} ready (+Total → Due, -Total → Joma)`
     );
   };
 
@@ -4779,15 +2370,6 @@ export default function App() {
 
   const handleRestoreSnapshot = (snap: DaySnapshot) => {
     AppSounds.success();
-
-    // If Admin is already in Restored Archive view and restores the original Live date,
-    // cleanly exit Restored Archive mode back to Live Today.
-    if (adminRestoredMode && snap.date === adminRestoredMode.liveDate) {
-      handleExitAdminRestoredMode();
-      setActiveTab('Seller Bill');
-      return;
-    }
-
     const today = getTodayIsoDate();
     skipAutoRolloverDateRef.current = snap.date < today ? snap.date : null;
 
@@ -4802,87 +2384,7 @@ export default function App() {
       state.sellers.some((s) => s.due !== 0 || s.joma !== 0);
 
     const currentDayBackup =
-      !adminRestoredMode && switchingDates && hasWorkingDayData
-        ? buildExactSnapshotFromState(latestStateRef.current, 'manual')
-        : null;
-
-    // Build baseline totals for the target archive date so edits cascade idempotently
-    const buildTotalsMap = (targetSnap: DaySnapshot): Record<string, number> => {
-      const map: Record<string, number> = {};
-      for (const sum of targetSnap.sellerSummaries || []) {
-        const k = (sum.name || '').trim().toUpperCase();
-        if (k) map[k] = round2(sum.total);
-      }
-      return map;
-    };
-
-    // Reset edit sig so initial load of the restored date does not trigger a spurious sync
-    lastRestoredEditSigRef.current = '';
-    setRestoredSyncState('idle');
-
-    // Enter (or switch within) Admin-only Restored Archive mode BEFORE mutating state so
-    // NO live cloud sync effect overwrites Master or Sub-Master current-day sheets/date!
-    if (!adminRestoredMode) {
-      const liveSnapshot = buildExactSnapshotFromState(latestStateRef.current, 'manual');
-      const intermediates = state.history.filter(
-        (h) => h.date > snap.date && h.date < state.date
-      );
-      updateAdminRestoredMode({
-        restoredDate: snap.date,
-        restoredSnapId: snap.id,
-        restoredTrigger: snap.trigger,
-        restoredOriginalTotals: buildTotalsMap(snap),
-        liveDate: state.date,
-        liveBackup: liveSnapshot,
-        liveOriginalSellers: liveSnapshot.sellers,
-        intermediateOriginalHistory: intermediates,
-      });
-    } else {
-      // Flush any unsynced edits from the previously viewed restored date before switching
-      const cur = latestStateRef.current;
-      const prevExisting = cur.history.find(
-        (h) =>
-          (adminRestoredMode.restoredSnapId && h.id === adminRestoredMode.restoredSnapId) ||
-          h.date === adminRestoredMode.restoredDate
-      );
-      const editedPrevSnap = buildExactSnapshotFromState(
-        cur,
-        adminRestoredMode.restoredTrigger || prevExisting?.trigger || 'manual',
-        adminRestoredMode.restoredSnapId || prevExisting?.id,
-        prevExisting?.savedAt
-      );
-      const { nextHistory, updatedLiveSellers, cascadedSnapshots } = cascadeRestoredEdit(
-        editedPrevSnap,
-        adminRestoredMode,
-        cur.history
-      );
-      void pushRestoredCascadeToCloud(
-        nextHistory,
-        cur.recycleBin || [],
-        cascadedSnapshots,
-        updatedLiveSellers,
-        cur.config
-      );
-
-      const refreshedTarget =
-        nextHistory.find((h) => h.id === snap.id || h.date === snap.date) || snap;
-      const intermediates = nextHistory.filter(
-        (h) => h.date > refreshedTarget.date && h.date < adminRestoredMode.liveDate
-      );
-      updateAdminRestoredMode({
-        ...adminRestoredMode,
-        restoredDate: refreshedTarget.date,
-        restoredSnapId: refreshedTarget.id,
-        restoredTrigger: refreshedTarget.trigger,
-        restoredOriginalTotals: buildTotalsMap(refreshedTarget),
-        liveBackup: {
-          ...adminRestoredMode.liveBackup,
-          sellers: updatedLiveSellers,
-        },
-        liveOriginalSellers: updatedLiveSellers,
-        intermediateOriginalHistory: intermediates,
-      });
-    }
+      switchingDates && hasWorkingDayData ? buildCurrentSnapshot('manual') : null;
 
     setState((prev) => {
       let nextHistory = [...prev.history];
@@ -4931,8 +2433,9 @@ export default function App() {
     });
     setActiveTab('Seller Bill');
     showToast(
-      `Restored ${formatDateDDMM(snap.date)} · Admin edits auto-sync All Master/Sub-Master Archives & Live Due/Joma`,
-      5200
+      currentDayBackup
+        ? `Restored ${formatDateDDMM(snap.date)} · ${formatDateDDMM(currentDayBackup.date)} safely saved in Archive`
+        : `Restored ${formatDateDDMM(snap.date)} from Archive`
     );
   };
 
@@ -4994,11 +2497,10 @@ export default function App() {
 
   // Session Sheet Entry Handlers (Undo/Redo, Edit, Paste, Delete, Clear)
   const pushUndoSnapshot = (sessionId: SessionId, rowsSnapshot: TicketEntryRow[]) => {
-    const maxDepth = rowsSnapshot.length > 5000 ? 7 : 24;
     setSessionHistory((prev) => ({
       ...prev,
       [sessionId]: {
-        undo: [...prev[sessionId].undo.slice(-maxDepth), rowsSnapshot],
+        undo: [...prev[sessionId].undo.slice(-24), rowsSnapshot],
         redo: [],
       },
     }));
@@ -5009,13 +2511,12 @@ export default function App() {
     if (hist.undo.length === 0) return;
     const previousRows = hist.undo[hist.undo.length - 1];
     const currentRows = state.entries[sessionId];
-    const maxDepth = currentRows.length > 5000 ? 7 : 24;
 
     setSessionHistory((prev) => ({
       ...prev,
       [sessionId]: {
         undo: prev[sessionId].undo.slice(0, -1),
-        redo: [...prev[sessionId].redo.slice(-maxDepth), currentRows],
+        redo: [...prev[sessionId].redo.slice(-24), currentRows],
       },
     }));
     commitSessionRows(sessionId, previousRows);
@@ -5026,12 +2527,11 @@ export default function App() {
     if (hist.redo.length === 0) return;
     const nextRows = hist.redo[hist.redo.length - 1];
     const currentRows = state.entries[sessionId];
-    const maxDepth = currentRows.length > 5000 ? 7 : 24;
 
     setSessionHistory((prev) => ({
       ...prev,
       [sessionId]: {
-        undo: [...prev[sessionId].undo.slice(-maxDepth), currentRows],
+        undo: [...prev[sessionId].undo.slice(-24), currentRows],
         redo: prev[sessionId].redo.slice(0, -1),
       },
     }));
@@ -5049,53 +2549,28 @@ export default function App() {
       !last || last.sessionId !== sessionId || last.rowId !== rowId || now - last.ts > 1500;
     lastRowEditUndoRef.current = { sessionId, rowId, ts: now };
 
-    const currentRows = latestStateRef.current.entries[sessionId];
+    const currentRows = state.entries[sessionId];
     if (shouldPushUndo) {
       pushUndoSnapshot(sessionId, currentRows);
     }
 
-    const idx = currentRows.findIndex((r) => r.id === rowId);
-    if (idx === -1) return;
-
-    const target = currentRows[idx];
-    let merged = { ...target, ...patch };
-    // Mirror Apps Script onEdit: if Item, Start, and End are all cleared (and Name wasn't edited directly), clear Name too
-    const editedCDE = 'item' in patch || 'start' in patch || 'end' in patch;
-    if (editedCDE && !('name' in patch)) {
-      const hasCDE =
-        merged.item.trim() !== '' ||
-        merged.start.trim() !== '' ||
-        merged.end.trim() !== '';
-      if (!hasCDE && merged.name.trim() !== '') {
-        merged = { ...merged, name: '' };
-      }
-    }
-    merged = sanitizeRowQtyOverride(merged);
-
-    const nextRows = currentRows.slice();
-    if (isRowBlank(merged)) {
-      if (idx === nextRows.length - 1) {
-        nextRows[idx] = merged;
-      } else {
-        nextRows.splice(idx, 1);
-        if (nextRows.length === 0 || !isRowBlank(nextRows[nextRows.length - 1])) {
-          nextRows.push(createEmptyRow());
+    const updatedRows = currentRows.map((r) => {
+      if (r.id !== rowId) return r;
+      const merged = { ...r, ...patch };
+      // Mirror Apps Script onEdit: if Item, Start, and End are all cleared (and Name wasn't edited directly), clear Name too
+      const editedCDE = 'item' in patch || 'start' in patch || 'end' in patch;
+      if (editedCDE && !('name' in patch)) {
+        const hasCDE =
+          merged.item.trim() !== '' ||
+          merged.start.trim() !== '' ||
+          merged.end.trim() !== '';
+        if (!hasCDE && merged.name.trim() !== '') {
+          return { ...merged, name: '' };
         }
       }
-    } else {
-      nextRows[idx] = merged;
-      if (idx === nextRows.length - 1) {
-        nextRows.push(createEmptyRow());
-      }
-    }
-
-    setState((prev) => ({
-      ...prev,
-      entries: {
-        ...prev.entries,
-        [sessionId]: nextRows,
-      },
-    }));
+      return merged;
+    });
+    commitSessionRows(sessionId, updatedRows);
   };
 
   const handleDeleteSessionRow = (sessionId: SessionId, rowId: string) => {
@@ -5313,29 +2788,20 @@ export default function App() {
         onSignOut={handleCloudSignOut}
         adminPreviewMode
         onExitAdminPreview={() => setAdminPreviewParty(null)}
-        announcement={publicAnnouncement}
       />
     );
   }
 
-  // Route 2: Master / Sub-Master / Client Login (Link, Installed App, or Signed-Out non-Admin)
-  // NEVER falls through to Admin Dashboard unless user is authenticated as Admin.
-  const isLockedToSellerPortal = hasUrlLoginTrigger || devicePortalMode === 'seller';
-  if (sellerLoginMode || (cloudSession.kind === 'none' && authReady)) {
-    const canCancel = cloudSession.kind === 'admin';
-    const showAdminSignIn =
-      !isLockedToSellerPortal &&
-      (initialUrlLoginParams.forceAdmin || devicePortalMode === 'admin');
-    const allowLogoAdminUnlock = !isLockedToSellerPortal;
+  // Route 2: Master / Client opened Direct Login Link (?id=... / ?login=1) or tapped ID/Pass Login
+  // Evaluated BEFORE Route 1B and without waiting on authReady so Android links open KK Agency Login instantly.
+  if (sellerLoginMode) {
+    const canCancel = cloudSession.kind === 'seller' || !hasUrlLoginTrigger;
     return (
       <SellerLoginView
+        initialLoginId={initialUrlLoginId}
         busy={cloudBusy}
         error={cloudError}
         onLoginWithIdPassword={handleLoginWithIdPassword}
-        showAdminSignIn={showAdminSignIn}
-        allowLogoAdminUnlock={allowLogoAdminUnlock}
-        onAdminGoogleSignIn={allowLogoAdminUnlock ? handleAdminGoogleSignIn : undefined}
-        announcement={publicAnnouncement}
         onCancelToAdmin={
           canCancel
             ? () => {
@@ -5350,20 +2816,7 @@ export default function App() {
   }
 
   // Route 1B: Signed-in Seller / Sub-Seller -> dedicated Mobile Portal App
-  if (cloudSession.kind === 'seller') {
-    if (!authUser) {
-      return (
-        <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--kk-canvas)] p-6 text-center gap-3">
-          <img
-            src="/kk-logo.png"
-            alt="KK Agency"
-            referrerPolicy="no-referrer"
-            className="w-16 h-16 rounded-2xl object-cover shadow-md"
-          />
-          <p className="text-sm font-bold text-slate-700">Loading KK Agency Portal...</p>
-        </div>
-      );
-    }
+  if (cloudSession.kind === 'seller' && authUser) {
     return (
       <SellerPortalApp
         key={cloudSession.partyId}
@@ -5373,31 +2826,9 @@ export default function App() {
         soundEnabled={state.config.soundEnabled}
         onToggleSound={handleToggleSound}
         onSignOut={handleCloudSignOut}
-        announcement={publicAnnouncement}
       />
     );
   }
-
-  // While Firebase Auth is still resolving on a fresh/unauthenticated launch (not cached admin),
-  // show a clean splash instead of flashing the Admin Dashboard to Master/Sub-Master users.
-  if (cloudSession.kind !== 'admin' && !authReady) {
-    return (
-      <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--kk-canvas)] p-6 text-center gap-3">
-        <img
-          src="/kk-logo.png"
-          alt="KK Agency"
-          referrerPolicy="no-referrer"
-          className="w-16 h-16 rounded-2xl object-cover shadow-md"
-        />
-        <p className="text-sm font-bold text-slate-700">Opening KK Agency...</p>
-      </div>
-    );
-  }
-
-  const isAnnouncementLive = Boolean(
-    publicAnnouncement?.active &&
-      (publicAnnouncement.title.trim() || publicAnnouncement.message.trim())
-  );
 
   return (
     <AppShell
@@ -5407,11 +2838,6 @@ export default function App() {
       onChangeBillingDate={handleChangeDate}
       onOpenSettings={() => setSettingsOpen(true)}
       onOpenSellerIds={() => setSellerIdsOpen(true)}
-      onOpenAnnouncement={() => {
-        setAnnouncementError('');
-        setAnnouncementModalOpen(true);
-      }}
-      announcementActive={isAnnouncementLive}
       onOpenGoogleSheets={() => setGoogleSheetsModalOpen(true)}
       googleSheetsActive={Boolean(
         (gsheetConnectionMode !== 'none' || gsheetHasToken) &&
@@ -5431,18 +2857,6 @@ export default function App() {
         archives: state.history.length,
       }}
     >
-      {isAnnouncementLive && (
-        <div className="mb-3">
-          <AnnouncementBanner
-            announcement={publicAnnouncement}
-            variant="admin"
-            onEdit={() => {
-              setAnnouncementError('');
-              setAnnouncementModalOpen(true);
-            }}
-          />
-        </div>
-      )}
       <AnimatePresence>
         {archiveNotice && (
           <motion.div
@@ -5468,62 +2882,6 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {adminRestoredMode && (
-        <div className="mb-3 bg-indigo-50 border border-indigo-200 text-indigo-950 rounded-2xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-xs">
-          <div className="flex items-center gap-2 text-xs min-w-0">
-            <Archive className="w-4 h-4 text-indigo-700 shrink-0" />
-            <div className="leading-snug">
-              <span className="font-extrabold">
-                Restored Archive · {formatDateDDMM(state.date)}
-              </span>
-              <span className="text-indigo-800 font-medium">
-                {' '}· Admin edits auto-sync All Master/Sub-Master Archives &amp; Live{' '}
-                {formatDateDDMM(adminRestoredMode.liveDate)} Due/Joma
-              </span>
-              {restoredSyncState === 'syncing' && (
-                <span className="ml-2 text-[11px] font-bold text-indigo-700">
-                  Syncing...
-                </span>
-              )}
-              {restoredSyncState === 'synced' && (
-                <span className="ml-2 text-[11px] font-bold text-emerald-700">
-                  All Synced ✓
-                </span>
-              )}
-              {restoredSyncState === 'error' && (
-                <span className="ml-2 text-[11px] font-bold text-rose-700">
-                  Sync Retry Needed
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              disabled={restoredSyncState === 'syncing'}
-              onClick={() => {
-                AppSounds.tap();
-                void flushRestoredArchiveEditNow();
-              }}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap disabled:opacity-60"
-            >
-              <RefreshCw
-                className={`w-3.5 h-3.5 ${restoredSyncState === 'syncing' ? 'animate-spin' : ''}`}
-              />
-              <span>{restoredSyncState === 'error' ? 'Retry Sync' : 'Sync Now'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleExitAdminRestoredMode}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Back to Live ({formatDateDDMM(adminRestoredMode.liveDate)})</span>
-            </button>
-          </div>
-        </div>
-      )}
-
       {activeTab === 'Seller Bill' && (
         <SellerBillView
           date={state.date}
@@ -5534,7 +2892,7 @@ export default function App() {
           onDeleteSeller={handleDeleteSeller}
           onRolloverDay={() => performArchiveAndRollover('day-close')}
           onPreviewMessage={handleOpenPreview}
-          sessionComputations={deferredSessionComputations}
+          sessionComputations={sessionComputations}
           limitThreshold={state.config.limitThreshold}
           onOpenSession={(sid) => {
             AppSounds.tap();
@@ -5545,16 +2903,14 @@ export default function App() {
 
       {(activeTab === '1PM' || activeTab === '6PM' || activeTab === '8PM') && (
         <div className="space-y-4">
-          {!isAdminRestoredView && (
-            <LiveChainEntriesPanel
-              sessionId={activeTab}
-              chainSheets={adminChainSheets}
-              chainParties={cloudParties}
-              config={state.config}
-              mode="admin"
-              defaultExpanded={false}
-            />
-          )}
+          <LiveChainEntriesPanel
+            sessionId={activeTab}
+            chainSheets={adminChainSheets}
+            chainParties={cloudParties}
+            config={state.config}
+            mode="admin"
+            defaultExpanded={false}
+          />
           <SessionSheetView
             sessionId={activeTab}
             computation={sessionComputations[activeTab]}
@@ -5591,7 +2947,7 @@ export default function App() {
           winningRaw={state.winningRaw}
           parsedWinning={parsedWinning}
           prizeCount={prizeList.length}
-          prizeTotal={prizeTotalAmount}
+          prizeTotal={prizeList.reduce((sum, p) => sum + p.total, 0)}
           onChangeWinningRaw={handleChangeWinningRaw}
           onClearAllWinning={handleClearAllWinning}
           onOpenPrizeList={() => setActiveTab('Prize List')}
@@ -5621,10 +2977,8 @@ export default function App() {
           billingDate={state.date}
           onChangeBillingDate={handleChangeDate}
           snapshots={state.history}
-          recycleBin={state.recycleBin || []}
           onArchiveNow={() => performArchiveAndRollover('manual')}
           onRestoreSnapshot={handleRestoreSnapshot}
-          onSyncSnapshotToParties={handleSyncSingleArchiveToParties}
           onUpdateSnapshotDate={(snapshotId, newDate) => {
             setState((prev) => ({
               ...prev,
@@ -5634,56 +2988,10 @@ export default function App() {
             }));
           }}
           onDeleteSnapshot={(snapshotId) => {
-            const target = state.history.find((h) => h.id === snapshotId);
-            setState((prev) => {
-              const found = prev.history.find((h) => h.id === snapshotId);
-              const nextHistory = prev.history.filter((h) => h.id !== snapshotId);
-              if (!found) return { ...prev, history: nextHistory };
-              const binned: DaySnapshot = { ...found, deletedAt: new Date().toISOString() };
-              const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
-              return {
-                ...prev,
-                history: nextHistory,
-                recycleBin: [binned, ...existingBin.filter((b) => b.id !== snapshotId)].slice(0, 120),
-              };
-            });
-            if (target) {
-              showToast(`${formatDateDDMM(target.date)} Recycle Bin me move ho gaya`);
-            }
-          }}
-          onRecoverFromBin={(snapshotId) => {
-            const target = (state.recycleBin || []).find((b) => b.id === snapshotId);
-            setState((prev) => {
-              const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
-              const found = existingBin.find((b) => b.id === snapshotId);
-              if (!found) return prev;
-              const { deletedAt: _removed, ...cleanSnap } = found;
-              return {
-                ...prev,
-                history: preserveSavedSnapshots([
-                  cleanSnap,
-                  ...prev.history.filter((h) => h.id !== cleanSnap.id),
-                ]).slice(0, 180),
-                recycleBin: existingBin.filter((b) => b.id !== snapshotId),
-              };
-            });
-            if (target) {
-              showToast(`${formatDateDDMM(target.date)} Recycle Bin se Recover ho gaya!`);
-            }
-          }}
-          onPermanentDeleteFromBin={(snapshotId) => {
             setState((prev) => ({
               ...prev,
-              recycleBin: (prev.recycleBin || []).filter((b) => b.id !== snapshotId),
+              history: prev.history.filter((h) => h.id !== snapshotId),
             }));
-            showToast('Archive Recycle Bin se permanently delete ho gaya');
-          }}
-          onEmptyRecycleBin={() => {
-            setState((prev) => ({
-              ...prev,
-              recycleBin: [],
-            }));
-            showToast('Recycle Bin khali ho gaya');
           }}
         />
       )}
@@ -5735,13 +3043,7 @@ export default function App() {
         onAddSeller={handleAddSeller}
         onPreviewSeller={(party) => {
           setSellerIdsOpen(false);
-          if (adminRestoredModeRef.current || pendingRestoredCloudPromiseRef.current) {
-            void flushRestoredArchiveEditNow().finally(() => {
-              setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
-            });
-          } else {
-            setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
-          }
+          setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
         }}
         onOpenSellerLoginMode={() => {
           setCloudError('');
@@ -5768,17 +3070,6 @@ export default function App() {
         onSyncNow={() => runGoogleSheetsSync(undefined, true)}
         onDisconnectSheet={handleDisconnectGoogleSheet}
         onClearSyncedRows={handleClearGoogleSheetRows}
-      />
-
-      <AdminAnnouncementModal
-        isOpen={announcementModalOpen}
-        onClose={() => setAnnouncementModalOpen(false)}
-        isAdminSignedIn={cloudSession.kind === 'admin'}
-        announcement={publicAnnouncement}
-        busy={announcementBusy || cloudBusy}
-        error={announcementError || cloudError}
-        onAdminSignIn={handleAdminGoogleSignIn}
-        onSaveAnnouncement={handleSavePublicAnnouncement}
       />
     </AppShell>
   );

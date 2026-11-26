@@ -71,7 +71,6 @@ export interface SessionComputation {
   prefix: string;
   rows: ComputedTicketRow[];
   numberTotals: Float64Array;
-  sellerQtyByUpperName?: Record<string, number>;
   totalQty: number;
   overLimitTotal: number;
   overLimitLines: string[];
@@ -190,7 +189,6 @@ export interface DaySnapshot {
   id: string;
   date: string;
   savedAt: string;
-  deletedAt?: string;
   trigger: 'manual' | 'daily-auto' | 'day-close';
   totalSold: number;
   totalBill: number;
@@ -199,7 +197,6 @@ export interface DaySnapshot {
   limitGrandTotal: number;
   overLimitTotals: Record<SessionId, number>;
   sellerSummaries: ArchivedSellerSummary[];
-  adminAccountSummary?: ArchivedSellerSummary;
   prizeList: PrizeListRow[];
   limitPrizeGroups: LimitPrizeSessionGroup[];
   sellers: Seller[];
@@ -215,5 +212,4 @@ export interface AppState {
   entries: Record<SessionId, TicketEntryRow[]>;
   winningRaw: WinningRawBySession;
   history: DaySnapshot[];
-  recycleBin?: DaySnapshot[];
 }

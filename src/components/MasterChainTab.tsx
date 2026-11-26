@@ -424,12 +424,10 @@ export function MasterChainTab({
               Bill − Prize
             </div>
           </div>
-          <div className="col-span-2 lg:col-span-1 kk-brand-gradient text-white rounded-2xl px-4 py-3.5 sm:px-5 sm:py-4 flex flex-col items-center justify-center text-center">
-            <div className="text-xs sm:text-[13px] font-semibold tracking-wide text-white/80">
-              Net Payable Total
-            </div>
+          <div className="col-span-2 lg:col-span-1 kk-brand-gradient text-white rounded-2xl px-4 py-3">
+            <div className="text-[11px] font-semibold text-white/75">Net Payable Total</div>
             <div
-              className={`mt-1 text-3xl sm:text-[32px] lg:text-2xl xl:text-[28px] leading-tight font-extrabold font-mono-tabular tracking-tight ${
+              className={`mt-1 text-xl font-bold font-mono-tabular ${
                 totals.total > 0
                   ? 'text-emerald-300'
                   : totals.total < 0
@@ -439,7 +437,7 @@ export function MasterChainTab({
             >
               ₹{formatINR(totals.total)}
             </div>
-            <div className="text-[11px] font-semibold text-indigo-100/90 mt-1">
+            <div className="text-[10.5px] font-semibold text-indigo-100 mt-0.5">
               Joma − / Due +
             </div>
           </div>

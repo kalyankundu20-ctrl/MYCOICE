@@ -1,6 +1,6 @@
 import { ExternalLink, Eye } from 'lucide-react';
 import { motion } from 'motion/react';
-import { Fragment, memo } from 'react';
+import { Fragment } from 'react';
 import { formatINR } from '../engine/calculations';
 import { LimitPrizeSessionGroup } from '../types/ledger';
 import { AppSounds } from '../utils/sound';
@@ -12,15 +12,12 @@ interface LimitPrizeViewProps {
   onPreviewMessage: (title: string, subtitle: string, message: string, waUrl: string) => void;
 }
 
-export const LimitPrizeView = memo(function LimitPrizeView({
+export function LimitPrizeView({
   groups,
   grandTotal,
   limitThreshold,
   onPreviewMessage,
 }: LimitPrizeViewProps) {
-  const totalLimitRows = groups.reduce((acc, g) => acc + g.rows.length, 0);
-  const animateRows = totalLimitRows <= 40;
-
   return (
     <div className="space-y-3">
       <div className="kk-surface-card rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
@@ -63,65 +60,48 @@ export const LimitPrizeView = memo(function LimitPrizeView({
             ) : (
               groups.map((group, groupIdx) => (
                 <Fragment key={group.sessionId}>
-                  {group.rows.map((row, rowIdx) => {
-                    const rowClass = `${rowIdx % 2 === 1 ? 'bg-slate-50/55' : 'bg-white'} hover:bg-rose-50/35 transition-colors align-middle`;
-                    const rowCells = (
-                      <>
-                        <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-600 border-r border-slate-200/70 truncate">
-                          {row.time}
-                        </td>
-                        <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-[var(--kk-brand)] border-r border-slate-200/70">
-                          <div className="whitespace-nowrap">{row.number}</div>
-                          {row.sellers && row.sellers.length > 0 && (
-                            <div className="font-sans text-[9.5px] sm:text-xs font-semibold text-slate-600 leading-tight mt-0.5 whitespace-normal break-words">
-                              {row.sellers.map((s) => `${s.sellerName}(${s.qty})`).join(' · ')}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-sans font-bold border-r border-slate-200/70">
-                          <span className="inline-block px-1 sm:px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-800 text-[9.5px] sm:text-xs leading-tight">
-                            {row.rank}
-                          </span>
-                        </td>
-                        <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-rose-700 border-r border-slate-200/70 whitespace-nowrap">
-                          {row.item}
-                        </td>
-                        <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
-                          {formatINR(row.prize)}
-                        </td>
-                        <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
-                          {formatINR(row.vc)}
-                        </td>
-                        <td className="px-1 sm:px-3 py-2.5 sm:py-3 text-right font-extrabold text-slate-950 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
-                          {formatINR(row.total)}
-                        </td>
-                      </>
-                    );
-
-                    if (!animateRows) {
-                      return (
-                        <tr key={row.id} className={rowClass}>
-                          {rowCells}
-                        </tr>
-                      );
-                    }
-
-                    return (
-                      <motion.tr
-                        key={row.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{
-                          duration: 0.28,
-                          delay: Math.min((groupIdx * 4 + rowIdx) * 0.045, 0.55),
-                          ease: [0.22, 1, 0.36, 1],
-                        }}
-                        className={rowClass}
-                      >
-                        {rowCells}
-                      </motion.tr>
-                    );
-                  })}
+                  {group.rows.map((row, rowIdx) => (
+                    <motion.tr
+                      key={row.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{
+                        duration: 0.28,
+                        delay: Math.min((groupIdx * 4 + rowIdx) * 0.045, 0.55),
+                        ease: [0.22, 1, 0.36, 1],
+                      }}
+                      className={`${rowIdx % 2 === 1 ? 'bg-slate-50/55' : 'bg-white'} hover:bg-rose-50/35 transition-colors align-middle`}
+                    >
+                      <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-600 border-r border-slate-200/70 truncate">
+                        {row.time}
+                      </td>
+                      <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-[var(--kk-brand)] border-r border-slate-200/70">
+                        <div className="whitespace-nowrap">{row.number}</div>
+                        {row.sellers && row.sellers.length > 0 && (
+                          <div className="font-sans text-[9.5px] sm:text-xs font-semibold text-slate-600 leading-tight mt-0.5 whitespace-normal break-words">
+                            {row.sellers.map((s) => `${s.sellerName}(${s.qty})`).join(' · ')}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-sans font-bold border-r border-slate-200/70">
+                        <span className="inline-block px-1 sm:px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-800 text-[9.5px] sm:text-xs leading-tight">
+                          {row.rank}
+                        </span>
+                      </td>
+                      <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-rose-700 border-r border-slate-200/70 whitespace-nowrap">
+                        {row.item}
+                      </td>
+                      <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                        {formatINR(row.prize)}
+                      </td>
+                      <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                        {formatINR(row.vc)}
+                      </td>
+                      <td className="px-1 sm:px-3 py-2.5 sm:py-3 text-right font-extrabold text-slate-950 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                        {formatINR(row.total)}
+                      </td>
+                    </motion.tr>
+                  ))}
 
                   <tr className="bg-slate-50/90 font-bold text-[10.5px] sm:text-[13.5px]">
                     <td colSpan={4} className="px-2 sm:px-3 py-2 border-r border-slate-200/70">
@@ -178,4 +158,4 @@ export const LimitPrizeView = memo(function LimitPrizeView({
       </div>
     </div>
   );
-});
+}

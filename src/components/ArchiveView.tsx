@@ -1,4 +1,4 @@
-import { AlertTriangle, Calendar, ChevronDown, ChevronRight, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
+import { AlertTriangle, Archive, Calendar, ChevronDown, ChevronRight, Download, RotateCcw, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useState } from 'react';
 import { formatDateDDMMYYYY, formatINR, isMyChoiceName } from '../engine/calculations';
@@ -10,15 +10,10 @@ interface ArchiveViewProps {
   billingDate: string;
   onChangeBillingDate?: (newDate: string) => void;
   snapshots: DaySnapshot[];
-  recycleBin?: DaySnapshot[];
-  onArchiveNow?: () => void;
+  onArchiveNow: () => void;
   onRestoreSnapshot?: (snapshot: DaySnapshot) => void;
-  onSyncSnapshotToParties?: (snapshot: DaySnapshot) => Promise<void> | void;
   onUpdateSnapshotDate: (snapshotId: string, newDate: string) => void;
   onDeleteSnapshot: (snapshotId: string) => void;
-  onRecoverFromBin?: (snapshotId: string) => void;
-  onPermanentDeleteFromBin?: (snapshotId: string) => void;
-  onEmptyRecycleBin?: () => void;
   title?: string;
   subtitle?: string;
   archiveButtonLabel?: string;
@@ -27,38 +22,102 @@ interface ArchiveViewProps {
   hideRestore?: boolean;
   hideLimitPrize?: boolean;
   readOnly?: boolean;
-  partyOwnerName?: string;
 }
 
 export function ArchiveView({
   snapshots,
-  recycleBin = [],
+  onArchiveNow,
   onRestoreSnapshot,
-  onSyncSnapshotToParties,
   onUpdateSnapshotDate,
   onDeleteSnapshot,
-  onRecoverFromBin,
-  onPermanentDeleteFromBin,
-  onEmptyRecycleBin,
   title,
   subtitle,
+  archiveButtonLabel = 'Archive & New Date',
   secondaryActionLabel,
   onSecondaryAction,
   hideRestore = false,
   hideLimitPrize = false,
   readOnly = false,
-  partyOwnerName,
 }: ArchiveViewProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedNames, setSelectedNames] = useState<Set<string> | null>(null);
   const [pendingDeleteSnap, setPendingDeleteSnap] = useState<DaySnapshot | null>(null);
-  const [pendingRestoreSnap, setPendingRestoreSnap] = useState<DaySnapshot | null>(null);
-  const [editingDateSnap, setEditingDateSnap] = useState<DaySnapshot | null>(null);
-  const [editingDateValue, setEditingDateValue] = useState<string>('');
-  const [recycleBinOpen, setRecycleBinOpen] = useState<boolean>(false);
-  const [pendingPermDeleteSnap, setPendingPermDeleteSnap] = useState<DaySnapshot | null>(null);
-  const [confirmEmptyBin, setConfirmEmptyBin] = useState<boolean>(false);
-  const [syncingSnapId, setSyncingSnapId] = useState<string | null>(null);
+
+  const handleExportCsv = () => {
+    const header = [
+      'Archive Date',
+      'Saved At',
+      'Trigger',
+      'Seller',
+      'MOR',
+      'DAY',
+      'EVE',
+      'SOLD',
+      'Bill',
+      'Prize',
+      'Fresh',
+      'Joma',
+      'Due',
+      'Total',
+      'Limit Grand Total',
+    ].join(',');
+
+    const rows: string[] = [header];
+    for (const snap of snapshots) {
+      const sellers = snap.sellerSummaries || [];
+      if (sellers.length === 0) {
+        rows.push(
+          [
+            snap.date,
+            snap.savedAt,
+            snap.trigger || 'manual',
+            'ALL',
+            0,
+            0,
+            0,
+            snap.totalSold,
+            snap.totalBill,
+            snap.totalPrize,
+            snap.totalBill - snap.totalPrize,
+            0,
+            0,
+            snap.totalNetPayable,
+            snap.limitGrandTotal,
+          ].join(',')
+        );
+      } else {
+        for (const s of sellers) {
+          rows.push(
+            [
+              snap.date,
+              snap.savedAt,
+              snap.trigger || 'manual',
+              `"${s.name}"`,
+              s.mor,
+              s.day,
+              s.eve,
+              s.sold,
+              s.bill,
+              s.prizeTotal,
+              s.fresh,
+              s.joma,
+              s.due,
+              s.total,
+              snap.limitGrandTotal,
+            ].join(',')
+          );
+        }
+      }
+    }
+
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kk-agency-archive-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-4">
@@ -69,12 +128,23 @@ export function ArchiveView({
           </h2>
           <p className="text-xs font-medium text-slate-600 mt-0.5">
             {subtitle ||
-              "Close Day saves today's snapshot, carries +Total → Due & -Total → Joma to the new date, and auto-deletes records after 30 days."}
+              "Archiving saves today's snapshot, carries +Total → Due & -Total → Joma to the new date, and auto-deletes records after 30 days."}
           </p>
         </div>
 
-        {!readOnly && secondaryActionLabel && onSecondaryAction && (
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={onArchiveNow}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl transition-colors cursor-pointer"
+            >
+              <Archive className="w-3.5 h-3.5" />
+              <span>{archiveButtonLabel}</span>
+            </button>
+          )}
+
+          {!readOnly && secondaryActionLabel && onSecondaryAction && (
             <button
               type="button"
               onClick={onSecondaryAction}
@@ -83,8 +153,19 @@ export function ArchiveView({
               <RotateCcw className="w-3.5 h-3.5" />
               <span>{secondaryActionLabel}</span>
             </button>
-          </div>
-        )}
+          )}
+
+          {snapshots.length > 0 && (
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export CSV</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {snapshots.length === 0 ? (
@@ -93,7 +174,7 @@ export function ArchiveView({
             No archived daily records yet.
           </p>
           <p className="text-xs font-medium text-slate-600">
-            Use &ldquo;Close Day&rdquo; on Seller Bill to save daily records.
+            Click &ldquo;Archive Current State&rdquo; above or use &ldquo;Close Day&rdquo; on Seller Bill.
           </p>
         </div>
       ) : (
@@ -186,53 +267,30 @@ export function ArchiveView({
                   </button>
 
                   {!readOnly && (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
+                    <div className="flex items-center gap-2">
+                      <label
                         title="Customize archived date"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          AppSounds.tap();
-                          setEditingDateSnap(snap);
-                          setEditingDateValue(snap.date);
-                        }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl cursor-pointer transition-colors"
+                        className="relative inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl cursor-pointer transition-colors"
                       >
                         <Calendar className="w-3.5 h-3.5" />
                         <span className="hidden sm:inline">Date</span>
-                      </button>
-                      {onSyncSnapshotToParties && (
-                        <button
-                          type="button"
-                          disabled={syncingSnapId === snap.id}
-                          title="Sync this date to all Master & Sub-Master archives"
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            AppSounds.tap();
-                            setSyncingSnapId(snap.id);
-                            await new Promise((r) => window.setTimeout(r, 0));
-                            try {
-                              await onSyncSnapshotToParties(snap);
-                            } finally {
-                              setSyncingSnapId((cur) => (cur === snap.id ? null : cur));
+                        <input
+                          type="date"
+                          aria-label={`Change date for archive ${snap.date}`}
+                          value={snap.date}
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              AppSounds.tap();
+                              onUpdateSnapshotDate(snap.id, e.target.value);
                             }
                           }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-colors cursor-pointer disabled:opacity-60"
-                        >
-                          <RefreshCw
-                            className={`w-3.5 h-3.5 ${syncingSnapId === snap.id ? 'animate-spin' : ''}`}
-                          />
-                          <span>{syncingSnapId === snap.id ? 'Syncing' : 'Sync IDs'}</span>
-                        </button>
-                      )}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer text-base"
+                        />
+                      </label>
                       {!hideRestore && onRestoreSnapshot && (
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            AppSounds.tap();
-                            setPendingRestoreSnap(snap);
-                          }}
+                          onClick={() => onRestoreSnapshot(snap)}
                           className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-[var(--kk-brand)] bg-[var(--kk-tint)] hover:opacity-90 border border-[var(--kk-tint-border)] rounded-xl transition-colors cursor-pointer"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
@@ -241,12 +299,11 @@ export function ArchiveView({
                       )}
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
+                        onClick={() => {
                           AppSounds.warning();
                           setPendingDeleteSnap(snap);
                         }}
-                        title="Move archived record to Recycle Bin"
+                        title="Delete archived record"
                         className="p-1.5 text-slate-600 hover:text-red-700 hover:bg-red-50 border border-slate-200 rounded-xl transition-colors cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -287,65 +344,6 @@ export function ArchiveView({
                         />
                       )}
                     </div>
-
-                    {(() => {
-                      if (!partyOwnerName) return null;
-                      const ownerUpper = partyOwnerName.trim().toUpperCase();
-                      const alreadyInSummaries = sellerSummaries.some(
-                        (s) => s.name.trim().toUpperCase() === ownerUpper
-                      );
-                      if (alreadyInSummaries) return null;
-                      const adminSum = snap.adminAccountSummary;
-                      const ownSeller = (snap.sellers || []).find(
-                        (s) => s.name.trim().toUpperCase() === ownerUpper
-                      );
-                      if (!adminSum && !ownSeller) return null;
-                      return (
-                        <div className="bg-indigo-50/90 border border-indigo-200 rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-indigo-950">
-                          <span className="uppercase tracking-wide">
-                            Admin Account · {adminSum?.name || ownSeller?.name}
-                          </span>
-                          <div className="flex flex-wrap items-center gap-3 font-mono-tabular">
-                            {adminSum ? (
-                              <>
-                                <span>Sold: {formatINR(adminSum.sold)}</span>
-                                <span>Bill: ₹{formatINR(adminSum.bill)}</span>
-                                <span className="text-emerald-700">
-                                  Prize: ₹{formatINR(adminSum.prizeTotal)}
-                                </span>
-                                <span className="text-sky-800">
-                                  Joma: ₹{formatINR(adminSum.joma)}
-                                </span>
-                                <span className="text-amber-800">
-                                  Due: ₹{formatINR(adminSum.due)}
-                                </span>
-                                <span
-                                  className={
-                                    adminSum.total > 0
-                                      ? 'text-emerald-700 font-extrabold'
-                                      : adminSum.total < 0
-                                        ? 'text-rose-600 font-extrabold'
-                                        : ''
-                                  }
-                                >
-                                  Total: ₹{formatINR(adminSum.total)}
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <span>Rate: ₹{formatINR(ownSeller!.rate)}</span>
-                                <span className="text-sky-800">
-                                  Joma: ₹{formatINR(ownSeller!.joma)}
-                                </span>
-                                <span className="text-amber-800">
-                                  Due: ₹{formatINR(ownSeller!.due)}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()}
 
                     {sellerSummaries.length > 0 && (
                       <>
@@ -655,282 +653,7 @@ export function ArchiveView({
         </div>
       )}
 
-      {/* Recycle Bin Section */}
-      {!readOnly && onRecoverFromBin && (
-        <div className="kk-surface-card rounded-2xl overflow-hidden">
-          <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setRecycleBinOpen((prev) => !prev);
-              }}
-              className="flex items-center gap-2.5 text-left cursor-pointer min-w-0"
-            >
-              {recycleBinOpen ? (
-                <ChevronDown className="w-4 h-4 text-slate-600 shrink-0" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-slate-600 shrink-0" />
-              )}
-              <Trash2 className="w-4 h-4 text-rose-600 shrink-0" />
-              <div>
-                <div className="text-sm font-bold text-slate-950">
-                  Recycle Bin ({recycleBin.length})
-                </div>
-                <div className="text-[11px] font-medium text-slate-600">
-                  Delete ki gayi archive dates yahan safe rehti hain — jab chahein Recover karein
-                </div>
-              </div>
-            </button>
-
-            {recycleBin.length > 0 && onEmptyRecycleBin && (
-              <button
-                type="button"
-                onClick={() => {
-                  AppSounds.warning();
-                  setConfirmEmptyBin(true);
-                }}
-                className="px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl cursor-pointer transition-colors shrink-0"
-              >
-                Empty Bin
-              </button>
-            )}
-          </div>
-
-          <AnimatePresence initial={false}>
-            {recycleBinOpen && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.18 }}
-                className="overflow-hidden border-t border-slate-200 bg-slate-50/70"
-              >
-                {recycleBin.length === 0 ? (
-                  <div className="px-4 py-6 text-center text-xs font-semibold text-slate-500">
-                    Recycle Bin khali hai.
-                  </div>
-                ) : (
-                  <div className="p-3 space-y-2.5">
-                    {recycleBin.map((binSnap) => (
-                      <div
-                        key={binSnap.id}
-                        className="bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5"
-                      >
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-950 flex flex-wrap items-center gap-1.5">
-                            <span>{formatDateDDMMYYYY(binSnap.date)}</span>
-                            <span className="text-[11px] font-semibold text-slate-500">
-                              · Deleted{' '}
-                              {binSnap.deletedAt
-                                ? new Date(binSnap.deletedAt).toLocaleDateString('en-IN', {
-                                    day: '2-digit',
-                                    month: 'short',
-                                  }) +
-                                  ' ' +
-                                  new Date(binSnap.deletedAt).toLocaleTimeString([], {
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                  })
-                                : ''}
-                            </span>
-                          </div>
-                          <div className="text-[11px] font-semibold text-slate-600 font-mono-tabular mt-0.5">
-                            Sold: {formatINR(binSnap.totalSold)} · Bill: ₹{formatINR(binSnap.totalBill)} · Prize: ₹{formatINR(binSnap.totalPrize)} · Net:{' '}
-                            <span
-                              className={
-                                binSnap.totalNetPayable > 0
-                                  ? 'text-emerald-700 font-bold'
-                                  : binSnap.totalNetPayable < 0
-                                    ? 'text-rose-600 font-bold'
-                                    : ''
-                              }
-                            >
-                              ₹{formatINR(binSnap.totalNetPayable)}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              AppSounds.success();
-                              onRecoverFromBin(binSnap.id);
-                            }}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl cursor-pointer transition-colors"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Recover</span>
-                          </button>
-                          {onPermanentDeleteFromBin && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                AppSounds.warning();
-                                setPendingPermDeleteSnap(binSnap);
-                              }}
-                              title="Delete permanently"
-                              className="p-1.5 text-rose-600 hover:text-rose-800 hover:bg-rose-50 border border-rose-200 rounded-xl cursor-pointer transition-colors"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
-
-      {/* Restore Archive Confirmation Modal */}
-      <AnimatePresence>
-        {pendingRestoreSnap && onRestoreSnapshot && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center p-4"
-            onClick={() => {
-              AppSounds.tap();
-              setPendingRestoreSnap(null);
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.94, y: 12 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 8 }}
-              transition={{ type: 'spring', stiffness: 460, damping: 32 }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
-            >
-              <div className="px-4 py-3.5 bg-indigo-50 border-b border-indigo-200 flex items-center gap-2.5">
-                <span className="p-2 rounded-xl bg-indigo-100 text-indigo-700 shrink-0">
-                  <RotateCcw className="w-4 h-4" />
-                </span>
-                <div>
-                  <h3 className="text-sm font-extrabold text-indigo-950">
-                    Confirm Restore Archive?
-                  </h3>
-                  <p className="text-[11px] font-semibold text-indigo-800">
-                    Confirm karein tabhi date restore hogi
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-3">
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1">
-                  <div className="font-bold font-mono-tabular text-slate-950">
-                    Date: {formatDateDDMMYYYY(pendingRestoreSnap.date)}
-                  </div>
-                  <div className="font-mono-tabular text-slate-700">
-                    Sold: {formatINR(pendingRestoreSnap.totalSold)} · Bill: ₹{formatINR(pendingRestoreSnap.totalBill)}
-                  </div>
-                  <div className="font-mono-tabular text-slate-700">
-                    Prize: ₹{formatINR(pendingRestoreSnap.totalPrize)} · Net: ₹{formatINR(pendingRestoreSnap.totalNetPayable)}
-                  </div>
-                </div>
-                <p className="text-xs font-medium text-slate-600">
-                  Kya aap <strong>{formatDateDDMMYYYY(pendingRestoreSnap.date)}</strong> ka archive data restore karke dekhna chahte hain?
-                </p>
-                <div className="flex items-center justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.tap();
-                      setPendingRestoreSnap(null);
-                    }}
-                    className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const target = pendingRestoreSnap;
-                      setPendingRestoreSnap(null);
-                      onRestoreSnapshot(target);
-                    }}
-                    className="px-4 py-2 text-xs font-bold text-white kk-brand-gradient hover:opacity-95 rounded-xl cursor-pointer transition-opacity"
-                  >
-                    Yes, Restore
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Edit Archive Date Modal (isolated from Restore button so mobile taps never open Calendar by mistake) */}
-      <AnimatePresence>
-        {editingDateSnap && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center p-4"
-            onClick={() => {
-              AppSounds.tap();
-              setEditingDateSnap(null);
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.94, y: 12 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 8 }}
-              transition={{ type: 'spring', stiffness: 460, damping: 32 }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-xs bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
-            >
-              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-[var(--kk-brand)] shrink-0" />
-                <h3 className="text-sm font-extrabold text-slate-950">Change Archive Date</h3>
-              </div>
-              <div className="p-4 space-y-3">
-                <input
-                  type="date"
-                  value={editingDateValue}
-                  onChange={(e) => setEditingDateValue(e.target.value)}
-                  className="w-full px-3 py-2.5 text-sm font-bold font-mono-tabular text-slate-950 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:border-[var(--kk-brand)] focus:outline-none"
-                />
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.tap();
-                      setEditingDateSnap(null);
-                    }}
-                    className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!editingDateValue}
-                    onClick={() => {
-                      if (editingDateValue) {
-                        AppSounds.success();
-                        onUpdateSnapshotDate(editingDateSnap.id, editingDateValue);
-                      }
-                      setEditingDateSnap(null);
-                    }}
-                    className="px-4 py-2 text-xs font-bold text-white kk-brand-gradient hover:opacity-95 rounded-xl cursor-pointer disabled:opacity-50"
-                  >
-                    Save Date
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Archive Delete (Move to Recycle Bin) Confirmation Modal */}
+      {/* Archive Delete Permission Confirmation Modal */}
       <AnimatePresence>
         {pendingDeleteSnap && (
           <motion.div
@@ -957,12 +680,10 @@ export function ArchiveView({
                 </span>
                 <div>
                   <h3 className="text-sm font-extrabold text-rose-950">
-                    {onRecoverFromBin ? 'Move Archive to Recycle Bin?' : 'Delete Archived Record?'}
+                    Delete Archived Record?
                   </h3>
                   <p className="text-[11px] font-semibold text-rose-800">
-                    {onRecoverFromBin
-                      ? 'Deleted record Recycle Bin me safe rahega'
-                      : 'Permission required before deleting'}
+                    Permission required before deleting
                   </p>
                 </div>
               </div>
@@ -980,9 +701,7 @@ export function ArchiveView({
                   </div>
                 </div>
                 <p className="text-xs font-medium text-slate-600">
-                  {onRecoverFromBin
-                    ? 'Is archive date ko delete karne ke baad yeh Recycle Bin me chala jayega — aap jab chahein wapas Recover kar sakte hain.'
-                    : 'Kya aap sach me is archive record ko delete karna chahte hain?'}
+                  Kya aap sach me is archive record ko permanently delete karna chahte hain?
                 </p>
                 <div className="flex items-center justify-end gap-2 pt-1">
                   <button
@@ -1004,139 +723,7 @@ export function ArchiveView({
                     }}
                     className="px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl cursor-pointer transition-colors"
                   >
-                    {onRecoverFromBin ? 'Move to Bin' : 'Yes, Delete'}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Permanent Delete from Recycle Bin Modal */}
-      <AnimatePresence>
-        {pendingPermDeleteSnap && onPermanentDeleteFromBin && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center p-4"
-            onClick={() => {
-              AppSounds.tap();
-              setPendingPermDeleteSnap(null);
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.94, y: 12 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 8 }}
-              transition={{ type: 'spring', stiffness: 460, damping: 32 }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
-            >
-              <div className="px-4 py-3.5 bg-rose-50 border-b border-rose-200 flex items-center gap-2.5">
-                <span className="p-2 rounded-xl bg-rose-100 text-rose-700 shrink-0">
-                  <AlertTriangle className="w-4 h-4" />
-                </span>
-                <div>
-                  <h3 className="text-sm font-extrabold text-rose-950">
-                    Delete Permanently?
-                  </h3>
-                  <p className="text-[11px] font-semibold text-rose-800">
-                    Recycle Bin se hamesha ke liye hat jayega
-                  </p>
-                </div>
-              </div>
-              <div className="p-4 space-y-3">
-                <p className="text-xs font-medium text-slate-600">
-                  Kya aap <strong>{formatDateDDMMYYYY(pendingPermDeleteSnap.date)}</strong> ko Recycle Bin se permanently delete karna chahte hain?
-                </p>
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.tap();
-                      setPendingPermDeleteSnap(null);
-                    }}
-                    className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.remove();
-                      onPermanentDeleteFromBin(pendingPermDeleteSnap.id);
-                      setPendingPermDeleteSnap(null);
-                    }}
-                    className="px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl cursor-pointer"
-                  >
-                    Delete Forever
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Empty Recycle Bin Confirmation Modal */}
-      <AnimatePresence>
-        {confirmEmptyBin && onEmptyRecycleBin && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-[2px] flex items-center justify-center p-4"
-            onClick={() => {
-              AppSounds.tap();
-              setConfirmEmptyBin(false);
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.94, y: 12 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 8 }}
-              transition={{ type: 'spring', stiffness: 460, damping: 32 }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
-            >
-              <div className="px-4 py-3.5 bg-rose-50 border-b border-rose-200 flex items-center gap-2.5">
-                <span className="p-2 rounded-xl bg-rose-100 text-rose-700 shrink-0">
-                  <AlertTriangle className="w-4 h-4" />
-                </span>
-                <div>
-                  <h3 className="text-sm font-extrabold text-rose-950">Empty Recycle Bin?</h3>
-                  <p className="text-[11px] font-semibold text-rose-800">
-                    Saare {recycleBin.length} deleted archives permanently hat jayenge
-                  </p>
-                </div>
-              </div>
-              <div className="p-4 space-y-3">
-                <p className="text-xs font-medium text-slate-600">
-                  Kya aap Recycle Bin ko poori tarah khali karna chahte hain?
-                </p>
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.tap();
-                      setConfirmEmptyBin(false);
-                    }}
-                    className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.remove();
-                      onEmptyRecycleBin();
-                      setConfirmEmptyBin(false);
-                    }}
-                    className="px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl cursor-pointer"
-                  >
-                    Yes, Empty Bin
+                    Yes, Delete
                   </button>
                 </div>
               </div>

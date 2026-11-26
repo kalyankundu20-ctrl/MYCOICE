@@ -1,6 +1,5 @@
 import { Archive, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useState } from 'react';
 import { formatDateDDMMYYYY, formatINR } from '../engine/calculations';
 import { AgencyConfig, AppState, DaySnapshot } from '../types/ledger';
 import { AppSounds } from '../utils/sound';
@@ -28,7 +27,6 @@ export function SettingsDrawer({
   onArchiveNow,
   onOpenArchiveSheet,
 }: SettingsDrawerProps) {
-  const [confirmRestoreId, setConfirmRestoreId] = useState<string | null>(null);
   return (
     <AnimatePresence>
       {isOpen && (
@@ -287,42 +285,16 @@ export function SettingsDrawer({
                             Sold: {formatINR(snap.totalSold)} · Net: ₹{formatINR(snap.totalNetPayable)}
                           </div>
                         </div>
-                        {confirmRestoreId === snap.id ? (
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                AppSounds.tap();
-                                setConfirmRestoreId(null);
-                              }}
-                              className="px-2 py-1 text-[11px] font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setConfirmRestoreId(null);
-                                onRestoreSnapshot(snap);
-                                onClose();
-                              }}
-                              className="px-2.5 py-1 text-[11px] font-bold text-white bg-indigo-700 hover:bg-indigo-800 rounded-lg cursor-pointer"
-                            >
-                              Confirm
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              AppSounds.tap();
-                              setConfirmRestoreId(snap.id);
-                            }}
-                            className="px-2.5 py-1 text-xs font-bold text-[var(--kk-brand)] bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer shrink-0"
-                          >
-                            Restore
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onRestoreSnapshot(snap);
+                            onClose();
+                          }}
+                          className="px-2.5 py-1 text-xs font-bold text-[var(--kk-brand)] bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer"
+                        >
+                          Restore
+                        </button>
                       </div>
                     ))}
                   </div>

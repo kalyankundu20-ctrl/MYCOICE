@@ -9,28 +9,20 @@ import {
   ClipboardPaste,
   Copy,
   Eraser,
+  LayoutGrid,
   Pencil,
   Plus,
   Redo2,
   Scissors,
   Search,
+  Table2,
   Trash2,
   Undo2,
   Users,
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import {
-  memo,
-  type ReactNode,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   formatINR,
   formatSessionRowsForCopy,
@@ -83,45 +75,17 @@ interface OverlayBoxRect {
   height: number;
 }
 
-const VIRTUAL_ROW_THRESHOLD = 45;
-const DEFAULT_VIRTUAL_ROW_HEIGHT = 44;
-const VIRTUAL_OVERSCAN = 14;
-const VIRTUAL_STEP_ROWS = 5;
-
-function findRowMetric(rows: RowMetric[], rowIdx: number): RowMetric | undefined {
-  if (rows.length === 0) return undefined;
-  const firstIdx = rows[0].rowIdx;
-  const offset = rowIdx - firstIdx;
-  if (offset >= 0 && offset < rows.length && rows[offset].rowIdx === rowIdx) {
-    return rows[offset];
-  }
-  let lo = 0;
-  let hi = rows.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const m = rows[mid];
-    if (m.rowIdx === rowIdx) return m;
-    if (m.rowIdx < rowIdx) lo = mid + 1;
-    else hi = mid - 1;
-  }
-  return undefined;
-}
-
 function computeBoxFromGeometry(
   geom: SheetGeometry,
   anchor: CellCoord,
   focus: CellCoord
 ): OverlayBoxRect | null {
-  if (geom.rows.length === 0) return null;
   const minRow = Math.min(anchor.rowIdx, focus.rowIdx);
   const maxRow = Math.max(anchor.rowIdx, focus.rowIdx);
   const minCol = Math.min(anchor.colIdx, focus.colIdx);
   const maxCol = Math.max(anchor.colIdx, focus.colIdx);
-  const firstMounted = geom.rows[0];
-  const lastMounted = geom.rows[geom.rows.length - 1];
-  if (maxRow < firstMounted.rowIdx || minRow > lastMounted.rowIdx) return null;
-  const topRow = findRowMetric(geom.rows, minRow) || firstMounted;
-  const bottomRow = findRowMetric(geom.rows, maxRow) || lastMounted;
+  const topRow = geom.rows[minRow];
+  const bottomRow = geom.rows[maxRow];
   const leftCol = geom.cols[minCol];
   const rightCol = geom.cols[maxCol];
   if (!topRow || !bottomRow || !leftCol || !rightCol) return null;
@@ -132,503 +96,6 @@ function computeBoxFromGeometry(
     height: Math.max(4, bottomRow.bottom - topRow.top),
   };
 }
-
-interface FastCellInputProps {
-  value: string;
-  debounceMs: number;
-  disabled?: boolean;
-  type?: 'text' | 'number';
-  inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
-  list?: string;
-  dataRowField?: string;
-  ariaLabel: string;
-  placeholder?: string;
-  className: string;
-  transform?: (raw: string) => string;
-  shouldImmediateFlush?: (nextVal: string, prevVal: string) => boolean;
-  onCommit: (nextVal: string, prevVal: string) => void;
-  onFocus: () => void;
-  onPaste?: (e: React.ClipboardEvent<HTMLInputElement>) => void;
-  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
-}
-
-const FastCellInput = memo(function FastCellInput({
-  value,
-  debounceMs,
-  disabled,
-  type = 'text',
-  inputMode,
-  list,
-  dataRowField,
-  ariaLabel,
-  placeholder,
-  className,
-  transform,
-  shouldImmediateFlush,
-  onCommit,
-  onFocus,
-  onPaste,
-  onKeyDown,
-}: FastCellInputProps) {
-  const [localValue, setLocalValue] = useState(value);
-  const focusedRef = useRef(false);
-  const pendingRef = useRef<{ next: string; prev: string } | null>(null);
-  const timerRef = useRef<number | null>(null);
-  const onCommitRef = useRef(onCommit);
-  onCommitRef.current = onCommit;
-
-  useEffect(() => {
-    if (!focusedRef.current && pendingRef.current === null) {
-      setLocalValue(value);
-    }
-  }, [value]);
-
-  const flushNow = useCallback(() => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    const pending = pendingRef.current;
-    if (pending) {
-      pendingRef.current = null;
-      onCommitRef.current(pending.next, pending.prev);
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) {
-        window.clearTimeout(timerRef.current);
-      }
-      if (pendingRef.current) {
-        const p = pendingRef.current;
-        pendingRef.current = null;
-        onCommitRef.current(p.next, p.prev);
-      }
-    };
-  }, []);
-
-  return (
-    <input
-      type={type}
-      disabled={disabled}
-      inputMode={inputMode}
-      list={list}
-      data-row-field={dataRowField}
-      aria-label={ariaLabel}
-      value={localValue}
-      placeholder={placeholder}
-      autoComplete="off"
-      autoCorrect="off"
-      autoCapitalize={inputMode === 'numeric' || inputMode === 'decimal' ? 'off' : 'characters'}
-      spellCheck={false}
-      enterKeyHint="next"
-      onFocus={(e) => {
-        focusedRef.current = true;
-        onFocus();
-        const inputEl = e.currentTarget;
-        // Defer full-cell selection by 1 tick so iOS Safari doesn't override it with start-of-text caret
-        window.setTimeout(() => {
-          if (document.activeElement === inputEl && inputEl.value.length > 0) {
-            try {
-              inputEl.setSelectionRange(0, inputEl.value.length);
-            } catch {
-              inputEl.select();
-            }
-          }
-        }, 0);
-      }}
-      onBlur={() => {
-        focusedRef.current = false;
-        flushNow();
-      }}
-      onChange={(e) => {
-        if (disabled) return;
-        const prevVal = localValue;
-        const nextVal = transform ? transform(e.target.value) : e.target.value;
-        setLocalValue(nextVal);
-        if (debounceMs <= 0 || (shouldImmediateFlush && shouldImmediateFlush(nextVal, prevVal))) {
-          if (timerRef.current !== null) {
-            window.clearTimeout(timerRef.current);
-            timerRef.current = null;
-          }
-          pendingRef.current = null;
-          onCommitRef.current(nextVal, prevVal);
-          return;
-        }
-        pendingRef.current = { next: nextVal, prev: prevVal };
-        if (timerRef.current !== null) {
-          window.clearTimeout(timerRef.current);
-        }
-        timerRef.current = window.setTimeout(() => {
-          timerRef.current = null;
-          const pending = pendingRef.current;
-          if (pending) {
-            pendingRef.current = null;
-            onCommitRef.current(pending.next, pending.prev);
-          }
-        }, debounceMs);
-      }}
-      onPaste={(e) => {
-        flushNow();
-        onPaste?.(e);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') {
-          flushNow();
-        }
-        onKeyDown?.(e);
-      }}
-      className={`select-text ${className}`}
-    />
-  );
-});
-
-const toUpperTransform = (v: string) => v.toUpperCase();
-const digits5Transform = (v: string) => v.replace(/\D/g, '').slice(0, 5);
-const qtyNumericTransform = (v: string) => v.replace(/[^\d.]/g, '');
-const flushOnFiveDigits = (next: string, prev: string) => next.length === 5 && prev.length < 5;
-
-interface VirtualSheetRowProps {
-  row: ComputedTicketRow;
-  visibleIdx: number;
-  sessionId: SessionId;
-  sessionDefaultItem: string;
-  readOnly: boolean;
-  commitDelayMs: number;
-  isRowSelected: boolean;
-  isPastedRow: boolean;
-  isPastedTop: boolean;
-  isPastedBottom: boolean;
-  isActiveSearchMatch: boolean;
-  isOtherSearchMatch: boolean;
-  nextVisibleRowId: string | null;
-  nameOptionNodes: ReactNode;
-  onToggleCheckbox: (rowId: string, visibleIdx: number, shiftKey: boolean) => void;
-  onCellTouchStart: (visibleIdx: number, colIdx: number, e: React.TouchEvent<HTMLTableCellElement>) => void;
-  onCellMouseDown: (visibleIdx: number, colIdx: number, e: React.MouseEvent<HTMLTableCellElement>) => void;
-  onCellFocus: (visibleIdx: number, colIdx: number) => void;
-  onUpdateRow: (rowId: string, patch: Partial<TicketEntryRow>) => void;
-  onSmartPaste: (e: React.ClipboardEvent<HTMLInputElement>, rowId: string) => void;
-  onFocusField: (selector: string) => void;
-  onInspectOverLimit: (row: ComputedTicketRow) => void;
-  onRequestDeleteRow: (row: ComputedTicketRow) => void;
-}
-
-const VirtualSheetTableRow = memo(function VirtualSheetTableRow({
-  row,
-  visibleIdx,
-  sessionId,
-  sessionDefaultItem,
-  readOnly,
-  commitDelayMs,
-  isRowSelected,
-  isPastedRow,
-  isPastedTop,
-  isPastedBottom,
-  isActiveSearchMatch,
-  isOtherSearchMatch,
-  nextVisibleRowId,
-  nameOptionNodes,
-  onToggleCheckbox,
-  onCellTouchStart,
-  onCellMouseDown,
-  onCellFocus,
-  onUpdateRow,
-  onSmartPaste,
-  onFocusField,
-  onInspectOverLimit,
-  onRequestDeleteRow,
-}: VirtualSheetRowProps) {
-  const isAutofilled = row.name.trim() === '' && row.resolvedName !== '';
-  const pastedQtyClass = !isPastedRow
-    ? 'border-r border-slate-200/70'
-    : [
-        'border-l-2 border-l-blue-600 border-r-2 border-r-blue-600 bg-blue-50/55',
-        isPastedTop ? 'border-t-2 border-t-blue-600' : '',
-        isPastedBottom ? 'border-b-2 border-b-blue-600' : '',
-      ]
-        .filter(Boolean)
-        .join(' ');
-
-  const qtyDisplay =
-    row.qtyOverride !== '' ? row.qtyOverride : row.qty ? String(row.qty) : '';
-
-  return (
-    <tr
-      data-row-id={row.id}
-      data-row-idx={visibleIdx}
-      className={`${
-        isActiveSearchMatch
-          ? 'bg-amber-100/95 ring-2 ring-inset ring-amber-500'
-          : isOtherSearchMatch
-            ? 'bg-amber-50/85 ring-1 ring-inset ring-amber-300'
-            : isRowSelected
-              ? 'bg-blue-50/90'
-              : row.statusType === 'overlimit'
-                ? 'bg-rose-50/75 hover:bg-rose-50'
-                : visibleIdx % 2 === 1
-                  ? 'bg-slate-50/60 hover:bg-indigo-50/35'
-                  : 'bg-white hover:bg-indigo-50/35'
-      }`}
-    >
-      <td className="p-0.5 text-center border-r border-slate-200/70">
-        <input
-          type="checkbox"
-          aria-label={`Select row ${row.rowIndex + 2}`}
-          checked={isRowSelected}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleCheckbox(row.id, visibleIdx, e.shiftKey);
-          }}
-          onChange={() => {}}
-          className="w-4 h-4 accent-blue-600 cursor-pointer align-middle"
-        />
-      </td>
-
-      <td className="hidden sm:table-cell px-0.5 py-2 sm:py-2.5 text-center border-r border-slate-200/70 text-[11px] sm:text-[13px] font-semibold font-mono-tabular text-slate-600">
-        {sessionId}
-      </td>
-
-      <td
-        data-cell-row={visibleIdx}
-        data-cell-col={0}
-        onTouchStart={(e) => onCellTouchStart(visibleIdx, 0, e)}
-        onMouseDown={(e) => onCellMouseDown(visibleIdx, 0, e)}
-        className="relative p-0.5 sm:px-1.5 sm:py-1 border-r border-slate-200/70 align-middle"
-      >
-        <div className="relative min-h-[34px] sm:min-h-[36px] flex items-center">
-          <span
-            aria-hidden="true"
-            className={`block w-full px-1 sm:pl-1.5 sm:pr-5 py-1 text-[11px] sm:text-xs leading-[1.2] whitespace-normal break-words pointer-events-none ${
-              isAutofilled
-                ? 'text-slate-400 font-semibold'
-                : row.name
-                  ? 'text-slate-900 font-extrabold'
-                  : 'text-slate-400 font-medium'
-            }`}
-          >
-            {row.name || (isAutofilled ? `↳ ${row.resolvedName}` : '')}
-          </span>
-          <select
-            aria-label={`Row ${row.rowIndex + 2} Seller Name`}
-            disabled={readOnly}
-            value={row.name}
-            onFocus={() => onCellFocus(visibleIdx, 0)}
-            onChange={(e) => !readOnly && onUpdateRow(row.id, { name: e.target.value })}
-            className={`absolute inset-0 w-full h-full opacity-0 text-[16px] sm:text-sm rounded-md disabled:cursor-default ${
-              readOnly ? 'cursor-default' : 'cursor-pointer'
-            }`}
-          >
-            <option value="">{isAutofilled ? `↳ ${row.resolvedName}` : ''}</option>
-            {nameOptionNodes}
-          </select>
-          <ChevronDown className="hidden sm:block w-3.5 h-3.5 text-slate-400 pointer-events-none absolute right-1 top-1/2 -translate-y-1/2" />
-        </div>
-      </td>
-
-      <td
-        data-cell-row={visibleIdx}
-        data-cell-col={1}
-        onTouchStart={(e) => onCellTouchStart(visibleIdx, 1, e)}
-        onMouseDown={(e) => onCellMouseDown(visibleIdx, 1, e)}
-        className="relative p-0 sm:px-1 sm:py-1 border-r border-slate-200/70"
-      >
-        <div className="ios-compact-wrap">
-          <FastCellInput
-            disabled={readOnly}
-            debounceMs={commitDelayMs}
-            list={readOnly ? undefined : `item-options-${sessionId}`}
-            ariaLabel={`Row ${row.rowIndex + 2} Item`}
-            value={row.item}
-            placeholder={sessionDefaultItem}
-            transform={toUpperTransform}
-            onFocus={() => onCellFocus(visibleIdx, 1)}
-            onCommit={(nextVal) =>
-              onUpdateRow(row.id, {
-                item: nextVal,
-                qtyOverride: '',
-                rangeOverride: '',
-              })
-            }
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                onFocusField(`input[data-row-field="table-start-${row.id}"]`);
-              }
-            }}
-            onPaste={(e) => onSmartPaste(e, row.id)}
-            className="ios-compact-input w-full px-0 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular uppercase text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-blue-50/70 rounded-md focus:outline-none disabled:opacity-90"
-          />
-        </div>
-      </td>
-
-      <td
-        data-cell-row={visibleIdx}
-        data-cell-col={2}
-        onTouchStart={(e) => onCellTouchStart(visibleIdx, 2, e)}
-        onMouseDown={(e) => onCellMouseDown(visibleIdx, 2, e)}
-        className="relative p-0 sm:px-1 sm:py-1 border-r border-slate-200/70"
-      >
-        <div className="ios-compact-wrap">
-          <FastCellInput
-            disabled={readOnly}
-            debounceMs={commitDelayMs}
-            inputMode="numeric"
-            dataRowField={`table-start-${row.id}`}
-            ariaLabel={`Row ${row.rowIndex + 2} Start Number`}
-            value={row.start}
-            placeholder="00000"
-            transform={digits5Transform}
-            shouldImmediateFlush={flushOnFiveDigits}
-            onFocus={() => onCellFocus(visibleIdx, 2)}
-            onCommit={(nextVal, prevVal) => {
-              onUpdateRow(row.id, {
-                start: nextVal,
-                qtyOverride: '',
-                rangeOverride: '',
-              });
-              if (nextVal.length === 5 && prevVal.length < 5) {
-                onFocusField(`input[data-row-field="table-end-${row.id}"]`);
-              }
-            }}
-            onPaste={(e) => onSmartPaste(e, row.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                onFocusField(`input[data-row-field="table-end-${row.id}"]`);
-              }
-            }}
-            className="ios-compact-input w-full px-0.5 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-900 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
-          />
-        </div>
-      </td>
-
-      <td
-        data-cell-row={visibleIdx}
-        data-cell-col={3}
-        onTouchStart={(e) => onCellTouchStart(visibleIdx, 3, e)}
-        onMouseDown={(e) => onCellMouseDown(visibleIdx, 3, e)}
-        className="relative p-0 sm:px-1 sm:py-1 border-r border-slate-200/70"
-      >
-        <div className="ios-compact-wrap">
-          <FastCellInput
-            disabled={readOnly}
-            debounceMs={commitDelayMs}
-            inputMode="numeric"
-            dataRowField={`table-end-${row.id}`}
-            ariaLabel={`Row ${row.rowIndex + 2} End Number`}
-            value={row.end}
-            placeholder="-"
-            transform={digits5Transform}
-            onFocus={() => onCellFocus(visibleIdx, 3)}
-            onCommit={(nextVal) =>
-              onUpdateRow(row.id, {
-                end: nextVal,
-                qtyOverride: '',
-                rangeOverride: '',
-              })
-            }
-            onPaste={(e) => onSmartPaste(e, row.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && nextVisibleRowId) {
-                e.preventDefault();
-                onFocusField(`input[data-row-field="table-start-${nextVisibleRowId}"]`);
-              }
-            }}
-            className="ios-compact-input w-full px-0.5 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-900 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
-          />
-        </div>
-      </td>
-
-      <td
-        data-cell-row={visibleIdx}
-        data-cell-col={4}
-        onTouchStart={(e) => onCellTouchStart(visibleIdx, 4, e)}
-        onMouseDown={(e) => onCellMouseDown(visibleIdx, 4, e)}
-        className={`relative p-0 sm:px-1 sm:py-1 ${pastedQtyClass}`}
-      >
-        <div className="ios-compact-wrap">
-          <FastCellInput
-            type="text"
-            inputMode="decimal"
-            disabled={readOnly}
-            debounceMs={commitDelayMs}
-            ariaLabel={`Row ${row.rowIndex + 2} Qty`}
-            value={qtyDisplay}
-            placeholder="0"
-            transform={qtyNumericTransform}
-            onFocus={() => onCellFocus(visibleIdx, 4)}
-            onCommit={(nextVal) => onUpdateRow(row.id, { qtyOverride: nextVal })}
-            className="ios-compact-input w-full px-0.5 sm:px-1.5 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-950 placeholder:text-slate-400 bg-transparent focus:bg-blue-50/70 rounded-md focus:outline-none disabled:opacity-90"
-          />
-        </div>
-      </td>
-
-      <td
-        title={row.limitStatus || undefined}
-        className="px-0.5 sm:px-1.5 py-1.5 sm:py-2 border-r border-slate-200/70 text-[10px] sm:text-xs font-mono-tabular text-center align-middle"
-      >
-        {row.statusType === 'ok' &&
-          (row.overLimitBreakdowns && row.overLimitBreakdowns.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => onInspectOverLimit(row)}
-              className="inline-flex items-center justify-center gap-0.5 font-bold text-emerald-700 whitespace-nowrap cursor-pointer hover:opacity-80"
-              title="Tap to see per-seller breakdown"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-              <span>OK</span>
-            </button>
-          ) : (
-            <span className="inline-flex items-center justify-center gap-0.5 font-bold text-emerald-700 whitespace-nowrap">
-              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-              <span>OK</span>
-            </span>
-          ))}
-        {row.statusType === 'warning' && (
-          <span className="inline-flex items-center justify-center gap-0.5 font-bold text-amber-700 whitespace-nowrap">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            <span>OK</span>
-          </span>
-        )}
-        {row.statusType === 'invalid' && (
-          <span className="font-bold text-amber-700 whitespace-nowrap">Invalid</span>
-        )}
-        {row.statusType === 'overlimit' && (
-          <button
-            type="button"
-            onClick={() => onInspectOverLimit(row)}
-            className="w-full text-center cursor-pointer hover:opacity-75"
-            title="Tap to see all sellers who contributed to over-limit"
-          >
-            {row.limitStatus.split('\n').map((line, idx) => (
-              <span
-                key={idx}
-                className="block whitespace-nowrap font-extrabold text-slate-950 tracking-[-0.02em] leading-[1.35]"
-              >
-                {line}
-              </span>
-            ))}
-          </button>
-        )}
-      </td>
-
-      <td className="p-0.5 text-center">
-        {!readOnly && (
-          <button
-            type="button"
-            onClick={() => onRequestDeleteRow(row)}
-            title="Delete row"
-            className="p-1 rounded-md text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 mx-auto" />
-          </button>
-        )}
-      </td>
-    </tr>
-  );
-});
 
 interface SessionSheetViewProps {
   sessionId: SessionId;
@@ -706,14 +173,12 @@ export function SessionSheetView({
   readOnly = false,
   lockNotice,
 }: SessionSheetViewProps) {
-  // Fit-to-screen table view so ALL columns stay visible cleanly
-  const viewMode = 'table' as 'table' | 'cards';
+  // Default to fit-to-screen table so ALL columns are visible on ONE screen with zero horizontal scroll!
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIdx, setActiveMatchIdx] = useState(0);
-  const [searchShowContext, setSearchShowContext] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const stickySearchBarRef = useRef<HTMLDivElement>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'overlimit'>('all');
+  const [confirmClear, setConfirmClear] = useState(false);
   const [inspectedOverLimitRow, setInspectedOverLimitRow] =
     useState<ComputedTicketRow | null>(null);
   const [pendingDeleteConfirm, setPendingDeleteConfirm] = useState<{
@@ -725,7 +190,6 @@ export function SessionSheetView({
   // Google Sheets-style Selection State
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
-  const [showSelectionHandles, setShowSelectionHandles] = useState(false);
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [bulkEditValue, setBulkEditValue] = useState('');
   const lastCheckedIdxRef = useRef<number | null>(null);
@@ -744,15 +208,6 @@ export function SessionSheetView({
   const isMouseDraggingRef = useRef(false);
   const isHandleDraggingRef = useRef(false);
   const [isTouchDragging, setIsTouchDragging] = useState(false);
-  // Virtualization state driven by the outer page scroller (zero frozen boxes, quantized for 0-re-render smooth scrolling)
-  const [virtualRange, setVirtualRange] = useState<{ startIdx: number; endIdx: number }>({
-    startIdx: 0,
-    endIdx: 60,
-  });
-  const virtualRangeRef = useRef<{ startIdx: number; endIdx: number }>(virtualRange);
-  virtualRangeRef.current = virtualRange;
-  const [visibleCardsLimit, setVisibleCardsLimit] = useState(80);
-  const scrollRafRef = useRef<number | null>(null);
   const suppressFocusAnchorRef = useRef(false);
   const lastTouchInteractionAtRef = useRef<number>(0);
   const longPressTimerRef = useRef<number | null>(null);
@@ -883,17 +338,17 @@ export function SessionSheetView({
       currRowIdx: number
     ): number => {
       const last = rows.length - 1;
-      if (last < 0) return currRowIdx;
-      if (last === 0) return rows[0].rowIdx;
-      const currMetric = findRowMetric(rows, currRowIdx);
+      if (last <= 0) return 0;
+      const clampedCurr = Math.max(0, Math.min(last, currRowIdx));
+      const currMetric = rows[clampedCurr];
       // 5px hysteresis band around current row stops micro-tremor jitter at borders
-      if (currMetric && effY >= currMetric.top - 5 && effY <= currMetric.bottom + 5) {
-        return currMetric.rowIdx;
+      if (effY >= currMetric.top - 5 && effY <= currMetric.bottom + 5) {
+        return clampedCurr;
       }
-      if (effY <= rows[0].top) return rows[0].rowIdx;
-      if (effY >= rows[last].bottom) return rows[last].rowIdx;
+      if (effY <= rows[0].top) return 0;
+      if (effY >= rows[last].bottom) return last;
 
-      // Binary search over monotonically increasing mounted row tops
+      // Binary search over monotonically increasing row tops
       let lo = 0;
       let hi = last;
       while (lo <= hi) {
@@ -904,11 +359,10 @@ export function SessionSheetView({
         } else if (effY > m.bottom) {
           lo = mid + 1;
         } else {
-          return m.rowIdx;
+          return mid;
         }
       }
-      const clampedIdx = Math.max(0, Math.min(last, lo));
-      return rows[clampedIdx].rowIdx;
+      return Math.max(0, Math.min(last, lo));
     };
 
     const resolveColFromLocalX = (
@@ -1116,7 +570,7 @@ export function SessionSheetView({
     }, 2800);
   }, []);
 
-  const focusField = useCallback((selector: string) => {
+  const focusField = (selector: string) => {
     const immediate = document.querySelector<HTMLInputElement>(selector);
     if (immediate) {
       immediate.focus();
@@ -1126,129 +580,7 @@ export function SessionSheetView({
       const el = document.querySelector<HTMLInputElement>(selector);
       el?.focus();
     });
-  }, []);
-  const focusFieldStable = focusField;
-
-  const onUpdateRowRef = useRef(onUpdateRow);
-  onUpdateRowRef.current = onUpdateRow;
-  const onUpdateRowStable = useCallback(
-    (rowId: string, patch: Partial<TicketEntryRow>) => {
-      onUpdateRowRef.current(rowId, patch);
-    },
-    []
-  );
-
-  const handleInspectOverLimitRow = useCallback((row: ComputedTicketRow) => {
-    AppSounds.tap();
-    setInspectedOverLimitRow(row);
-  }, []);
-
-  const handleRequestDeleteSingleRow = useCallback((row: ComputedTicketRow) => {
-    const labelParts = [
-      row.resolvedName || row.name || 'Blank row',
-      row.item || '',
-      row.start ? (row.end ? `${row.start}-${row.end}` : row.start) : '',
-      row.qty > 0 ? `Qty ${row.qty}` : '',
-    ].filter(Boolean);
-    AppSounds.warning();
-    setPendingDeleteConfirm({
-      mode: 'single',
-      rowIds: [row.id],
-      summary: labelParts.join(' · '),
-    });
-  }, []);
-
-  const handleCellInputFocusStable = useCallback((visibleIdx: number, colIdx: number) => {
-    if (
-      suppressFocusAnchorRef.current ||
-      isHandleDraggingRef.current ||
-      isMouseDraggingRef.current
-    ) {
-      return;
-    }
-    const coord = { rowIdx: visibleIdx, colIdx };
-    rangeAnchorRef.current = coord;
-    rangeFocusRef.current = coord;
-    setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
-    // Hide corner drag handles during direct single-cell typing so adjacent boxes stay 100% tappable
-    setShowSelectionHandles(false);
-    setRangeAnchor(coord);
-    setRangeFocus(coord);
-  }, []);
-
-  const handleCellTouchStartStable = useCallback(
-    (visibleIdx: number, colIdx: number, e: React.TouchEvent<HTMLTableCellElement>) => {
-      lastTouchInteractionAtRef.current = performance.now();
-      const touch = e.touches[0];
-      if (!touch) return;
-      if (longPressTimerRef.current !== null) {
-        window.clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-      const startX = touch.clientX;
-      const startY = touch.clientY;
-      touchStartPosRef.current = { x: startX, y: startY };
-      // Long-press (550ms steady hold) activates multi-cell range selection handles; quick taps always edit directly
-      longPressTimerRef.current = window.setTimeout(() => {
-        longPressTimerRef.current = null;
-        const coord = { rowIdx: visibleIdx, colIdx };
-        if (document.activeElement instanceof HTMLElement) {
-          document.activeElement.blur();
-        }
-        window.getSelection()?.removeAllRanges();
-        AppSounds.tap();
-        rangeAnchorRef.current = coord;
-        rangeFocusRef.current = coord;
-        setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
-        setBulkEditOpen(false);
-        setShowSelectionHandles(true);
-        setRangeAnchor(coord);
-        setRangeFocus(coord);
-      }, 550);
-    },
-    []
-  );
-
-  const handleCellMouseDownStable = useCallback(
-    (visibleIdx: number, colIdx: number, e: React.MouseEvent<HTMLTableCellElement>) => {
-      if (performance.now() - lastTouchInteractionAtRef.current < 650) return;
-      if (e.button !== 0) return;
-
-      const coord = { rowIdx: visibleIdx, colIdx };
-      if (e.shiftKey && rangeAnchorRef.current) {
-        e.preventDefault();
-        AppSounds.tap();
-        rangeFocusRef.current = coord;
-        setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
-        setRangeFocus(coord);
-        return;
-      }
-
-      const geom = captureSheetGeometry();
-      if (!geom) return;
-      dragGeometryRef.current = geom;
-      dragMetaRef.current = {
-        anchorRow: visibleIdx,
-        anchorCol: colIdx,
-        startFocusCol: colIdx,
-        startX: e.clientX,
-        startY: e.clientY,
-        grabOffsetX: 0,
-        grabOffsetY: 0,
-        singleColLock: false,
-        hasMoved: false,
-      };
-      rangeAnchorRef.current = coord;
-      rangeFocusRef.current = coord;
-      lastTouchPointRef.current = { x: e.clientX, y: e.clientY };
-      isMouseDraggingRef.current = true;
-      setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
-      setBulkEditOpen(false);
-      setRangeAnchor(coord);
-      setRangeFocus(coord);
-    },
-    [captureSheetGeometry]
-  );
+  };
 
   const handleQuickSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1310,37 +642,34 @@ export function SessionSheetView({
     }
   }, []);
 
-  const deferredSearchQuery = useDeferredValue(searchQuery);
-  const trimmedSearch = deferredSearchQuery.trim();
+  const trimmedSearch = searchQuery.trim();
   const isNumberSearch = /^\d{1,5}$/.test(trimmedSearch);
 
   const rowMatchesNumberQuery = useCallback((r: ComputedTicketRow, q: string): boolean => {
-    if (r.start.includes(q) || r.end.includes(q)) {
+    if (r.start.toLowerCase().includes(q) || r.end.toLowerCase().includes(q)) {
       return true;
     }
     // Also match middle numbers within the row's Start..End ticket range (e.g. searching 31857 matches 31855-59)
-    if (q.length >= 2 && q.length <= 5 && r.startNumInt !== null && r.rangeEndInt !== null) {
+    if (/^\d{2,5}$/.test(q) && r.startNumInt !== null && r.rangeEndInt !== null) {
       const numQuery = parseInt(q, 10);
       if (q.length === 5) {
         return numQuery >= r.startNumInt && numQuery <= r.rangeEndInt;
       }
-      const span = r.rangeEndInt - r.startNumInt;
-      if (span <= 200) {
+      if (r.rangeEndInt - r.startNumInt <= 1000) {
         for (let n = r.startNumInt; n <= r.rangeEndInt; n++) {
           if (pad5(n).includes(q)) return true;
         }
       } else {
-        // O(1) suffix match check for wide ranges (never blocks main thread even on 30,000 rows!)
         const mod = Math.pow(10, q.length);
-        const rem = r.startNumInt % mod;
-        const delta = (numQuery - rem + mod) % mod;
-        if (r.startNumInt + delta <= r.rangeEndInt) return true;
+        for (let n = r.startNumInt; n <= r.rangeEndInt; n++) {
+          if (n % mod === numQuery) return true;
+        }
       }
     }
     return false;
   }, []);
 
-  const baseFilteredRows = useMemo(
+  const filteredRows = useMemo(
     () =>
       computation.rows.filter((r) => {
         if (
@@ -1350,8 +679,8 @@ export function SessionSheetView({
         ) {
           return false;
         }
-        // On numeric search (e.g. 25127), keep all rows available so matches can be pinned
-        // right at the top AND full upar/niche context remains one tap away.
+        // On numeric search (e.g. 86307), keep ALL surrounding rows (upar & niche) visible
+        // and scroll the matched number directly to the first visible row!
         if (!trimmedSearch || isNumberSearch) return true;
         const q = trimmedSearch.toLowerCase();
         const textMatch =
@@ -1367,368 +696,79 @@ export function SessionSheetView({
     [computation.rows, statusFilter, trimmedSearch, isNumberSearch]
   );
 
-  const baseMatchedRowIndices = useMemo(() => {
+  const matchedRowIndices = useMemo(() => {
     if (!isNumberSearch) return [] as number[];
     const q = trimmedSearch.toLowerCase();
     const indices: number[] = [];
-    for (let i = 0; i < baseFilteredRows.length; i++) {
-      if (rowMatchesNumberQuery(baseFilteredRows[i], q)) {
+    for (let i = 0; i < filteredRows.length; i++) {
+      if (rowMatchesNumberQuery(filteredRows[i], q)) {
         indices.push(i);
       }
     }
     return indices;
-  }, [isNumberSearch, trimmedSearch, baseFilteredRows, rowMatchesNumberQuery]);
-
-  const safeMatchIdx =
-    baseMatchedRowIndices.length > 0 ? Math.min(activeMatchIdx, baseMatchedRowIndices.length - 1) : 0;
-  const activeMatchOriginalIdx =
-    baseMatchedRowIndices.length > 0 ? baseMatchedRowIndices[safeMatchIdx] : -1;
-  const activeMatchedRowId =
-    activeMatchOriginalIdx >= 0 ? baseFilteredRows[activeMatchOriginalIdx]?.id ?? null : null;
-  const aboveMatchCount = activeMatchOriginalIdx >= 0 ? activeMatchOriginalIdx : 0;
-  const belowMatchCount =
-    activeMatchOriginalIdx >= 0
-      ? Math.max(0, baseFilteredRows.length - 1 - activeMatchOriginalIdx)
-      : 0;
+  }, [isNumberSearch, trimmedSearch, filteredRows, rowMatchesNumberQuery]);
 
   const matchedRowIdSet = useMemo(() => {
     const set = new Set<string>();
-    for (const idx of baseMatchedRowIndices) {
-      const row = baseFilteredRows[idx];
+    for (const idx of matchedRowIndices) {
+      const row = filteredRows[idx];
       if (row) set.add(row.id);
     }
     return set;
-  }, [baseMatchedRowIndices, baseFilteredRows]);
+  }, [matchedRowIndices, filteredRows]);
 
-  const isPinnedSearchTop =
-    isNumberSearch && baseMatchedRowIndices.length > 0 && !searchShowContext;
-
-  // When a searched number is found, place ALL matching rows right at the TOP of the table/cards
-  // (with the active match first) so it is immediately visible under the header without scrolling.
-  const filteredRows = useMemo(() => {
-    if (!isPinnedSearchTop) return baseFilteredRows;
-    const matchedOrdered: ComputedTicketRow[] = [];
-    for (let offset = 0; offset < baseMatchedRowIndices.length; offset++) {
-      const origIdx = baseMatchedRowIndices[(safeMatchIdx + offset) % baseMatchedRowIndices.length];
-      const row = baseFilteredRows[origIdx];
-      if (row) matchedOrdered.push(row);
-    }
-    const rest: ComputedTicketRow[] = [];
-    for (let i = 0; i < baseFilteredRows.length; i++) {
-      const row = baseFilteredRows[i];
-      if (!matchedRowIdSet.has(row.id)) {
-        rest.push(row);
-      }
-    }
-    return [...matchedOrdered, ...rest];
-  }, [isPinnedSearchTop, baseFilteredRows, baseMatchedRowIndices, safeMatchIdx, matchedRowIdSet]);
-
-  const matchedRowIndices = baseMatchedRowIndices;
-  const activeMatchVisibleIdx = isPinnedSearchTop
-    ? baseMatchedRowIndices.length > 0
-      ? 0
-      : -1
-    : activeMatchOriginalIdx;
+  const safeMatchIdx =
+    matchedRowIndices.length > 0 ? Math.min(activeMatchIdx, matchedRowIndices.length - 1) : 0;
+  const activeMatchVisibleIdx =
+    matchedRowIndices.length > 0 ? matchedRowIndices[safeMatchIdx] : -1;
+  const activeMatchedRowId =
+    activeMatchVisibleIdx >= 0 ? filteredRows[activeMatchVisibleIdx]?.id ?? null : null;
+  const aboveMatchCount = activeMatchVisibleIdx >= 0 ? activeMatchVisibleIdx : 0;
+  const belowMatchCount =
+    activeMatchVisibleIdx >= 0 ? Math.max(0, filteredRows.length - 1 - activeMatchVisibleIdx) : 0;
 
   useEffect(() => {
     setActiveMatchIdx(0);
-    setSearchShowContext(false);
   }, [trimmedSearch, statusFilter]);
 
-  const getOuterScrollRoot = useCallback((): HTMLElement | null => {
-    return (
-      (tableContainerRef.current?.closest('[data-kk-scroll-root="true"]') as HTMLElement | null) ||
-      (document.querySelector('[data-kk-scroll-root="true"]') as HTMLElement | null)
-    );
-  }, []);
-
-  const isVirtualized = viewMode === 'table' && filteredRows.length > VIRTUAL_ROW_THRESHOLD;
-  const commitDelayMs =
-    filteredRows.length > 3000 ? 180 : filteredRows.length > 300 ? 110 : 0;
-
-  const syncOuterVirtualWindow = useCallback(() => {
-    const total = filteredRows.length;
-    if (total === 0) return;
-    const container = tableContainerRef.current;
-    const scrollRoot = getOuterScrollRoot();
-    if (!container) return;
-
-    const rootTop = scrollRoot ? scrollRoot.getBoundingClientRect().top : 0;
-    const viewportH = scrollRoot ? scrollRoot.clientHeight : window.innerHeight;
-    const theadH = theadRef.current ? theadRef.current.offsetHeight : 38;
-    const tbodyTopInViewport = container.getBoundingClientRect().top + theadH - rootTop;
-
-    const visibleTopInBody = Math.max(0, -tbodyTopInViewport);
-    const visibleBottomInBody = Math.max(0, viewportH - tbodyTopInViewport);
-    const rowH = DEFAULT_VIRTUAL_ROW_HEIGHT;
-    const maxIdx = total - 1;
-
-    const rawStart = Math.floor(visibleTopInBody / rowH) - VIRTUAL_OVERSCAN;
-    const quantizedStart = Math.max(
-      0,
-      Math.floor(rawStart / VIRTUAL_STEP_ROWS) * VIRTUAL_STEP_ROWS
-    );
-    const startIdx = Math.min(maxIdx, quantizedStart);
-
-    const rawEnd = Math.ceil(visibleBottomInBody / rowH) + VIRTUAL_OVERSCAN;
-    const quantizedEnd = Math.ceil(rawEnd / VIRTUAL_STEP_ROWS) * VIRTUAL_STEP_ROWS;
-    const minWindowEnd = startIdx + Math.ceil((viewportH || 640) / rowH) + VIRTUAL_OVERSCAN;
-    const endIdx = Math.min(maxIdx, Math.max(minWindowEnd, quantizedEnd));
-
-    const prev = virtualRangeRef.current;
-    if (prev.startIdx !== startIdx || prev.endIdx !== endIdx) {
-      const next = { startIdx, endIdx };
-      virtualRangeRef.current = next;
-      setVirtualRange(next);
-    }
-  }, [filteredRows.length, getOuterScrollRoot]);
-
-  // Reset virtualization window and Cards window when switching sessions or filters
-  useEffect(() => {
-    setVisibleCardsLimit(80);
-    const initialEnd = Math.min(Math.max(0, filteredRows.length - 1), 60);
-    const next = { startIdx: 0, endIdx: initialEnd };
-    virtualRangeRef.current = next;
-    setVirtualRange(next);
-  }, [sessionId, statusFilter]);
-
-  // Drive virtualization directly from the outer page scroller (passive listener + RAF, zero inner scroll trap)
-  useEffect(() => {
-    if (!isVirtualized) return;
-
-    syncOuterVirtualWindow();
-
-    const scrollRoot = getOuterScrollRoot();
-    const scrollTarget: HTMLElement | Window = scrollRoot || window;
-
-    const onScrollOrResize = () => {
-      if (scrollRafRef.current !== null) return;
-      scrollRafRef.current = window.requestAnimationFrame(() => {
-        scrollRafRef.current = null;
-        syncOuterVirtualWindow();
-      });
-    };
-
-    scrollTarget.addEventListener('scroll', onScrollOrResize, { passive: true });
-    window.addEventListener('resize', onScrollOrResize, { passive: true });
-    return () => {
-      scrollTarget.removeEventListener('scroll', onScrollOrResize);
-      window.removeEventListener('resize', onScrollOrResize);
-      if (scrollRafRef.current !== null) {
-        window.cancelAnimationFrame(scrollRafRef.current);
-        scrollRafRef.current = null;
-      }
-    };
-  }, [isVirtualized, getOuterScrollRoot, syncOuterVirtualWindow]);
-
-  const virtualWindow = useMemo(() => {
-    if (!isVirtualized) {
-      return {
-        startIdx: 0,
-        endIdx: Math.max(0, filteredRows.length - 1),
-        topSpacerPx: 0,
-        bottomSpacerPx: 0,
-      };
-    }
-    const maxIdx = Math.max(0, filteredRows.length - 1);
-    const startIdx = Math.max(0, Math.min(maxIdx, virtualRange.startIdx));
-    const endIdx = Math.max(startIdx, Math.min(maxIdx, virtualRange.endIdx));
-    const rowH = DEFAULT_VIRTUAL_ROW_HEIGHT;
-    const topSpacerPx = startIdx * rowH;
-    const bottomSpacerPx = Math.max(0, (maxIdx - endIdx) * rowH);
-    return { startIdx, endIdx, topSpacerPx, bottomSpacerPx };
-  }, [isVirtualized, filteredRows.length, virtualRange.startIdx, virtualRange.endIdx]);
-
-  const scrollSheetToEdge = useCallback(
-    (edge: 'top' | 'bottom') => {
-      const scrollRoot = getOuterScrollRoot();
-      if (edge === 'top') {
-        if (scrollRoot) {
-          scrollRoot.scrollTo({ top: 0, behavior: 'auto' });
-        } else {
-          window.scrollTo({ top: 0, behavior: 'auto' });
-        }
-        const next = { startIdx: 0, endIdx: Math.min(Math.max(0, filteredRows.length - 1), 60) };
-        virtualRangeRef.current = next;
-        setVirtualRange(next);
-      } else {
-        const maxIdx = Math.max(0, filteredRows.length - 1);
-        const startIdx = Math.max(0, maxIdx - 50);
-        const next = { startIdx, endIdx: maxIdx };
-        virtualRangeRef.current = next;
-        setVirtualRange(next);
-        window.requestAnimationFrame(() => {
-          if (scrollRoot) {
-            scrollRoot.scrollTo({
-              top: Math.max(0, scrollRoot.scrollHeight - scrollRoot.clientHeight),
-              behavior: 'auto',
-            });
-          } else {
-            window.scrollTo({
-              top: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
-              behavior: 'auto',
-            });
-          }
-          syncOuterVirtualWindow();
-        });
-      }
-    },
-    [filteredRows.length, getOuterScrollRoot, syncOuterVirtualWindow]
-  );
-
-  const nameOptionNodes = useMemo(
-    () =>
-      availableNames.map((n) => (
-        <option key={n} value={n}>
-          {n}
-        </option>
-      )),
-    [availableNames]
-  );
-
   const scrollMatchedRowIntoPosition = useCallback(
-    (peekAboveRows = 0, smooth = false, targetIndexOverride?: number) => {
+    (peekAboveRows = 0, smooth = false) => {
       if (!isNumberSearch || !activeMatchedRowId) return;
-      const targetVisibleIdx =
-        targetIndexOverride !== undefined ? targetIndexOverride : activeMatchVisibleIdx;
       if (viewMode === 'table') {
-        const scrollRoot = getOuterScrollRoot();
+        const scrollEl = tableScrollRef.current;
         const tbodyEl = tbodyRef.current;
-        const containerEl = tableContainerRef.current;
-        if (!tbodyEl || !containerEl) return;
-
-        const getStickyOffset = () =>
-          stickySearchBarRef.current ? stickySearchBarRef.current.offsetHeight + 8 : 12;
-
-        const alignExactRow = () => {
-          const tr = tbodyEl.querySelector<HTMLTableRowElement>(
-            `tr[data-row-id="${activeMatchedRowId}"]`
-          );
-          if (!tr) return false;
-          const trRect = tr.getBoundingClientRect();
-          const rowHeight = Math.max(trRect.height, DEFAULT_VIRTUAL_ROW_HEIGHT);
-          const stickyOffset = getStickyOffset();
-          if (scrollRoot) {
-            const rootRect = scrollRoot.getBoundingClientRect();
-            const targetTop =
-              trRect.top -
-              rootRect.top +
-              scrollRoot.scrollTop -
-              stickyOffset -
-              peekAboveRows * rowHeight;
-            scrollRoot.scrollTo({
-              top: Math.max(0, targetTop),
-              behavior: smooth ? 'smooth' : 'auto',
-            });
-          } else {
-            const targetTop =
-              trRect.top + window.scrollY - stickyOffset - peekAboveRows * rowHeight;
-            window.scrollTo({
-              top: Math.max(0, targetTop),
-              behavior: smooth ? 'smooth' : 'auto',
-            });
-          }
-          syncOuterVirtualWindow();
-          return true;
-        };
-
-        if (targetVisibleIdx >= 0) {
-          const maxIdx = Math.max(0, filteredRows.length - 1);
-          const nextStart = Math.max(0, targetVisibleIdx - VIRTUAL_OVERSCAN);
-          const nextEnd = Math.min(maxIdx, targetVisibleIdx + 36);
-          if (
-            targetVisibleIdx < virtualRangeRef.current.startIdx ||
-            targetVisibleIdx > virtualRangeRef.current.endIdx
-          ) {
-            const next = { startIdx: nextStart, endIdx: nextEnd };
-            virtualRangeRef.current = next;
-            setVirtualRange(next);
-          }
-
-          if (!alignExactRow()) {
-            const theadH = theadRef.current ? theadRef.current.offsetHeight : 38;
-            const containerRect = containerEl.getBoundingClientRect();
-            const stickyOffset = getStickyOffset();
-            if (scrollRoot) {
-              const rootRect = scrollRoot.getBoundingClientRect();
-              const tbodyOrigin = containerRect.top - rootRect.top + scrollRoot.scrollTop + theadH;
-              const estimatedTop = Math.max(
-                0,
-                tbodyOrigin +
-                  (targetVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
-                  stickyOffset
-              );
-              scrollRoot.scrollTop = estimatedTop;
-            } else {
-              const tbodyOrigin = containerRect.top + window.scrollY + theadH;
-              const estimatedTop = Math.max(
-                0,
-                tbodyOrigin +
-                  (targetVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
-                  stickyOffset
-              );
-              window.scrollTo(0, estimatedTop);
-            }
-
-            window.requestAnimationFrame(() => {
-              window.requestAnimationFrame(() => {
-                alignExactRow();
-              });
-            });
-          }
-        }
-      } else {
-        if (targetVisibleIdx >= visibleCardsLimit) {
-          setVisibleCardsLimit(targetVisibleIdx + 40);
-        }
-        window.requestAnimationFrame(() => {
-          const cardEl = cardListRef.current?.querySelector<HTMLElement>(
-            `[data-card-row-id="${activeMatchedRowId}"]`
-          );
-          cardEl?.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' });
+        if (!scrollEl || !tbodyEl) return;
+        const tr = tbodyEl.querySelector<HTMLTableRowElement>(
+          `tr[data-row-id="${activeMatchedRowId}"]`
+        );
+        if (!tr) return;
+        const theadHeight = theadRef.current?.getBoundingClientRect().height ?? 0;
+        const scrollRect = scrollEl.getBoundingClientRect();
+        const trRect = tr.getBoundingClientRect();
+        const rowHeight = Math.max(trRect.height, 40);
+        const targetTop =
+          trRect.top - scrollRect.top + scrollEl.scrollTop - theadHeight - peekAboveRows * rowHeight;
+        scrollEl.scrollTo({
+          top: Math.max(0, targetTop),
+          behavior: smooth ? 'smooth' : 'auto',
         });
+      } else {
+        const cardEl = cardListRef.current?.querySelector<HTMLElement>(
+          `[data-card-row-id="${activeMatchedRowId}"]`
+        );
+        cardEl?.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' });
       }
     },
-    [
-      isNumberSearch,
-      activeMatchedRowId,
-      activeMatchVisibleIdx,
-      filteredRows.length,
-      viewMode,
-      visibleCardsLimit,
-      getOuterScrollRoot,
-      syncOuterVirtualWindow,
-    ]
+    [isNumberSearch, activeMatchedRowId, viewMode]
   );
 
-  // When matches are pinned at the top of the table, ensure virtualWindow includes index 0 immediately
   useEffect(() => {
-    if (!isPinnedSearchTop) return;
-    const nextEnd = Math.min(Math.max(0, filteredRows.length - 1), 60);
-    if (virtualRangeRef.current.startIdx !== 0) {
-      const next = { startIdx: 0, endIdx: nextEnd };
-      virtualRangeRef.current = next;
-      setVirtualRange(next);
-    }
-  }, [isPinnedSearchTop, activeMatchedRowId, filteredRows.length]);
-
-  // When user switches to context view (showing upar/niche surrounding rows), scroll the match cleanly to the top
-  useEffect(() => {
-    if (!isNumberSearch || !activeMatchedRowId || !searchShowContext) return;
+    if (!isNumberSearch || !activeMatchedRowId) return;
     const raf = window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        scrollMatchedRowIntoPosition(2, false, activeMatchOriginalIdx);
-      });
+      scrollMatchedRowIntoPosition(0, false);
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [
-    isNumberSearch,
-    activeMatchedRowId,
-    searchShowContext,
-    activeMatchOriginalIdx,
-    viewMode,
-    scrollMatchedRowIntoPosition,
-  ]);
+  }, [isNumberSearch, activeMatchedRowId, viewMode, trimmedSearch, scrollMatchedRowIntoPosition]);
 
   // Normalized rectangular cell selection bounds (when >= 2 cells or Shift/Drag selected)
   const cellRangeBounds = useMemo(() => {
@@ -1873,7 +913,6 @@ export function SessionSheetView({
   const clearSelection = useCallback(() => {
     setSelectedRowIds(new Set());
     setRangeSelectMode(false);
-    setShowSelectionHandles(false);
     setBulkEditOpen(false);
     setBulkEditValue('');
     setRangeAnchor(null);
@@ -1926,7 +965,7 @@ export function SessionSheetView({
           ? { rowIdx: cellRangeBounds.maxRow, colIdx: cellRangeBounds.maxCol }
           : { rowIdx: cellRangeBounds.minRow, colIdx: cellRangeBounds.minCol };
 
-      const targetRowMetric = findRowMetric(geom.rows, movingFocus.rowIdx);
+      const targetRowMetric = geom.rows[movingFocus.rowIdx];
       const targetColMetric = geom.cols[movingFocus.colIdx];
       const handleDotX = targetColMetric
         ? corner === 'bottomRight'
@@ -2003,20 +1042,8 @@ export function SessionSheetView({
     lastCheckedIdxRef.current = visibleIdx;
   };
 
-  const handleToggleRowCheckboxRef = useRef(handleToggleRowCheckbox);
-  handleToggleRowCheckboxRef.current = handleToggleRowCheckbox;
-  const handleToggleRowCheckboxStable = useCallback(
-    (rowId: string, visibleIdx: number, shiftKey: boolean) => {
-      handleToggleRowCheckboxRef.current(rowId, visibleIdx, shiftKey);
-    },
-    []
-  );
-
   const allFilteredSelected =
-    selectedRowIds.size > 0 &&
-    filteredRows.length > 0 &&
-    selectedRowIds.size >= filteredRows.length &&
-    filteredRows.every((r) => selectedRowIds.has(r.id));
+    filteredRows.length > 0 && filteredRows.every((r) => selectedRowIds.has(r.id));
 
   const handleToggleSelectAll = () => {
     AppSounds.tap();
@@ -2413,15 +1440,6 @@ export function SessionSheetView({
     showPasteNotice(`Pasted ${parsed.length} row${parsed.length > 1 ? 's' : ''}`);
   };
 
-  const handleSmartCellPasteRef = useRef(handleSmartCellPaste);
-  handleSmartCellPasteRef.current = handleSmartCellPaste;
-  const handleSmartCellPasteStable = useCallback(
-    (e: React.ClipboardEvent<HTMLInputElement>, targetRowId?: string) => {
-      handleSmartCellPasteRef.current(e, targetRowId);
-    },
-    []
-  );
-
   const handleSheetKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const mod = e.ctrlKey || e.metaKey;
     const targetEl = e.target as HTMLElement | null;
@@ -2497,22 +1515,17 @@ export function SessionSheetView({
     }
   };
 
-  const cardRows = useMemo(() => {
-    if (viewMode !== 'cards') return [] as ComputedTicketRow[];
-    const hasFilter = (deferredSearchQuery.trim() !== '' && !isNumberSearch) || statusFilter === 'overlimit';
+  const cardRows = (() => {
+    const hasFilter = (searchQuery.trim() !== '' && !isNumberSearch) || statusFilter === 'overlimit';
     if (hasFilter) return filteredRows;
-    const populated: ComputedTicketRow[] = [];
-    let firstEmpty: ComputedTicketRow | null = null;
-    for (let i = 0; i < filteredRows.length; i++) {
-      const r = filteredRows[i];
-      if (r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride) {
-        populated.push(r);
-      } else if (!firstEmpty) {
-        firstEmpty = r;
-      }
-    }
+    const populated = filteredRows.filter(
+      (r) => r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride
+    );
+    const firstEmpty = filteredRows.find(
+      (r) => !r.name && !r.item && !r.start && !r.end && !r.qtyOverride && !r.rangeOverride
+    );
     return firstEmpty ? [...populated, firstEmpty] : populated;
-  }, [viewMode, deferredSearchQuery, isNumberSearch, statusFilter, filteredRows]);
+  })();
 
   const highlightedSet = useMemo(
     () => new Set(highlightedRowIds || []),
@@ -2541,27 +1554,16 @@ export function SessionSheetView({
     };
   }, [filteredRows, highlightedSet]);
 
-  const { overLimitRowCount, filledRowCount } = useMemo(() => {
-    let overLimit = 0;
-    let filled = 0;
-    const rows = computation.rows;
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      if (
-        r.statusType === 'overlimit' ||
-        (r.overLimitBreakdowns && r.overLimitBreakdowns.length > 0)
-      ) {
-        overLimit++;
-      }
-      if (
-        (r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride) &&
-        !r.isExcludedFromCount
-      ) {
-        filled++;
-      }
-    }
-    return { overLimitRowCount: overLimit, filledRowCount: filled };
-  }, [computation.rows]);
+  const overLimitRowCount = computation.rows.filter(
+    (r) =>
+      r.statusType === 'overlimit' ||
+      (r.overLimitBreakdowns && r.overLimitBreakdowns.length > 0)
+  ).length;
+  const filledRowCount = computation.rows.filter(
+    (r) =>
+      (r.name || r.item || r.start || r.end || r.qtyOverride || r.rangeOverride) &&
+      !r.isExcludedFromCount
+  ).length;
 
   return (
     <div
@@ -2798,29 +1800,23 @@ export function SessionSheetView({
         </div>
       )}
 
-      {/* Sticky Search & Match Bar (always visible while scrolled so user can search again without scrolling up) */}
-      <div
-        ref={stickySearchBarRef}
-        className="sticky top-0 z-30 bg-[var(--kk-canvas)]/95 backdrop-blur-xs pt-0.5 pb-1.5 -mx-2 px-2 sm:mx-0 sm:px-0 space-y-1.5"
-      >
-        <div className="kk-surface-card rounded-2xl p-2 flex items-center gap-1.5 shadow-xs">
-          <div className="relative flex-1 min-w-0">
+      {/* Structured Workspace Toolbar (Compact 2-Row Mobile Fit) */}
+      <div className="kk-surface-card rounded-2xl p-2 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-1.5">
+        {/* Row 1: Search + Filter + View Mode */}
+        <div className="flex items-center gap-1.5 w-full lg:w-auto">
+          <div className="relative flex-1 min-w-0 sm:flex-initial sm:w-48">
             <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
-              ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && isNumberSearch && matchedRowIndices.length > 0) {
                   e.preventDefault();
-                  searchInputRef.current?.blur();
                   if (matchedRowIndices.length > 1) {
                     setActiveMatchIdx((prev) => (prev + 1) % matchedRowIndices.length);
-                  } else if (searchShowContext) {
-                    scrollMatchedRowIntoPosition(2, true, activeMatchOriginalIdx);
                   } else {
-                    scrollMatchedRowIntoPosition(0, true, 0);
+                    scrollMatchedRowIntoPosition(0, true);
                   }
                 }
               }}
@@ -2831,10 +1827,7 @@ export function SessionSheetView({
               <button
                 type="button"
                 aria-label="Clear search"
-                onClick={() => {
-                  setSearchQuery('');
-                  searchInputRef.current?.focus();
-                }}
+                onClick={() => setSearchQuery('')}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-950 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
@@ -2868,176 +1861,241 @@ export function SessionSheetView({
               Limit ({overLimitRowCount})
             </button>
           </div>
-        </div>
 
-        {isNumberSearch && (
-          <div
-            className={`rounded-2xl px-3 py-1.5 flex items-center justify-between gap-2 text-xs font-bold border shadow-xs ${
-              matchedRowIndices.length > 0
-                ? 'bg-amber-50 border-amber-300 text-amber-950'
-                : 'bg-slate-50 border-slate-200 text-slate-600'
-            }`}
-          >
-            {matchedRowIndices.length > 0 ? (
-              <>
-                <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.tap();
-                      searchInputRef.current?.blur();
-                      if (searchShowContext) {
-                        setSearchShowContext(false);
-                        scrollSheetToEdge('top');
-                      } else {
-                        scrollMatchedRowIntoPosition(0, true, 0);
-                      }
-                    }}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500 text-white font-mono-tabular font-black text-[11px] cursor-pointer"
-                    title="Show searched number at top"
-                  >
-                    <span>{trimmedSearch}</span>
-                    {matchedRowIndices.length > 1 && (
-                      <span className="opacity-90">
-                        ({safeMatchIdx + 1}/{matchedRowIndices.length})
-                      </span>
-                    )}
-                  </button>
-                  <span className="text-[11px] font-semibold text-amber-900/85 truncate">
-                    Row #{activeMatchOriginalIdx + 1} · ↑{aboveMatchCount} upar · ↓{belowMatchCount} niche
-                  </span>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  {viewMode === 'table' && (aboveMatchCount > 0 || searchShowContext) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        AppSounds.tap();
-                        searchInputRef.current?.blur();
-                        if (searchShowContext) {
-                          setSearchShowContext(false);
-                          scrollSheetToEdge('top');
-                        } else {
-                          setSearchShowContext(true);
-                        }
-                      }}
-                      className="h-7 px-2 inline-flex items-center gap-0.5 rounded-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 text-[11px] font-extrabold cursor-pointer"
-                      title={
-                        searchShowContext
-                          ? 'Matched number ko top par dekhein'
-                          : 'Upar aur niche ke rows ke saath dekhein'
-                      }
-                    >
-                      <ChevronUp className="w-3.5 h-3.5" />
-                      <span>{searchShowContext ? 'Top Pe' : 'Upar'}</span>
-                    </button>
-                  )}
-                  {matchedRowIndices.length > 1 && (
-                    <div className="inline-flex items-center">
-                      <button
-                        type="button"
-                        aria-label="Previous matching number"
-                        onClick={() => {
-                          AppSounds.tap();
-                          setActiveMatchIdx(
-                            (prev) => (prev - 1 + matchedRowIndices.length) % matchedRowIndices.length
-                          );
-                        }}
-                        className="h-7 w-7 inline-flex items-center justify-center rounded-l-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 cursor-pointer"
-                      >
-                        <ChevronUp className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Next matching number"
-                        onClick={() => {
-                          AppSounds.tap();
-                          setActiveMatchIdx((prev) => (prev + 1) % matchedRowIndices.length);
-                        }}
-                        className="h-7 w-7 inline-flex items-center justify-center rounded-r-lg bg-white hover:bg-amber-100 border border-l-0 border-amber-300 text-amber-950 cursor-pointer"
-                      >
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <span className="text-[11px] font-semibold">
-                <strong className="font-mono-tabular text-slate-900">{trimmedSearch}</strong> — koi matching number nahi mila
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Compact Sheet Actions Bar (Undo/Redo + Paste/Copy) */}
-      <div className="kk-surface-card rounded-2xl px-2 py-1.5 flex items-center justify-between sm:justify-end gap-1 overflow-x-auto no-scrollbar">
-        {!readOnly && (
-          <>
-            <div className="inline-flex items-center shrink-0">
-              <button
-                type="button"
-                disabled={!canUndo}
-                onClick={() => {
-                  AppSounds.tap();
-                  onUndo();
-                  showPasteNotice('Undid last change');
-                }}
-                className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-l-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
-                title="Undo (Ctrl+Z)"
-              >
-                <Undo2 className="w-3 h-3" />
-                <span>Undo</span>
-              </button>
-              <button
-                type="button"
-                disabled={!canRedo}
-                onClick={() => {
-                  AppSounds.tap();
-                  onRedo();
-                  showPasteNotice('Redid change');
-                }}
-                className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-l-0 border-slate-200 rounded-r-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
-                title="Redo (Ctrl+Y)"
-              >
-                <Redo2 className="w-3 h-3" />
-                <span>Redo</span>
-              </button>
-            </div>
-
+          <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl shrink-0">
             <button
               type="button"
               onClick={() => {
                 AppSounds.tap();
-                setPastePanelOpen((v) => !v);
+                setViewMode('table');
               }}
-              className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer transition-colors ${
-                pastePanelOpen
-                  ? 'bg-[var(--kk-brand)] text-white border-[var(--kk-brand)]'
-                  : 'bg-indigo-50 hover:bg-indigo-100 text-[var(--kk-brand)] border-indigo-200'
+              className={`h-7 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
+                viewMode === 'table' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
               }`}
+              title="All columns grid"
             >
-              <ClipboardPaste className="w-3 h-3" />
-              <span>Paste</span>
+              <Table2 className="w-3 h-3" />
+              <span className="hidden sm:inline">All Cols</span>
             </button>
-          </>
-        )}
+            <button
+              type="button"
+              onClick={() => {
+                AppSounds.tap();
+                setViewMode('cards');
+              }}
+              className={`h-7 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
+                viewMode === 'cards' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
+              }`}
+              title="Card view"
+            >
+              <LayoutGrid className="w-3 h-3" />
+              <span className="hidden sm:inline">Cards</span>
+            </button>
+          </div>
+        </div>
 
-        <button
-          type="button"
-          onClick={() => void handleCopySelectionOrSheet()}
-          disabled={filledRowCount === 0 && !hasSelection}
-          className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer disabled:opacity-40 transition-colors ${
-            copiedBanner
-              ? 'bg-emerald-700 text-white border-emerald-700'
-              : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+        {/* Row 2: Undo/Redo + Paste/Copy + Row Operations (Single Compact Row) */}
+        <div className="flex items-center justify-between sm:justify-end gap-1 overflow-x-auto no-scrollbar">
+          {!readOnly && (
+            <>
+              <div className="inline-flex items-center shrink-0">
+                <button
+                  type="button"
+                  disabled={!canUndo}
+                  onClick={() => {
+                    AppSounds.tap();
+                    onUndo();
+                    showPasteNotice('Undid last change');
+                  }}
+                  className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-l-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                  title="Undo (Ctrl+Z)"
+                >
+                  <Undo2 className="w-3 h-3" />
+                  <span>Undo</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!canRedo}
+                  onClick={() => {
+                    AppSounds.tap();
+                    onRedo();
+                    showPasteNotice('Redid change');
+                  }}
+                  className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-l-0 border-slate-200 rounded-r-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                  title="Redo (Ctrl+Y)"
+                >
+                  <Redo2 className="w-3 h-3" />
+                  <span>Redo</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  AppSounds.tap();
+                  setPastePanelOpen((v) => !v);
+                }}
+                className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer transition-colors ${
+                  pastePanelOpen
+                    ? 'bg-[var(--kk-brand)] text-white border-[var(--kk-brand)]'
+                    : 'bg-indigo-50 hover:bg-indigo-100 text-[var(--kk-brand)] border-indigo-200'
+                }`}
+              >
+                <ClipboardPaste className="w-3 h-3" />
+                <span>Paste</span>
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void handleCopySelectionOrSheet()}
+            disabled={filledRowCount === 0 && !hasSelection}
+            className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer disabled:opacity-40 transition-colors ${
+              copiedBanner
+                ? 'bg-emerald-700 text-white border-emerald-700'
+                : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+            }`}
+          >
+            {copiedBanner ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+            <span>{copiedBanner ? 'Copied' : selectedRowIds.size > 0 ? `Copy (${selectedRowIds.size})` : 'Copy'}</span>
+          </button>
+
+          {!readOnly && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  AppSounds.tap();
+                  onAddRows(5);
+                }}
+                className="shrink-0 h-7.5 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl cursor-pointer transition-colors"
+              >
+                +5
+              </button>
+
+              {!confirmClear ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    AppSounds.tap();
+                    setConfirmClear(true);
+                  }}
+                  className="shrink-0 h-7.5 px-2 text-[11px] font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl cursor-pointer transition-colors"
+                >
+                  Clear
+                </button>
+              ) : (
+                <div className="shrink-0 h-7.5 flex items-center gap-1 bg-red-50 border border-red-200 px-1.5 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      AppSounds.remove();
+                      onClearSession();
+                      clearSelection();
+                      setConfirmClear(false);
+                    }}
+                    className="px-1.5 py-0.5 text-[11px] font-bold text-white bg-red-700 rounded-lg cursor-pointer"
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClear(false)}
+                    className="px-1 py-0.5 text-[11px] font-bold text-slate-800 cursor-pointer"
+                  >
+                    No
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {isNumberSearch && (
+        <div
+          className={`rounded-2xl px-3 py-1.5 flex items-center justify-between gap-2 text-xs font-bold border shadow-xs ${
+            matchedRowIndices.length > 0
+              ? 'bg-amber-50 border-amber-300 text-amber-950'
+              : 'bg-slate-50 border-slate-200 text-slate-600'
           }`}
         >
-          {copiedBanner ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-          <span>{copiedBanner ? 'Copied' : selectedRowIds.size > 0 ? `Copy (${selectedRowIds.size})` : 'Copy'}</span>
-        </button>
-      </div>
+          {matchedRowIndices.length > 0 ? (
+            <>
+              <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    AppSounds.tap();
+                    scrollMatchedRowIntoPosition(0, true);
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500 text-white font-mono-tabular font-black text-[11px] cursor-pointer"
+                  title="Jump searched number to first row"
+                >
+                  <span>{trimmedSearch}</span>
+                  {matchedRowIndices.length > 1 && (
+                    <span className="opacity-90">
+                      ({safeMatchIdx + 1}/{matchedRowIndices.length})
+                    </span>
+                  )}
+                </button>
+                <span className="text-[11px] font-semibold text-amber-900/85 truncate">
+                  Row #{activeMatchVisibleIdx + 1} · ↑{aboveMatchCount} upar · ↓{belowMatchCount} niche
+                </span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                {aboveMatchCount > 0 && viewMode === 'table' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      AppSounds.tap();
+                      scrollMatchedRowIntoPosition(2, true);
+                    }}
+                    className="h-7 px-2 inline-flex items-center gap-0.5 rounded-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 text-[11px] font-extrabold cursor-pointer"
+                    title="Upar ke 2 numbers bhi saath dekhein"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                    <span>Upar</span>
+                  </button>
+                )}
+                {matchedRowIndices.length > 1 && (
+                  <div className="inline-flex items-center">
+                    <button
+                      type="button"
+                      aria-label="Previous matching number"
+                      onClick={() => {
+                        AppSounds.tap();
+                        setActiveMatchIdx(
+                          (prev) => (prev - 1 + matchedRowIndices.length) % matchedRowIndices.length
+                        );
+                      }}
+                      className="h-7 w-7 inline-flex items-center justify-center rounded-l-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 cursor-pointer"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Next matching number"
+                      onClick={() => {
+                        AppSounds.tap();
+                        setActiveMatchIdx((prev) => (prev + 1) % matchedRowIndices.length);
+                      }}
+                      className="h-7 w-7 inline-flex items-center justify-center rounded-r-lg bg-white hover:bg-amber-100 border border-l-0 border-amber-300 text-amber-950 cursor-pointer"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <span className="text-[11px] font-semibold">
+              <strong className="font-mono-tabular text-slate-900">{trimmedSearch}</strong> — koi matching number nahi mila
+            </span>
+          )}
+        </div>
+      )}
 
       {pastedSummary && (
         <div className="bg-blue-50 border-2 border-blue-600 text-blue-950 rounded-2xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-xs">
@@ -3079,155 +2137,489 @@ export function SessionSheetView({
         </div>
       )}
 
-      {/* FIT-ON-ONE-SCREEN TABLE VIEW: Virtualized for 15,000+ rows at 60fps */}
+      {/* FIT-ON-ONE-SCREEN TABLE VIEW: 100% Width, Table-Fixed, Zero Horizontal Cutoff! */}
       {viewMode === 'table' ? (
-        <div className="space-y-1.5">
-          {isVirtualized && (
-            <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-slate-100/90 border border-slate-200 rounded-xl text-[11px] font-bold text-slate-700">
-              <span className="font-mono-tabular truncate">
-                Showing rows {virtualWindow.startIdx + 1}–{Math.min(filteredRows.length, virtualWindow.endIdx + 1)} of{' '}
-                <strong className="text-slate-950">{formatINR(filteredRows.length)}</strong>
-              </span>
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    AppSounds.tap();
-                    scrollSheetToEdge('top');
-                  }}
-                  className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-lg bg-white hover:bg-slate-200 border border-slate-200 text-slate-800 cursor-pointer"
-                >
-                  <ChevronUp className="w-3 h-3" />
-                  <span>Top</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    AppSounds.tap();
-                    scrollSheetToEdge('bottom');
-                  }}
-                  className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-lg bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] text-white cursor-pointer"
-                >
-                  <ChevronDown className="w-3 h-3" />
-                  <span>Bottom</span>
-                </button>
-              </div>
-            </div>
-          )}
-          <div ref={tableScrollRef}>
-            <div ref={tableContainerRef} className="relative">
-              <div
-                className={`kk-surface-card rounded-2xl overflow-hidden ${
-                  isTouchDragging ? 'select-none touch-none' : ''
-                }`}
+        <div
+          ref={tableScrollRef}
+          className={
+            isNumberSearch && matchedRowIndices.length > 0
+              ? 'kk-surface-card rounded-2xl max-h-[58vh] overflow-y-auto overscroll-contain'
+              : ''
+          }
+        >
+        <div ref={tableContainerRef} className="relative">
+          <div
+            className={`${
+              isNumberSearch && matchedRowIndices.length > 0
+                ? 'select-none sm:select-auto'
+                : 'kk-surface-card rounded-2xl overflow-hidden select-none sm:select-auto'
+            } ${isTouchDragging ? 'touch-none' : ''}`}
+          >
+            <table className="w-full table-fixed border-collapse">
+              <thead
+                ref={theadRef}
+                className={isNumberSearch && matchedRowIndices.length > 0 ? 'sticky top-0 z-20' : ''}
               >
-                <table className="w-full table-fixed border-collapse">
-                  <thead ref={theadRef}>
-                    <tr className="kk-table-head text-white text-[10.5px] sm:text-xs font-bold uppercase tracking-[0.03em] whitespace-nowrap">
-                      <th className="w-[4.5%] sm:w-[4%] px-0.5 py-2.5 sm:py-3 text-center border-r border-white/10">
-                        <input
-                          type="checkbox"
-                          aria-label="Select all rows"
-                          checked={allFilteredSelected}
-                          onChange={handleToggleSelectAll}
-                          className="w-4 h-4 accent-blue-500 cursor-pointer align-middle"
-                        />
-                      </th>
-                      <th className="hidden sm:table-cell sm:w-[5.5%] px-1 py-2.5 sm:py-3 text-center border-r border-white/10">
-                        Time
-                      </th>
-                      <th className="w-[18.5%] sm:w-[16%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
-                        Name
-                      </th>
-                      <th className="w-[10%] sm:w-[9%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
-                        Item
-                      </th>
-                      <th className="w-[13.5%] sm:w-[13%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
-                        Start
-                      </th>
-                      <th className="w-[13.5%] sm:w-[13%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
-                        End
-                      </th>
-                      <th className="w-[8.5%] sm:w-[8.5%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
-                        Qty
-                      </th>
-                      <th className="w-[27%] sm:w-[26.5%] px-0.5 sm:px-2 py-2.5 sm:py-3 text-center border-r border-white/10 whitespace-nowrap">
-                        Limit Status
-                      </th>
-                      <th className="w-[4.5%] sm:w-[4.5%] px-0.5 py-2.5 sm:py-3 text-center"></th>
-                    </tr>
-                  </thead>
-                  <tbody
-                    ref={tbodyRef}
-                    className={`divide-y divide-slate-200/80 text-slate-950 ${
-                      isTouchDragging ? 'pointer-events-none select-none' : ''
+                <tr className="kk-table-head text-white text-[10.5px] sm:text-xs font-bold uppercase tracking-[0.03em] whitespace-nowrap">
+                  <th className="w-[5%] sm:w-[4%] px-0.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all rows"
+                      checked={allFilteredSelected}
+                      onChange={handleToggleSelectAll}
+                      className="w-4 h-4 accent-blue-500 cursor-pointer align-middle"
+                    />
+                  </th>
+                  <th className="hidden sm:table-cell sm:w-[5.5%] px-1 py-2.5 sm:py-3 text-center border-r border-white/10">
+                    Time
+                  </th>
+                  <th className="w-[22%] sm:w-[18%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                    Name
+                  </th>
+                  <th className="w-[11.5%] sm:w-[9.5%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                    Item
+                  </th>
+                  <th className="w-[13.5%] sm:w-[13%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                    Start
+                  </th>
+                  <th className="w-[7.5%] sm:w-[8%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                    End
+                  </th>
+                  <th className="w-[8.5%] sm:w-[9%] px-0.5 sm:px-1.5 py-2.5 sm:py-3 text-center border-r border-white/10">
+                    Qty
+                  </th>
+                  <th className="w-[27.5%] sm:w-[28.5%] px-0.5 sm:px-2 py-2.5 sm:py-3 text-center border-r border-white/10 whitespace-nowrap">
+                    Limit Status
+                  </th>
+                  <th className="w-[4.5%] sm:w-[4.5%] px-0.5 py-2.5 sm:py-3 text-center"></th>
+                </tr>
+              </thead>
+            <tbody
+              ref={tbodyRef}
+              className={`divide-y divide-slate-200/80 text-slate-950 ${
+                isTouchDragging ? 'pointer-events-none select-none' : ''
+              }`}
+            >
+              {filteredRows.map((row, visibleIdx) => {
+                const isAutofilled = row.name.trim() === '' && row.resolvedName !== '';
+                const prevVisibleRow = filteredRows[visibleIdx - 1];
+                const nextVisibleRow = filteredRows[visibleIdx + 1];
+                const isRowSelected = selectedRowIds.has(row.id);
+                const isPastedRow = highlightedSet.has(row.id);
+                const isPastedTop =
+                  isPastedRow && (!prevVisibleRow || !highlightedSet.has(prevVisibleRow.id));
+                const isPastedBottom =
+                  isPastedRow && (!nextVisibleRow || !highlightedSet.has(nextVisibleRow.id));
+                const pastedQtyClass = !isPastedRow
+                  ? 'border-r border-slate-200/70'
+                  : [
+                      'border-l-2 border-l-blue-600 border-r-2 border-r-blue-600 bg-blue-50/55',
+                      isPastedTop ? 'border-t-2 border-t-blue-600' : '',
+                      isPastedBottom ? 'border-b-2 border-b-blue-600' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
+
+                const cellMouseProps = (colIdx: number) => ({
+                  'data-cell-row': visibleIdx,
+                  'data-cell-col': colIdx,
+                  onTouchStart: (e: React.TouchEvent<HTMLTableCellElement>) => {
+                    lastTouchInteractionAtRef.current = performance.now();
+                    const touch = e.touches[0];
+                    if (!touch) return;
+                    const startX = touch.clientX;
+                    const startY = touch.clientY;
+
+                    const beginTouchDrag = () => {
+                      const geom = captureSheetGeometry();
+                      if (!geom) return;
+                      if (document.activeElement instanceof HTMLElement) {
+                        document.activeElement.blur();
+                      }
+                      window.getSelection()?.removeAllRanges();
+                      AppSounds.tap();
+                      const coord = { rowIdx: visibleIdx, colIdx };
+                      dragGeometryRef.current = geom;
+                      dragMetaRef.current = {
+                        anchorRow: visibleIdx,
+                        anchorCol: colIdx,
+                        startFocusCol: colIdx,
+                        startX,
+                        startY,
+                        grabOffsetX: 0,
+                        grabOffsetY: 0,
+                        singleColLock: true,
+                        hasMoved: false,
+                      };
+                      rangeAnchorRef.current = coord;
+                      rangeFocusRef.current = coord;
+                      lastTouchPointRef.current = { x: startX, y: startY };
+                      isHandleDraggingRef.current = true;
+                      document.documentElement.style.overscrollBehaviorY = 'none';
+                      setIsTouchDragging(true);
+                      setSelectedRowIds(new Set());
+                      setBulkEditOpen(false);
+                      setRangeAnchor(coord);
+                      setRangeFocus(coord);
+                    };
+
+                    touchStartPosRef.current = { x: startX, y: startY };
+                    if (longPressTimerRef.current !== null) {
+                      window.clearTimeout(longPressTimerRef.current);
+                    }
+                    longPressTimerRef.current = window.setTimeout(() => {
+                      longPressTimerRef.current = null;
+                      beginTouchDrag();
+                    }, 260);
+                  },
+                  onMouseDown: (e: React.MouseEvent<HTMLTableCellElement>) => {
+                    if (performance.now() - lastTouchInteractionAtRef.current < 650) {
+                      return;
+                    }
+                    suppressFocusAnchorRef.current = true;
+                    window.setTimeout(() => {
+                      suppressFocusAnchorRef.current = false;
+                    }, 120);
+                    if (e.shiftKey && rangeAnchor) {
+                      e.preventDefault();
+                      setSelectedRowIds(new Set());
+                      setRangeFocus({ rowIdx: visibleIdx, colIdx });
+                    } else {
+                      const geom = captureSheetGeometry();
+                      const coord = { rowIdx: visibleIdx, colIdx };
+                      if (geom) {
+                        dragGeometryRef.current = geom;
+                        dragMetaRef.current = {
+                          anchorRow: visibleIdx,
+                          anchorCol: colIdx,
+                          startFocusCol: colIdx,
+                          startX: e.clientX,
+                          startY: e.clientY,
+                          grabOffsetX: 0,
+                          grabOffsetY: 0,
+                          singleColLock: false,
+                          hasMoved: false,
+                        };
+                        lastTouchPointRef.current = { x: e.clientX, y: e.clientY };
+                      }
+                      rangeAnchorRef.current = coord;
+                      rangeFocusRef.current = coord;
+                      isMouseDraggingRef.current = true;
+                      setSelectedRowIds(new Set());
+                      setRangeAnchor(coord);
+                      setRangeFocus(coord);
+                    }
+                  },
+                });
+
+                const handleCellInputFocus = (colIdx: number) => {
+                  if (
+                    suppressFocusAnchorRef.current ||
+                    isMouseDraggingRef.current ||
+                    isHandleDraggingRef.current
+                  ) {
+                    return;
+                  }
+                  const coord = { rowIdx: visibleIdx, colIdx };
+                  rangeAnchorRef.current = coord;
+                  rangeFocusRef.current = coord;
+                  setSelectedRowIds(new Set());
+                  setRangeAnchor(coord);
+                  setRangeFocus(coord);
+                };
+
+                const isActiveSearchMatch = isNumberSearch && row.id === activeMatchedRowId;
+                const isOtherSearchMatch =
+                  isNumberSearch && !isActiveSearchMatch && matchedRowIdSet.has(row.id);
+
+                return (
+                  <tr
+                    key={row.id}
+                    data-row-id={row.id}
+                    data-row-idx={visibleIdx}
+                    className={`transition-colors ${
+                      isActiveSearchMatch
+                        ? 'bg-amber-100/95 ring-2 ring-inset ring-amber-500'
+                        : isOtherSearchMatch
+                          ? 'bg-amber-50/85 ring-1 ring-inset ring-amber-300'
+                          : isRowSelected
+                            ? 'bg-blue-50/90'
+                            : row.statusType === 'overlimit'
+                              ? 'bg-rose-50/75 hover:bg-rose-50'
+                              : visibleIdx % 2 === 1
+                                ? 'bg-slate-50/60 hover:bg-indigo-50/35'
+                                : 'bg-white hover:bg-indigo-50/35'
                     }`}
                   >
-                    {isVirtualized && virtualWindow.topSpacerPx > 0 && (
-                      <tr aria-hidden="true" style={{ height: virtualWindow.topSpacerPx }}>
-                        <td colSpan={9} className="p-0 border-0" />
-                      </tr>
-                    )}
-                    {filteredRows
-                      .slice(
-                        isVirtualized ? virtualWindow.startIdx : 0,
-                        isVirtualized ? virtualWindow.endIdx + 1 : filteredRows.length
-                      )
-                      .map((row, sliceOffset) => {
-                        const visibleIdx = (isVirtualized ? virtualWindow.startIdx : 0) + sliceOffset;
-                        const prevVisibleRow = filteredRows[visibleIdx - 1];
-                        const nextVisibleRow = filteredRows[visibleIdx + 1];
-                        const isPastedRow = highlightedSet.has(row.id);
-                        const isPastedTop =
-                          isPastedRow && (!prevVisibleRow || !highlightedSet.has(prevVisibleRow.id));
-                        const isPastedBottom =
-                          isPastedRow && (!nextVisibleRow || !highlightedSet.has(nextVisibleRow.id));
-                        const isActiveSearchMatch = isNumberSearch && row.id === activeMatchedRowId;
-                        const isOtherSearchMatch =
-                          isNumberSearch && !isActiveSearchMatch && matchedRowIdSet.has(row.id);
+                    <td className="p-0.5 text-center border-r border-slate-200/70">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select row ${row.rowIndex + 2}`}
+                        checked={isRowSelected}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleRowCheckbox(row.id, visibleIdx, e.shiftKey);
+                        }}
+                        onChange={() => {}}
+                        className="w-4 h-4 accent-blue-600 cursor-pointer align-middle"
+                      />
+                    </td>
 
-                        return (
-                          <VirtualSheetTableRow
-                            key={row.id}
-                            row={row}
-                            visibleIdx={visibleIdx}
-                            sessionId={sessionId}
-                            sessionDefaultItem={sessionDefaultItem}
-                            readOnly={readOnly}
-                            commitDelayMs={commitDelayMs}
-                            isRowSelected={selectedRowIds.has(row.id)}
-                            isPastedRow={isPastedRow}
-                            isPastedTop={isPastedTop}
-                            isPastedBottom={isPastedBottom}
-                            isActiveSearchMatch={isActiveSearchMatch}
-                            isOtherSearchMatch={isOtherSearchMatch}
-                            nextVisibleRowId={nextVisibleRow ? nextVisibleRow.id : null}
-                            nameOptionNodes={nameOptionNodes}
-                            onToggleCheckbox={handleToggleRowCheckboxStable}
-                            onCellTouchStart={handleCellTouchStartStable}
-                            onCellMouseDown={handleCellMouseDownStable}
-                            onCellFocus={handleCellInputFocusStable}
-                            onUpdateRow={onUpdateRowStable}
-                            onSmartPaste={handleSmartCellPasteStable}
-                            onFocusField={focusFieldStable}
-                            onInspectOverLimit={handleInspectOverLimitRow}
-                            onRequestDeleteRow={handleRequestDeleteSingleRow}
-                          />
-                        );
-                      })}
-                    {isVirtualized && virtualWindow.bottomSpacerPx > 0 && (
-                      <tr aria-hidden="true" style={{ height: virtualWindow.bottomSpacerPx }}>
-                        <td colSpan={9} className="p-0 border-0" />
-                      </tr>
-                    )}
-                    {filteredRows.length === 0 && (
-                      <tr>
-                        <td colSpan={9} className="px-4 py-8 text-center text-xs font-semibold text-slate-600">
-                          <span>No entries match the current filter.</span>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
+                    <td className="hidden sm:table-cell px-0.5 py-2 sm:py-2.5 text-center border-r border-slate-200/70 text-[11px] sm:text-[13px] font-semibold font-mono-tabular text-slate-600">
+                      {sessionId}
+                    </td>
+
+                    <td
+                      {...cellMouseProps(0)}
+                      className="relative p-0.5 sm:px-1.5 sm:py-1 border-r border-slate-200/70 align-middle"
+                    >
+                      <div className="relative min-h-[34px] sm:min-h-[36px] flex items-center">
+                        <span
+                          aria-hidden="true"
+                          className={`block w-full px-1 sm:pl-1.5 sm:pr-5 py-1 text-[11px] sm:text-xs leading-[1.2] whitespace-normal break-words pointer-events-none ${
+                            isAutofilled
+                              ? 'text-slate-400 font-semibold'
+                              : row.name
+                                ? 'text-slate-900 font-extrabold'
+                                : 'text-slate-400 font-medium'
+                          }`}
+                        >
+                          {row.name || (isAutofilled ? `↳ ${row.resolvedName}` : '')}
+                        </span>
+                        <select
+                          aria-label={`Row ${row.rowIndex + 2} Seller Name`}
+                          disabled={readOnly}
+                          value={row.name}
+                          onFocus={() => handleCellInputFocus(0)}
+                          onChange={(e) => !readOnly && onUpdateRow(row.id, { name: e.target.value })}
+                          className={`absolute inset-0 w-full h-full opacity-0 text-[16px] sm:text-sm rounded-md disabled:cursor-default ${
+                            readOnly ? 'cursor-default' : 'cursor-pointer'
+                          }`}
+                        >
+                          <option value="">
+                            {isAutofilled ? `↳ ${row.resolvedName}` : ''}
+                          </option>
+                          {availableNames.map((n) => (
+                            <option key={n} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="hidden sm:block w-3.5 h-3.5 text-slate-400 pointer-events-none absolute right-1 top-1/2 -translate-y-1/2" />
+                      </div>
+                    </td>
+
+                    <td
+                      {...cellMouseProps(1)}
+                      className="relative p-0 sm:px-1 sm:py-1 border-r border-slate-200/70"
+                    >
+                      <div className="ios-compact-wrap">
+                        <input
+                          type="text"
+                          disabled={readOnly}
+                          list={readOnly ? undefined : `item-options-${sessionId}`}
+                          aria-label={`Row ${row.rowIndex + 2} Item`}
+                          value={row.item}
+                          placeholder={sessionDefaultItem}
+                          onFocus={() => handleCellInputFocus(1)}
+                          onChange={(e) =>
+                            !readOnly &&
+                            onUpdateRow(row.id, {
+                              item: e.target.value.toUpperCase(),
+                              qtyOverride: '',
+                              rangeOverride: '',
+                            })
+                          }
+                          onPaste={(e) => handleSmartCellPaste(e, row.id)}
+                          className="ios-compact-input w-full px-0 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular uppercase text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+                        />
+                      </div>
+                    </td>
+
+                    <td
+                      {...cellMouseProps(2)}
+                      className="relative p-0 sm:px-1 sm:py-1 border-r border-slate-200/70"
+                    >
+                      <div className="ios-compact-wrap">
+                        <input
+                          type="text"
+                          disabled={readOnly}
+                          inputMode="numeric"
+                          data-row-field={`table-start-${row.id}`}
+                          aria-label={`Row ${row.rowIndex + 2} Start Number`}
+                          value={row.start}
+                          placeholder="00000"
+                          onFocus={() => handleCellInputFocus(2)}
+                          onChange={(e) => {
+                            if (readOnly) return;
+                            const prevLen = row.start.length;
+                            const nextVal = e.target.value.replace(/\D/g, '').slice(0, 5);
+                            onUpdateRow(row.id, {
+                              start: nextVal,
+                              qtyOverride: '',
+                              rangeOverride: '',
+                            });
+                            if (nextVal.length === 5 && prevLen < 5) {
+                              focusField(`input[data-row-field="table-end-${row.id}"]`);
+                            }
+                          }}
+                          onPaste={(e) => handleSmartCellPaste(e, row.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              focusField(`input[data-row-field="table-end-${row.id}"]`);
+                            }
+                          }}
+                          className="ios-compact-input w-full px-0.5 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-900 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+                        />
+                      </div>
+                    </td>
+
+                    <td
+                      {...cellMouseProps(3)}
+                      className="relative p-0 sm:px-1 sm:py-1 border-r border-slate-200/70"
+                    >
+                      <div className="ios-compact-wrap">
+                        <input
+                          type="text"
+                          disabled={readOnly}
+                          inputMode="numeric"
+                          data-row-field={`table-end-${row.id}`}
+                          aria-label={`Row ${row.rowIndex + 2} End Number`}
+                          value={row.end}
+                          placeholder="-"
+                          onFocus={() => handleCellInputFocus(3)}
+                          onChange={(e) =>
+                            !readOnly &&
+                            onUpdateRow(row.id, {
+                              end: e.target.value.replace(/\D/g, '').slice(0, 5),
+                              qtyOverride: '',
+                              rangeOverride: '',
+                            })
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && nextVisibleRow) {
+                              e.preventDefault();
+                              focusField(`input[data-row-field="table-start-${nextVisibleRow.id}"]`);
+                            }
+                          }}
+                          className="ios-compact-input w-full px-0.5 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+                        />
+                      </div>
+                    </td>
+
+                    <td
+                      {...cellMouseProps(4)}
+                      className={`relative p-0 sm:px-1 sm:py-1 ${pastedQtyClass}`}
+                    >
+                      <div className="ios-compact-wrap">
+                        <input
+                          type="number"
+                          disabled={readOnly}
+                          aria-label={`Row ${row.rowIndex + 2} Qty`}
+                          value={row.qtyOverride !== '' ? row.qtyOverride : row.qty || ''}
+                          placeholder="0"
+                          onFocus={() => handleCellInputFocus(4)}
+                          onChange={(e) => !readOnly && onUpdateRow(row.id, { qtyOverride: e.target.value })}
+                          className="ios-compact-input w-full px-0.5 sm:px-1.5 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-950 placeholder:text-slate-400 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+                        />
+                      </div>
+                    </td>
+
+                    <td
+                      title={row.limitStatus || undefined}
+                      className="px-0.5 sm:px-1.5 py-1.5 sm:py-2 border-r border-slate-200/70 text-[10px] sm:text-xs font-mono-tabular text-center align-middle"
+                    >
+                      {row.statusType === 'ok' && (
+                        row.overLimitBreakdowns && row.overLimitBreakdowns.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              AppSounds.tap();
+                              setInspectedOverLimitRow(row);
+                            }}
+                            className="inline-flex items-center justify-center gap-0.5 font-bold text-emerald-700 whitespace-nowrap cursor-pointer hover:opacity-80"
+                            title="Tap to see per-seller breakdown"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>OK</span>
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center justify-center gap-0.5 font-bold text-emerald-700 whitespace-nowrap">
+                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>OK</span>
+                          </span>
+                        )
+                      )}
+                      {row.statusType === 'warning' && (
+                        <span className="inline-flex items-center justify-center gap-0.5 font-bold text-amber-700 whitespace-nowrap">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                          <span>OK</span>
+                        </span>
+                      )}
+                      {row.statusType === 'invalid' && (
+                        <span className="font-bold text-amber-700 whitespace-nowrap">
+                          Invalid
+                        </span>
+                      )}
+                      {row.statusType === 'overlimit' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            AppSounds.tap();
+                            setInspectedOverLimitRow(row);
+                          }}
+                          className="w-full text-center cursor-pointer hover:opacity-75"
+                          title="Tap to see all sellers who contributed to over-limit"
+                        >
+                          {row.limitStatus.split('\n').map((line, idx) => (
+                            <span
+                              key={idx}
+                              className="block whitespace-nowrap font-extrabold text-slate-950 tracking-[-0.02em] leading-[1.35]"
+                            >
+                              {line}
+                            </span>
+                          ))}
+                        </button>
+                      )}
+                    </td>
+
+                    <td className="p-0.5 text-center">
+                      {!readOnly && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const labelParts = [
+                              row.resolvedName || row.name || 'Blank row',
+                              row.item || '',
+                              row.start ? (row.end ? `${row.start}-${row.end}` : row.start) : '',
+                              row.qty > 0 ? `Qty ${row.qty}` : '',
+                            ].filter(Boolean);
+                            AppSounds.warning();
+                            setPendingDeleteConfirm({
+                              mode: 'single',
+                              rowIds: [row.id],
+                              summary: labelParts.join(' · '),
+                            });
+                          }}
+                          title="Delete row"
+                          className="p-1 rounded-md text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 mx-auto" />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredRows.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="px-4 py-8 text-center text-xs font-semibold text-slate-600">
+                    <span>No entries match the current filter.</span>
+                  </td>
+                </tr>
+              )}
+            </tbody>
             {computation.overLimitTotal > 0 && (
               <tfoot className="border-t-2 border-slate-300 bg-slate-50/90 text-[11px] sm:text-xs font-mono-tabular">
                 <tr className="border-b border-slate-200/90">
@@ -3275,7 +2667,7 @@ export function SessionSheetView({
           </table>
           </div>
 
-          {/* Single Persistent Google Sheets Selection Box (handles only in multi-select/long-press so single-tap editing is never blocked) */}
+          {/* Single Persistent Google Sheets Selection Box + Never-Unmounted Corner Handles */}
           {cellRangeBounds && overlayRect && (
             <div
               ref={selectionBoxRef}
@@ -3286,33 +2678,29 @@ export function SessionSheetView({
                 height: `${overlayRect.height}px`,
               }}
               className={`pointer-events-none absolute top-0 left-0 z-10 border-2 border-blue-600 will-change-transform ${
-                hasMultiCellRange ? 'bg-blue-500/[0.14]' : 'bg-blue-500/[0.05]'
+                hasMultiCellRange ? 'bg-blue-500/[0.14]' : 'bg-blue-500/[0.06]'
               }`}
             >
-              {(showSelectionHandles || hasMultiCellRange || isTouchDragging) && (
-                <>
-                  <span
-                    key="sheet-handle-tl"
-                    role="presentation"
-                    aria-label="Drag selection start handle"
-                    onTouchStart={(e) => startCornerHandleDrag('topLeft', e)}
-                    onMouseDown={(e) => startCornerHandleDrag('topLeft', e)}
-                    className="pointer-events-auto absolute -top-[16px] -left-[16px] w-8 h-8 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
-                  >
-                    <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
-                  </span>
-                  <span
-                    key="sheet-handle-br"
-                    role="presentation"
-                    aria-label="Drag selection end handle"
-                    onTouchStart={(e) => startCornerHandleDrag('bottomRight', e)}
-                    onMouseDown={(e) => startCornerHandleDrag('bottomRight', e)}
-                    className="pointer-events-auto absolute -bottom-[16px] -right-[16px] w-8 h-8 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
-                  >
-                    <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
-                  </span>
-                </>
-              )}
+              <span
+                key="sheet-handle-tl"
+                role="presentation"
+                aria-label="Drag selection start handle"
+                onTouchStart={(e) => startCornerHandleDrag('topLeft', e)}
+                onMouseDown={(e) => startCornerHandleDrag('topLeft', e)}
+                className="pointer-events-auto absolute -top-[22px] -left-[22px] w-11 h-11 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
+              >
+                <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
+              </span>
+              <span
+                key="sheet-handle-br"
+                role="presentation"
+                aria-label="Drag selection end handle"
+                onTouchStart={(e) => startCornerHandleDrag('bottomRight', e)}
+                onMouseDown={(e) => startCornerHandleDrag('bottomRight', e)}
+                className="pointer-events-auto absolute -bottom-[22px] -right-[22px] w-11 h-11 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
+              >
+                <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
+              </span>
             </div>
           )}
         </div>
@@ -3320,11 +2708,10 @@ export function SessionSheetView({
           <div aria-hidden="true" className="h-[38vh] pointer-events-none" />
         )}
         </div>
-        </div>
       ) : (
-        /* CARDS VIEW (windowed so 15,000+ rows never freeze) */
+        /* CARDS VIEW */
         <div ref={cardListRef} className="space-y-3">
-          {cardRows.slice(0, visibleCardsLimit).map((row, cardIdx) => {
+          {cardRows.map((row, cardIdx) => {
             const isAutofilled = row.name.trim() === '' && row.resolvedName !== '';
             const nextCardRow = cardRows[cardIdx + 1];
             const isCardSelected = selectedRowIds.has(row.id);
@@ -3559,20 +2946,6 @@ export function SessionSheetView({
               </div>
             );
           })}
-          {cardRows.length > visibleCardsLimit && (
-            <div className="flex justify-center pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  AppSounds.tap();
-                  setVisibleCardsLimit((prev) => prev + 100);
-                }}
-                className="px-4 py-2 text-xs font-extrabold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] rounded-xl shadow-xs cursor-pointer"
-              >
-                Load +100 More Rows ({formatINR(cardRows.length - visibleCardsLimit)} remaining)
-              </button>
-            </div>
-          )}
         </div>
       )}
 

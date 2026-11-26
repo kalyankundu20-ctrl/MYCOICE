@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowUpRight, Check, Copy, ExternalLink, Eye, EyeOff, FileText, LayoutGrid, Loader2, Plus, RotateCcw, Send, ShieldAlert, Table2, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { formatDateDDMMYYYY, formatINR, formatLimitGroup, isMyChoiceName, round2 } from '../engine/calculations';
 import { OverLimitBreakdownGroup, Seller, SellerBillRow, SessionComputation, SessionId } from '../types/ledger';
 import { BillReceiptPayload, sendBillCardDirectToWhatsApp } from '../utils/billImageGenerator';
@@ -51,7 +51,7 @@ interface SellerBillViewProps {
   onOpenSession?: (sessionId: SessionId) => void;
 }
 
-export const SellerBillView = memo(function SellerBillView({
+export function SellerBillView({
   date,
   bills,
   onUpdateSeller,
@@ -242,43 +242,39 @@ export const SellerBillView = memo(function SellerBillView({
     }, 1800);
   }, []);
 
-  const totals = useMemo(
-    () =>
-      visibleBills.reduce(
-        (acc, row) => ({
-          mor: acc.mor + row.mor,
-          day: acc.day + row.day,
-          eve: acc.eve + row.eve,
-          sold: acc.sold + row.sold,
-          bill: acc.bill + row.bill,
-          prize: acc.prize + row.prizeTotal,
-          fresh: acc.fresh + row.fresh,
-          amt1pm: acc.amt1pm + row.amt1pm,
-          amt6pm: acc.amt6pm + row.amt6pm,
-          amt8pm: acc.amt8pm + row.amt8pm,
-          joma: acc.joma + row.joma,
-          due: acc.due + row.due,
-          total: acc.total + row.total,
-          rate: acc.rate + row.rate,
-        }),
-        {
-          mor: 0,
-          day: 0,
-          eve: 0,
-          sold: 0,
-          bill: 0,
-          prize: 0,
-          fresh: 0,
-          amt1pm: 0,
-          amt6pm: 0,
-          amt8pm: 0,
-          joma: 0,
-          due: 0,
-          total: 0,
-          rate: 0,
-        }
-      ),
-    [visibleBills]
+  const totals = visibleBills.reduce(
+    (acc, row) => ({
+      mor: acc.mor + row.mor,
+      day: acc.day + row.day,
+      eve: acc.eve + row.eve,
+      sold: acc.sold + row.sold,
+      bill: acc.bill + row.bill,
+      prize: acc.prize + row.prizeTotal,
+      fresh: acc.fresh + row.fresh,
+      amt1pm: acc.amt1pm + row.amt1pm,
+      amt6pm: acc.amt6pm + row.amt6pm,
+      amt8pm: acc.amt8pm + row.amt8pm,
+      joma: acc.joma + row.joma,
+      due: acc.due + row.due,
+      total: acc.total + row.total,
+      rate: acc.rate + row.rate,
+    }),
+    {
+      mor: 0,
+      day: 0,
+      eve: 0,
+      sold: 0,
+      bill: 0,
+      prize: 0,
+      fresh: 0,
+      amt1pm: 0,
+      amt6pm: 0,
+      amt8pm: 0,
+      joma: 0,
+      due: 0,
+      total: 0,
+      rate: 0,
+    }
   );
 
   const handleCreateSeller = (e: React.FormEvent) => {
@@ -359,12 +355,10 @@ export const SellerBillView = memo(function SellerBillView({
             ₹{formatINR(totals.fresh)}
           </div>
         </div>
-        <div className="col-span-2 lg:col-span-1 kk-brand-gradient text-white rounded-2xl px-4 py-3.5 sm:px-5 sm:py-4 flex flex-col items-center justify-center text-center">
-          <div className="text-xs sm:text-[13px] font-semibold tracking-wide text-white/80">
-            Net Payable Total
-          </div>
+        <div className="col-span-2 lg:col-span-1 kk-brand-gradient text-white rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
+          <div className="text-[11px] font-semibold text-white/75">Net Payable Total</div>
           <div
-            className={`mt-1 text-3xl sm:text-[32px] lg:text-2xl xl:text-[28px] leading-tight font-extrabold font-mono-tabular tracking-tight ${
+            className={`mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular ${
               totals.total > 0
                 ? 'text-emerald-300'
                 : totals.total < 0
@@ -1543,4 +1537,4 @@ export const SellerBillView = memo(function SellerBillView({
       <SheetFormulaBar session={activeFormula} />
     </div>
   );
-});
+}
