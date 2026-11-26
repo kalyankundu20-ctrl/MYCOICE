@@ -9,13 +9,11 @@ import {
   ClipboardPaste,
   Copy,
   Eraser,
-  LayoutGrid,
   Pencil,
   Plus,
   Redo2,
   Scissors,
   Search,
-  Table2,
   Trash2,
   Undo2,
   Users,
@@ -220,9 +218,25 @@ const FastCellInput = memo(function FastCellInput({
       aria-label={ariaLabel}
       value={localValue}
       placeholder={placeholder}
-      onFocus={() => {
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize={inputMode === 'numeric' || inputMode === 'decimal' ? 'off' : 'characters'}
+      spellCheck={false}
+      enterKeyHint="next"
+      onFocus={(e) => {
         focusedRef.current = true;
         onFocus();
+        const inputEl = e.currentTarget;
+        // Defer full-cell selection by 1 tick so iOS Safari doesn't override it with start-of-text caret
+        window.setTimeout(() => {
+          if (document.activeElement === inputEl && inputEl.value.length > 0) {
+            try {
+              inputEl.setSelectionRange(0, inputEl.value.length);
+            } catch {
+              inputEl.select();
+            }
+          }
+        }, 0);
       }}
       onBlur={() => {
         focusedRef.current = false;
@@ -265,13 +279,14 @@ const FastCellInput = memo(function FastCellInput({
         }
         onKeyDown?.(e);
       }}
-      className={className}
+      className={`select-text ${className}`}
     />
   );
 });
 
 const toUpperTransform = (v: string) => v.toUpperCase();
 const digits5Transform = (v: string) => v.replace(/\D/g, '').slice(0, 5);
+const qtyNumericTransform = (v: string) => v.replace(/[^\d.]/g, '');
 const flushOnFiveDigits = (next: string, prev: string) => next.length === 5 && prev.length < 5;
 
 interface VirtualSheetRowProps {
@@ -436,8 +451,14 @@ const VirtualSheetTableRow = memo(function VirtualSheetTableRow({
                 rangeOverride: '',
               })
             }
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onFocusField(`input[data-row-field="table-start-${row.id}"]`);
+              }
+            }}
             onPaste={(e) => onSmartPaste(e, row.id)}
-            className="ios-compact-input w-full px-0 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular uppercase text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+            className="ios-compact-input w-full px-0 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular uppercase text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-blue-50/70 rounded-md focus:outline-none disabled:opacity-90"
           />
         </div>
       </td>
@@ -529,15 +550,17 @@ const VirtualSheetTableRow = memo(function VirtualSheetTableRow({
       >
         <div className="ios-compact-wrap">
           <FastCellInput
-            type="number"
+            type="text"
+            inputMode="decimal"
             disabled={readOnly}
             debounceMs={commitDelayMs}
             ariaLabel={`Row ${row.rowIndex + 2} Qty`}
             value={qtyDisplay}
             placeholder="0"
+            transform={qtyNumericTransform}
             onFocus={() => onCellFocus(visibleIdx, 4)}
             onCommit={(nextVal) => onUpdateRow(row.id, { qtyOverride: nextVal })}
-            className="ios-compact-input w-full px-0.5 sm:px-1.5 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-950 placeholder:text-slate-400 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+            className="ios-compact-input w-full px-0.5 sm:px-1.5 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-950 placeholder:text-slate-400 bg-transparent focus:bg-blue-50/70 rounded-md focus:outline-none disabled:opacity-90"
           />
         </div>
       </td>
@@ -683,14 +706,14 @@ export function SessionSheetView({
   readOnly = false,
   lockNotice,
 }: SessionSheetViewProps) {
-  // Default to fit-to-screen table so ALL columns are visible on ONE screen with zero horizontal scroll!
-  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+  // Fit-to-screen table view so ALL columns stay visible cleanly
+  const viewMode = 'table' as 'table' | 'cards';
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIdx, setActiveMatchIdx] = useState(0);
   const [searchShowContext, setSearchShowContext] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const stickySearchBarRef = useRef<HTMLDivElement>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'overlimit'>('all');
-  const [confirmClear, setConfirmClear] = useState(false);
   const [inspectedOverLimitRow, setInspectedOverLimitRow] =
     useState<ComputedTicketRow | null>(null);
   const [pendingDeleteConfirm, setPendingDeleteConfirm] = useState<{
@@ -702,6 +725,7 @@ export function SessionSheetView({
   // Google Sheets-style Selection State
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
+  const [showSelectionHandles, setShowSelectionHandles] = useState(false);
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [bulkEditValue, setBulkEditValue] = useState('');
   const lastCheckedIdxRef = useRef<number | null>(null);
@@ -1146,6 +1170,8 @@ export function SessionSheetView({
     rangeAnchorRef.current = coord;
     rangeFocusRef.current = coord;
     setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
+    // Hide corner drag handles during direct single-cell typing so adjacent boxes stay 100% tappable
+    setShowSelectionHandles(false);
     setRangeAnchor(coord);
     setRangeFocus(coord);
   }, []);
@@ -1162,6 +1188,7 @@ export function SessionSheetView({
       const startX = touch.clientX;
       const startY = touch.clientY;
       touchStartPosRef.current = { x: startX, y: startY };
+      // Long-press (550ms steady hold) activates multi-cell range selection handles; quick taps always edit directly
       longPressTimerRef.current = window.setTimeout(() => {
         longPressTimerRef.current = null;
         const coord = { rowIdx: visibleIdx, colIdx };
@@ -1174,9 +1201,10 @@ export function SessionSheetView({
         rangeFocusRef.current = coord;
         setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
         setBulkEditOpen(false);
+        setShowSelectionHandles(true);
         setRangeAnchor(coord);
         setRangeFocus(coord);
-      }, 360);
+      }, 550);
     },
     []
   );
@@ -1287,24 +1315,26 @@ export function SessionSheetView({
   const isNumberSearch = /^\d{1,5}$/.test(trimmedSearch);
 
   const rowMatchesNumberQuery = useCallback((r: ComputedTicketRow, q: string): boolean => {
-    if (r.start.toLowerCase().includes(q) || r.end.toLowerCase().includes(q)) {
+    if (r.start.includes(q) || r.end.includes(q)) {
       return true;
     }
     // Also match middle numbers within the row's Start..End ticket range (e.g. searching 31857 matches 31855-59)
-    if (/^\d{2,5}$/.test(q) && r.startNumInt !== null && r.rangeEndInt !== null) {
+    if (q.length >= 2 && q.length <= 5 && r.startNumInt !== null && r.rangeEndInt !== null) {
       const numQuery = parseInt(q, 10);
       if (q.length === 5) {
         return numQuery >= r.startNumInt && numQuery <= r.rangeEndInt;
       }
-      if (r.rangeEndInt - r.startNumInt <= 1000) {
+      const span = r.rangeEndInt - r.startNumInt;
+      if (span <= 200) {
         for (let n = r.startNumInt; n <= r.rangeEndInt; n++) {
           if (pad5(n).includes(q)) return true;
         }
       } else {
+        // O(1) suffix match check for wide ranges (never blocks main thread even on 30,000 rows!)
         const mod = Math.pow(10, q.length);
-        for (let n = r.startNumInt; n <= r.rangeEndInt; n++) {
-          if (n % mod === numQuery) return true;
-        }
+        const rem = r.startNumInt % mod;
+        const delta = (numQuery - rem + mod) % mod;
+        if (r.startNumInt + delta <= r.rangeEndInt) return true;
       }
     }
     return false;
@@ -1567,6 +1597,9 @@ export function SessionSheetView({
         const containerEl = tableContainerRef.current;
         if (!tbodyEl || !containerEl) return;
 
+        const getStickyOffset = () =>
+          stickySearchBarRef.current ? stickySearchBarRef.current.offsetHeight + 8 : 12;
+
         const alignExactRow = () => {
           const tr = tbodyEl.querySelector<HTMLTableRowElement>(
             `tr[data-row-id="${activeMatchedRowId}"]`
@@ -1574,16 +1607,22 @@ export function SessionSheetView({
           if (!tr) return false;
           const trRect = tr.getBoundingClientRect();
           const rowHeight = Math.max(trRect.height, DEFAULT_VIRTUAL_ROW_HEIGHT);
+          const stickyOffset = getStickyOffset();
           if (scrollRoot) {
             const rootRect = scrollRoot.getBoundingClientRect();
             const targetTop =
-              trRect.top - rootRect.top + scrollRoot.scrollTop - 12 - peekAboveRows * rowHeight;
+              trRect.top -
+              rootRect.top +
+              scrollRoot.scrollTop -
+              stickyOffset -
+              peekAboveRows * rowHeight;
             scrollRoot.scrollTo({
               top: Math.max(0, targetTop),
               behavior: smooth ? 'smooth' : 'auto',
             });
           } else {
-            const targetTop = trRect.top + window.scrollY - 12 - peekAboveRows * rowHeight;
+            const targetTop =
+              trRect.top + window.scrollY - stickyOffset - peekAboveRows * rowHeight;
             window.scrollTo({
               top: Math.max(0, targetTop),
               behavior: smooth ? 'smooth' : 'auto',
@@ -1609,6 +1648,7 @@ export function SessionSheetView({
           if (!alignExactRow()) {
             const theadH = theadRef.current ? theadRef.current.offsetHeight : 38;
             const containerRect = containerEl.getBoundingClientRect();
+            const stickyOffset = getStickyOffset();
             if (scrollRoot) {
               const rootRect = scrollRoot.getBoundingClientRect();
               const tbodyOrigin = containerRect.top - rootRect.top + scrollRoot.scrollTop + theadH;
@@ -1616,7 +1656,7 @@ export function SessionSheetView({
                 0,
                 tbodyOrigin +
                   (targetVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
-                  12
+                  stickyOffset
               );
               scrollRoot.scrollTop = estimatedTop;
             } else {
@@ -1625,7 +1665,7 @@ export function SessionSheetView({
                 0,
                 tbodyOrigin +
                   (targetVisibleIdx - peekAboveRows) * DEFAULT_VIRTUAL_ROW_HEIGHT -
-                  12
+                  stickyOffset
               );
               window.scrollTo(0, estimatedTop);
             }
@@ -1833,6 +1873,7 @@ export function SessionSheetView({
   const clearSelection = useCallback(() => {
     setSelectedRowIds(new Set());
     setRangeSelectMode(false);
+    setShowSelectionHandles(false);
     setBulkEditOpen(false);
     setBulkEditValue('');
     setRangeAnchor(null);
@@ -2757,11 +2798,13 @@ export function SessionSheetView({
         </div>
       )}
 
-      {/* Structured Workspace Toolbar (Compact 2-Row Mobile Fit) */}
-      <div className="kk-surface-card rounded-2xl p-2 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-1.5">
-        {/* Row 1: Search + Filter + View Mode */}
-        <div className="flex items-center gap-1.5 w-full lg:w-auto">
-          <div className="relative flex-1 min-w-0 sm:flex-initial sm:w-48">
+      {/* Sticky Search & Match Bar (always visible while scrolled so user can search again without scrolling up) */}
+      <div
+        ref={stickySearchBarRef}
+        className="sticky top-0 z-30 bg-[var(--kk-canvas)]/95 backdrop-blur-xs pt-0.5 pb-1.5 -mx-2 px-2 sm:mx-0 sm:px-0 space-y-1.5"
+      >
+        <div className="kk-surface-card rounded-2xl p-2 flex items-center gap-1.5 shadow-xs">
+          <div className="relative flex-1 min-w-0">
             <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
               ref={searchInputRef}
@@ -2788,7 +2831,10 @@ export function SessionSheetView({
               <button
                 type="button"
                 aria-label="Clear search"
-                onClick={() => setSearchQuery('')}
+                onClick={() => {
+                  setSearchQuery('');
+                  searchInputRef.current?.focus();
+                }}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-950 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
@@ -2822,197 +2868,19 @@ export function SessionSheetView({
               Limit ({overLimitRowCount})
             </button>
           </div>
-
-          <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setViewMode('table');
-              }}
-              className={`h-7 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
-                viewMode === 'table' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
-              }`}
-              title="All columns grid"
-            >
-              <Table2 className="w-3 h-3" />
-              <span className="hidden sm:inline">All Cols</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setViewMode('cards');
-              }}
-              className={`h-7 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
-                viewMode === 'cards' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
-              }`}
-              title="Card view"
-            >
-              <LayoutGrid className="w-3 h-3" />
-              <span className="hidden sm:inline">Cards</span>
-            </button>
-          </div>
         </div>
 
-        {/* Row 2: Undo/Redo + Paste/Copy + Row Operations (Single Compact Row) */}
-        <div className="flex items-center justify-between sm:justify-end gap-1 overflow-x-auto no-scrollbar">
-          {!readOnly && (
-            <>
-              <div className="inline-flex items-center shrink-0">
-                <button
-                  type="button"
-                  disabled={!canUndo}
-                  onClick={() => {
-                    AppSounds.tap();
-                    onUndo();
-                    showPasteNotice('Undid last change');
-                  }}
-                  className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-l-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
-                  title="Undo (Ctrl+Z)"
-                >
-                  <Undo2 className="w-3 h-3" />
-                  <span>Undo</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!canRedo}
-                  onClick={() => {
-                    AppSounds.tap();
-                    onRedo();
-                    showPasteNotice('Redid change');
-                  }}
-                  className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-l-0 border-slate-200 rounded-r-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
-                  title="Redo (Ctrl+Y)"
-                >
-                  <Redo2 className="w-3 h-3" />
-                  <span>Redo</span>
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  AppSounds.tap();
-                  setPastePanelOpen((v) => !v);
-                }}
-                className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer transition-colors ${
-                  pastePanelOpen
-                    ? 'bg-[var(--kk-brand)] text-white border-[var(--kk-brand)]'
-                    : 'bg-indigo-50 hover:bg-indigo-100 text-[var(--kk-brand)] border-indigo-200'
-                }`}
-              >
-                <ClipboardPaste className="w-3 h-3" />
-                <span>Paste</span>
-              </button>
-            </>
-          )}
-
-          <button
-            type="button"
-            onClick={() => void handleCopySelectionOrSheet()}
-            disabled={filledRowCount === 0 && !hasSelection}
-            className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer disabled:opacity-40 transition-colors ${
-              copiedBanner
-                ? 'bg-emerald-700 text-white border-emerald-700'
-                : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+        {isNumberSearch && (
+          <div
+            className={`rounded-2xl px-3 py-1.5 flex items-center justify-between gap-2 text-xs font-bold border shadow-xs ${
+              matchedRowIndices.length > 0
+                ? 'bg-amber-50 border-amber-300 text-amber-950'
+                : 'bg-slate-50 border-slate-200 text-slate-600'
             }`}
           >
-            {copiedBanner ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-            <span>{copiedBanner ? 'Copied' : selectedRowIds.size > 0 ? `Copy (${selectedRowIds.size})` : 'Copy'}</span>
-          </button>
-
-          {!readOnly && (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  AppSounds.tap();
-                  onAddRows(5);
-                }}
-                className="shrink-0 h-7.5 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl cursor-pointer transition-colors"
-              >
-                +5
-              </button>
-
-              {!confirmClear ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    AppSounds.tap();
-                    setConfirmClear(true);
-                  }}
-                  className="shrink-0 h-7.5 px-2 text-[11px] font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl cursor-pointer transition-colors"
-                >
-                  Clear
-                </button>
-              ) : (
-                <div className="shrink-0 h-7.5 flex items-center gap-1 bg-red-50 border border-red-200 px-1.5 rounded-xl">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.remove();
-                      onClearSession();
-                      clearSelection();
-                      setConfirmClear(false);
-                    }}
-                    className="px-1.5 py-0.5 text-[11px] font-bold text-white bg-red-700 rounded-lg cursor-pointer"
-                  >
-                    Confirm
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmClear(false)}
-                    className="px-1 py-0.5 text-[11px] font-bold text-slate-800 cursor-pointer"
-                  >
-                    No
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
-      {isNumberSearch && (
-        <div
-          className={`rounded-2xl px-3 py-1.5 flex items-center justify-between gap-2 text-xs font-bold border shadow-xs ${
-            matchedRowIndices.length > 0
-              ? 'bg-amber-50 border-amber-300 text-amber-950'
-              : 'bg-slate-50 border-slate-200 text-slate-600'
-          }`}
-        >
-          {matchedRowIndices.length > 0 ? (
-            <>
-              <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => {
-                    AppSounds.tap();
-                    searchInputRef.current?.blur();
-                    if (searchShowContext) {
-                      setSearchShowContext(false);
-                      scrollSheetToEdge('top');
-                    } else {
-                      scrollMatchedRowIntoPosition(0, true, 0);
-                    }
-                  }}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500 text-white font-mono-tabular font-black text-[11px] cursor-pointer"
-                  title="Show searched number at top"
-                >
-                  <span>{trimmedSearch}</span>
-                  {matchedRowIndices.length > 1 && (
-                    <span className="opacity-90">
-                      ({safeMatchIdx + 1}/{matchedRowIndices.length})
-                    </span>
-                  )}
-                </button>
-                <span className="text-[11px] font-semibold text-amber-900/85 truncate">
-                  Row #{activeMatchOriginalIdx + 1} · ↑{aboveMatchCount} upar · ↓{belowMatchCount} niche
-                </span>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                {viewMode === 'table' && (aboveMatchCount > 0 || searchShowContext) && (
+            {matchedRowIndices.length > 0 ? (
+              <>
+                <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                   <button
                     type="button"
                     onClick={() => {
@@ -3022,57 +2890,154 @@ export function SessionSheetView({
                         setSearchShowContext(false);
                         scrollSheetToEdge('top');
                       } else {
-                        setSearchShowContext(true);
+                        scrollMatchedRowIntoPosition(0, true, 0);
                       }
                     }}
-                    className="h-7 px-2 inline-flex items-center gap-0.5 rounded-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 text-[11px] font-extrabold cursor-pointer"
-                    title={
-                      searchShowContext
-                        ? 'Matched number ko top par dekhein'
-                        : 'Upar aur niche ke rows ke saath dekhein'
-                    }
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500 text-white font-mono-tabular font-black text-[11px] cursor-pointer"
+                    title="Show searched number at top"
                   >
-                    <ChevronUp className="w-3.5 h-3.5" />
-                    <span>{searchShowContext ? 'Top Pe' : 'Upar'}</span>
+                    <span>{trimmedSearch}</span>
+                    {matchedRowIndices.length > 1 && (
+                      <span className="opacity-90">
+                        ({safeMatchIdx + 1}/{matchedRowIndices.length})
+                      </span>
+                    )}
                   </button>
-                )}
-                {matchedRowIndices.length > 1 && (
-                  <div className="inline-flex items-center">
+                  <span className="text-[11px] font-semibold text-amber-900/85 truncate">
+                    Row #{activeMatchOriginalIdx + 1} · ↑{aboveMatchCount} upar · ↓{belowMatchCount} niche
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {viewMode === 'table' && (aboveMatchCount > 0 || searchShowContext) && (
                     <button
                       type="button"
-                      aria-label="Previous matching number"
                       onClick={() => {
                         AppSounds.tap();
-                        setActiveMatchIdx(
-                          (prev) => (prev - 1 + matchedRowIndices.length) % matchedRowIndices.length
-                        );
+                        searchInputRef.current?.blur();
+                        if (searchShowContext) {
+                          setSearchShowContext(false);
+                          scrollSheetToEdge('top');
+                        } else {
+                          setSearchShowContext(true);
+                        }
                       }}
-                      className="h-7 w-7 inline-flex items-center justify-center rounded-l-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 cursor-pointer"
+                      className="h-7 px-2 inline-flex items-center gap-0.5 rounded-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 text-[11px] font-extrabold cursor-pointer"
+                      title={
+                        searchShowContext
+                          ? 'Matched number ko top par dekhein'
+                          : 'Upar aur niche ke rows ke saath dekhein'
+                      }
                     >
                       <ChevronUp className="w-3.5 h-3.5" />
+                      <span>{searchShowContext ? 'Top Pe' : 'Upar'}</span>
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Next matching number"
-                      onClick={() => {
-                        AppSounds.tap();
-                        setActiveMatchIdx((prev) => (prev + 1) % matchedRowIndices.length);
-                      }}
-                      className="h-7 w-7 inline-flex items-center justify-center rounded-r-lg bg-white hover:bg-amber-100 border border-l-0 border-amber-300 text-amber-950 cursor-pointer"
-                    >
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <span className="text-[11px] font-semibold">
-              <strong className="font-mono-tabular text-slate-900">{trimmedSearch}</strong> — koi matching number nahi mila
-            </span>
-          )}
-        </div>
-      )}
+                  )}
+                  {matchedRowIndices.length > 1 && (
+                    <div className="inline-flex items-center">
+                      <button
+                        type="button"
+                        aria-label="Previous matching number"
+                        onClick={() => {
+                          AppSounds.tap();
+                          setActiveMatchIdx(
+                            (prev) => (prev - 1 + matchedRowIndices.length) % matchedRowIndices.length
+                          );
+                        }}
+                        className="h-7 w-7 inline-flex items-center justify-center rounded-l-lg bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 cursor-pointer"
+                      >
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Next matching number"
+                        onClick={() => {
+                          AppSounds.tap();
+                          setActiveMatchIdx((prev) => (prev + 1) % matchedRowIndices.length);
+                        }}
+                        className="h-7 w-7 inline-flex items-center justify-center rounded-r-lg bg-white hover:bg-amber-100 border border-l-0 border-amber-300 text-amber-950 cursor-pointer"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <span className="text-[11px] font-semibold">
+                <strong className="font-mono-tabular text-slate-900">{trimmedSearch}</strong> — koi matching number nahi mila
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Compact Sheet Actions Bar (Undo/Redo + Paste/Copy) */}
+      <div className="kk-surface-card rounded-2xl px-2 py-1.5 flex items-center justify-between sm:justify-end gap-1 overflow-x-auto no-scrollbar">
+        {!readOnly && (
+          <>
+            <div className="inline-flex items-center shrink-0">
+              <button
+                type="button"
+                disabled={!canUndo}
+                onClick={() => {
+                  AppSounds.tap();
+                  onUndo();
+                  showPasteNotice('Undid last change');
+                }}
+                className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-l-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                title="Undo (Ctrl+Z)"
+              >
+                <Undo2 className="w-3 h-3" />
+                <span>Undo</span>
+              </button>
+              <button
+                type="button"
+                disabled={!canRedo}
+                onClick={() => {
+                  AppSounds.tap();
+                  onRedo();
+                  showPasteNotice('Redid change');
+                }}
+                className="h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-l-0 border-slate-200 rounded-r-xl cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                title="Redo (Ctrl+Y)"
+              >
+                <Redo2 className="w-3 h-3" />
+                <span>Redo</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                AppSounds.tap();
+                setPastePanelOpen((v) => !v);
+              }}
+              className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer transition-colors ${
+                pastePanelOpen
+                  ? 'bg-[var(--kk-brand)] text-white border-[var(--kk-brand)]'
+                  : 'bg-indigo-50 hover:bg-indigo-100 text-[var(--kk-brand)] border-indigo-200'
+              }`}
+            >
+              <ClipboardPaste className="w-3 h-3" />
+              <span>Paste</span>
+            </button>
+          </>
+        )}
+
+        <button
+          type="button"
+          onClick={() => void handleCopySelectionOrSheet()}
+          disabled={filledRowCount === 0 && !hasSelection}
+          className={`shrink-0 h-7.5 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-xl border cursor-pointer disabled:opacity-40 transition-colors ${
+            copiedBanner
+              ? 'bg-emerald-700 text-white border-emerald-700'
+              : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+          }`}
+        >
+          {copiedBanner ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          <span>{copiedBanner ? 'Copied' : selectedRowIds.size > 0 ? `Copy (${selectedRowIds.size})` : 'Copy'}</span>
+        </button>
+      </div>
 
       {pastedSummary && (
         <div className="bg-blue-50 border-2 border-blue-600 text-blue-950 rounded-2xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-xs">
@@ -3152,8 +3117,8 @@ export function SessionSheetView({
           <div ref={tableScrollRef}>
             <div ref={tableContainerRef} className="relative">
               <div
-                className={`kk-surface-card rounded-2xl overflow-hidden select-none sm:select-auto ${
-                  isTouchDragging ? 'touch-none' : ''
+                className={`kk-surface-card rounded-2xl overflow-hidden ${
+                  isTouchDragging ? 'select-none touch-none' : ''
                 }`}
               >
                 <table className="w-full table-fixed border-collapse">
@@ -3310,7 +3275,7 @@ export function SessionSheetView({
           </table>
           </div>
 
-          {/* Single Persistent Google Sheets Selection Box + Never-Unmounted Corner Handles */}
+          {/* Single Persistent Google Sheets Selection Box (handles only in multi-select/long-press so single-tap editing is never blocked) */}
           {cellRangeBounds && overlayRect && (
             <div
               ref={selectionBoxRef}
@@ -3321,29 +3286,33 @@ export function SessionSheetView({
                 height: `${overlayRect.height}px`,
               }}
               className={`pointer-events-none absolute top-0 left-0 z-10 border-2 border-blue-600 will-change-transform ${
-                hasMultiCellRange ? 'bg-blue-500/[0.14]' : 'bg-blue-500/[0.06]'
+                hasMultiCellRange ? 'bg-blue-500/[0.14]' : 'bg-blue-500/[0.05]'
               }`}
             >
-              <span
-                key="sheet-handle-tl"
-                role="presentation"
-                aria-label="Drag selection start handle"
-                onTouchStart={(e) => startCornerHandleDrag('topLeft', e)}
-                onMouseDown={(e) => startCornerHandleDrag('topLeft', e)}
-                className="pointer-events-auto absolute -top-[22px] -left-[22px] w-11 h-11 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
-              >
-                <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
-              </span>
-              <span
-                key="sheet-handle-br"
-                role="presentation"
-                aria-label="Drag selection end handle"
-                onTouchStart={(e) => startCornerHandleDrag('bottomRight', e)}
-                onMouseDown={(e) => startCornerHandleDrag('bottomRight', e)}
-                className="pointer-events-auto absolute -bottom-[22px] -right-[22px] w-11 h-11 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
-              >
-                <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
-              </span>
+              {(showSelectionHandles || hasMultiCellRange || isTouchDragging) && (
+                <>
+                  <span
+                    key="sheet-handle-tl"
+                    role="presentation"
+                    aria-label="Drag selection start handle"
+                    onTouchStart={(e) => startCornerHandleDrag('topLeft', e)}
+                    onMouseDown={(e) => startCornerHandleDrag('topLeft', e)}
+                    className="pointer-events-auto absolute -top-[16px] -left-[16px] w-8 h-8 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
+                  >
+                    <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
+                  </span>
+                  <span
+                    key="sheet-handle-br"
+                    role="presentation"
+                    aria-label="Drag selection end handle"
+                    onTouchStart={(e) => startCornerHandleDrag('bottomRight', e)}
+                    onMouseDown={(e) => startCornerHandleDrag('bottomRight', e)}
+                    className="pointer-events-auto absolute -bottom-[16px] -right-[16px] w-8 h-8 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
+                  >
+                    <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
+                  </span>
+                </>
+              )}
             </div>
           )}
         </div>

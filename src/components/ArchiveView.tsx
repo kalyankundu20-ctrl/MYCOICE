@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, Calendar, ChevronDown, ChevronRight, Download, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
+import { AlertTriangle, Calendar, ChevronDown, ChevronRight, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useState } from 'react';
 import { formatDateDDMMYYYY, formatINR, isMyChoiceName } from '../engine/calculations';
@@ -11,7 +11,7 @@ interface ArchiveViewProps {
   onChangeBillingDate?: (newDate: string) => void;
   snapshots: DaySnapshot[];
   recycleBin?: DaySnapshot[];
-  onArchiveNow: () => void;
+  onArchiveNow?: () => void;
   onRestoreSnapshot?: (snapshot: DaySnapshot) => void;
   onSyncSnapshotToParties?: (snapshot: DaySnapshot) => Promise<void> | void;
   onUpdateSnapshotDate: (snapshotId: string, newDate: string) => void;
@@ -33,7 +33,6 @@ interface ArchiveViewProps {
 export function ArchiveView({
   snapshots,
   recycleBin = [],
-  onArchiveNow,
   onRestoreSnapshot,
   onSyncSnapshotToParties,
   onUpdateSnapshotDate,
@@ -43,7 +42,6 @@ export function ArchiveView({
   onEmptyRecycleBin,
   title,
   subtitle,
-  archiveButtonLabel = 'Archive & New Date',
   secondaryActionLabel,
   onSecondaryAction,
   hideRestore = false,
@@ -62,82 +60,6 @@ export function ArchiveView({
   const [confirmEmptyBin, setConfirmEmptyBin] = useState<boolean>(false);
   const [syncingSnapId, setSyncingSnapId] = useState<string | null>(null);
 
-  const handleExportCsv = () => {
-    const header = [
-      'Archive Date',
-      'Saved At',
-      'Trigger',
-      'Seller',
-      'MOR',
-      'DAY',
-      'EVE',
-      'SOLD',
-      'Bill',
-      'Prize',
-      'Fresh',
-      'Joma',
-      'Due',
-      'Total',
-      'Limit Grand Total',
-    ].join(',');
-
-    const rows: string[] = [header];
-    for (const snap of snapshots) {
-      const sellers = snap.sellerSummaries || [];
-      if (sellers.length === 0) {
-        rows.push(
-          [
-            snap.date,
-            snap.savedAt,
-            snap.trigger || 'manual',
-            'ALL',
-            0,
-            0,
-            0,
-            snap.totalSold,
-            snap.totalBill,
-            snap.totalPrize,
-            snap.totalBill - snap.totalPrize,
-            0,
-            0,
-            snap.totalNetPayable,
-            snap.limitGrandTotal,
-          ].join(',')
-        );
-      } else {
-        for (const s of sellers) {
-          rows.push(
-            [
-              snap.date,
-              snap.savedAt,
-              snap.trigger || 'manual',
-              `"${s.name}"`,
-              s.mor,
-              s.day,
-              s.eve,
-              s.sold,
-              s.bill,
-              s.prizeTotal,
-              s.fresh,
-              s.joma,
-              s.due,
-              s.total,
-              snap.limitGrandTotal,
-            ].join(',')
-          );
-        }
-      }
-    }
-
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `kk-agency-archive-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
     <div className="space-y-4">
       <div className="kk-surface-card rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
@@ -147,23 +69,12 @@ export function ArchiveView({
           </h2>
           <p className="text-xs font-medium text-slate-600 mt-0.5">
             {subtitle ||
-              "Archiving saves today's snapshot, carries +Total → Due & -Total → Joma to the new date, and auto-deletes records after 30 days."}
+              "Close Day saves today's snapshot, carries +Total → Due & -Total → Joma to the new date, and auto-deletes records after 30 days."}
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {!readOnly && (
-            <button
-              type="button"
-              onClick={onArchiveNow}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl transition-colors cursor-pointer"
-            >
-              <Archive className="w-3.5 h-3.5" />
-              <span>{archiveButtonLabel}</span>
-            </button>
-          )}
-
-          {!readOnly && secondaryActionLabel && onSecondaryAction && (
+        {!readOnly && secondaryActionLabel && onSecondaryAction && (
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={onSecondaryAction}
@@ -172,19 +83,8 @@ export function ArchiveView({
               <RotateCcw className="w-3.5 h-3.5" />
               <span>{secondaryActionLabel}</span>
             </button>
-          )}
-
-          {snapshots.length > 0 && (
-            <button
-              type="button"
-              onClick={handleExportCsv}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl transition-colors cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Export CSV</span>
-            </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {snapshots.length === 0 ? (
@@ -193,7 +93,7 @@ export function ArchiveView({
             No archived daily records yet.
           </p>
           <p className="text-xs font-medium text-slate-600">
-            Click &ldquo;Archive Current State&rdquo; above or use &ldquo;Close Day&rdquo; on Seller Bill.
+            Use &ldquo;Close Day&rdquo; on Seller Bill to save daily records.
           </p>
         </div>
       ) : (
@@ -310,6 +210,7 @@ export function ArchiveView({
                             e.stopPropagation();
                             AppSounds.tap();
                             setSyncingSnapId(snap.id);
+                            await new Promise((r) => window.setTimeout(r, 0));
                             try {
                               await onSyncSnapshotToParties(snap);
                             } finally {

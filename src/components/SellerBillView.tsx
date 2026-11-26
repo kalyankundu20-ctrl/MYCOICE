@@ -1,6 +1,6 @@
 import { AlertTriangle, ArrowUpRight, Check, Copy, ExternalLink, Eye, EyeOff, FileText, LayoutGrid, Loader2, Plus, RotateCcw, Send, ShieldAlert, Table2, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { formatDateDDMMYYYY, formatINR, formatLimitGroup, isMyChoiceName, round2 } from '../engine/calculations';
 import { OverLimitBreakdownGroup, Seller, SellerBillRow, SessionComputation, SessionId } from '../types/ledger';
 import { BillReceiptPayload, sendBillCardDirectToWhatsApp } from '../utils/billImageGenerator';
@@ -51,7 +51,7 @@ interface SellerBillViewProps {
   onOpenSession?: (sessionId: SessionId) => void;
 }
 
-export function SellerBillView({
+export const SellerBillView = memo(function SellerBillView({
   date,
   bills,
   onUpdateSeller,
@@ -242,39 +242,43 @@ export function SellerBillView({
     }, 1800);
   }, []);
 
-  const totals = visibleBills.reduce(
-    (acc, row) => ({
-      mor: acc.mor + row.mor,
-      day: acc.day + row.day,
-      eve: acc.eve + row.eve,
-      sold: acc.sold + row.sold,
-      bill: acc.bill + row.bill,
-      prize: acc.prize + row.prizeTotal,
-      fresh: acc.fresh + row.fresh,
-      amt1pm: acc.amt1pm + row.amt1pm,
-      amt6pm: acc.amt6pm + row.amt6pm,
-      amt8pm: acc.amt8pm + row.amt8pm,
-      joma: acc.joma + row.joma,
-      due: acc.due + row.due,
-      total: acc.total + row.total,
-      rate: acc.rate + row.rate,
-    }),
-    {
-      mor: 0,
-      day: 0,
-      eve: 0,
-      sold: 0,
-      bill: 0,
-      prize: 0,
-      fresh: 0,
-      amt1pm: 0,
-      amt6pm: 0,
-      amt8pm: 0,
-      joma: 0,
-      due: 0,
-      total: 0,
-      rate: 0,
-    }
+  const totals = useMemo(
+    () =>
+      visibleBills.reduce(
+        (acc, row) => ({
+          mor: acc.mor + row.mor,
+          day: acc.day + row.day,
+          eve: acc.eve + row.eve,
+          sold: acc.sold + row.sold,
+          bill: acc.bill + row.bill,
+          prize: acc.prize + row.prizeTotal,
+          fresh: acc.fresh + row.fresh,
+          amt1pm: acc.amt1pm + row.amt1pm,
+          amt6pm: acc.amt6pm + row.amt6pm,
+          amt8pm: acc.amt8pm + row.amt8pm,
+          joma: acc.joma + row.joma,
+          due: acc.due + row.due,
+          total: acc.total + row.total,
+          rate: acc.rate + row.rate,
+        }),
+        {
+          mor: 0,
+          day: 0,
+          eve: 0,
+          sold: 0,
+          bill: 0,
+          prize: 0,
+          fresh: 0,
+          amt1pm: 0,
+          amt6pm: 0,
+          amt8pm: 0,
+          joma: 0,
+          due: 0,
+          total: 0,
+          rate: 0,
+        }
+      ),
+    [visibleBills]
   );
 
   const handleCreateSeller = (e: React.FormEvent) => {
@@ -1539,4 +1543,4 @@ export function SellerBillView({
       <SheetFormulaBar session={activeFormula} />
     </div>
   );
-}
+});
