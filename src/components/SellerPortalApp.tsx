@@ -21,7 +21,7 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createBlankRows, createEmptyAppState, createEmptyRow } from '../data/initialState';
 import {
   computeSellerBills,
@@ -66,21 +66,66 @@ import { AppSounds } from '../utils/sound';
 import { scheduleIdlePersistence } from '../utils/storage';
 import { AnnouncementBanner } from './AnnouncementBanner';
 import { getIstClockParts, getSellerSessionLockStatus, SessionLockStatus } from '../utils/sessionLock';
+import { ArchiveView } from './ArchiveView';
 import { LiveChainEntriesPanel } from './LiveChainEntriesPanel';
+import { MasterChainTab } from './MasterChainTab';
+import { MessagePreviewModal } from './MessagePreviewModal';
+import { PrizeListView } from './PrizeListView';
 import { SessionSheetView } from './SessionSheetView';
 
-const ArchiveView = lazy(() =>
-  import('./ArchiveView').then((m) => ({ default: m.ArchiveView }))
-);
-const MasterChainTab = lazy(() =>
-  import('./MasterChainTab').then((m) => ({ default: m.MasterChainTab }))
-);
-const MessagePreviewModal = lazy(() =>
-  import('./MessagePreviewModal').then((m) => ({ default: m.MessagePreviewModal }))
-);
-const PrizeListView = lazy(() =>
-  import('./PrizeListView').then((m) => ({ default: m.PrizeListView }))
-);
+interface SellerPortalBootCache {
+  agency: CloudAgencyDoc | null;
+  party: CloudPartyDoc | null;
+  entries: Record<SessionId, TicketEntryRow[]>;
+  savedAt: number;
+}
+
+function getSellerBootCacheKey(agencyId: string, partyId: string): string {
+  return `kk-seller-portal-boot-v1:${agencyId}:${partyId}`;
+}
+
+function readSellerBootCache(agencyId: string, partyId: string): SellerPortalBootCache | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(getSellerBootCacheKey(agencyId, partyId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SellerPortalBootCache>;
+    if (!parsed || !parsed.party) return null;
+    return {
+      agency: parsed.agency ?? null,
+      party: parsed.party,
+      entries: {
+        '1PM': Array.isArray(parsed.entries?.['1PM']) && parsed.entries['1PM'].length > 0 ? parsed.entries['1PM'] : createBlankRows(1),
+        '6PM': Array.isArray(parsed.entries?.['6PM']) && parsed.entries['6PM'].length > 0 ? parsed.entries['6PM'] : createBlankRows(1),
+        '8PM': Array.isArray(parsed.entries?.['8PM']) && parsed.entries['8PM'].length > 0 ? parsed.entries['8PM'] : createBlankRows(1),
+      },
+      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeSellerBootCache(
+  agencyId: string,
+  partyId: string,
+  agency: CloudAgencyDoc | null,
+  party: CloudPartyDoc | null,
+  entries: Record<SessionId, TicketEntryRow[]>
+) {
+  if (typeof window === 'undefined' || !party) return;
+  try {
+    const payload: SellerPortalBootCache = {
+      agency,
+      party,
+      entries,
+      savedAt: Date.now(),
+    };
+    window.localStorage.setItem(getSellerBootCacheKey(agencyId, partyId), JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 type SellerTab = 'My Bill' | '1PM' | '6PM' | '8PM' | 'Prize List' | 'Chain' | 'Archive';
 
@@ -141,11 +186,16 @@ export function SellerPortalApp({
   onExitAdminPreview,
   announcement = null,
 }: SellerPortalAppProps) {
+  const initialBootCache = useMemo(
+    () => readSellerBootCache(agencyId, partyId),
+    [agencyId, partyId]
+  );
+
   const [activeTab, setActiveTab] = useState<SellerTab>('My Bill');
-  const [agency, setAgency] = useState<CloudAgencyDoc | null>(null);
-  const [party, setParty] = useState<CloudPartyDoc | null>(null);
+  const [agency, setAgency] = useState<CloudAgencyDoc | null>(() => initialBootCache?.agency ?? null);
+  const [party, setParty] = useState<CloudPartyDoc | null>(() => initialBootCache?.party ?? null);
   const [sheetExists, setSheetExists] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !initialBootCache?.party);
   const [revokedReason, setRevokedReason] = useState('');
   const [syncState, setSyncState] = useState<'synced' | 'saving' | 'error'>('synced');
   const [syncErrorMsg, setSyncErrorMsg] = useState<string>('');
@@ -169,11 +219,14 @@ export function SellerPortalApp({
   const [archiveToast, setArchiveToast] = useState<string>('');
   const [archiveBusy, setArchiveBusy] = useState<boolean>(false);
 
-  const [entries, setEntries] = useState<Record<SessionId, TicketEntryRow[]>>({
-    '1PM': createBlankRows(1),
-    '6PM': createBlankRows(1),
-    '8PM': createBlankRows(1),
-  });
+  const [entries, setEntries] = useState<Record<SessionId, TicketEntryRow[]>>(
+    () =>
+      initialBootCache?.entries ?? {
+        '1PM': createBlankRows(1),
+        '6PM': createBlankRows(1),
+        '8PM': createBlankRows(1),
+      }
+  );
   const [recentlyPastedIds, setRecentlyPastedIds] = useState<Record<SessionId, string[]>>({
     '1PM': [],
     '6PM': [],
@@ -357,26 +410,53 @@ export function SellerPortalApp({
     };
   }, [agencyId, partyId, archiveStorageKey, archiveSyncedDateKey, isArchiveViewOpen, liveAgencyDateStr]);
 
+  // Silently persist latest Seller Portal snapshot to localStorage during idle time for instant 0ms next launch
   useEffect(() => {
-    setLoading(true);
-    setRevokedReason('');
-    setParty(null);
-    setSheetExists(false);
-    setActiveTab('My Bill');
-    setEntries({
-      '1PM': createBlankRows(1),
-      '6PM': createBlankRows(1),
-      '8PM': createBlankRows(1),
-    });
-    setRecentlyPastedIds({ '1PM': [], '6PM': [], '8PM': [] });
-    setSessionHistory({
-      '1PM': { undo: [], redo: [] },
-      '6PM': { undo: [], redo: [] },
-      '8PM': { undo: [], redo: [] },
-    });
-    lastSerializedRef.current = '';
-    dirtyLocalRef.current = false;
-    pendingDirtySessionsRef.current.clear();
+    if (!party) return;
+    return scheduleIdlePersistence(() => {
+      writeSellerBootCache(agencyId, partyId, agency, party, entries);
+    }, 600);
+  }, [agencyId, partyId, agency, party, entries]);
+
+  const lastLoadedPartyKeyRef = useRef<string>('');
+
+  useEffect(() => {
+    const partyKey = `${agencyId}:${partyId}`;
+    const isPartySwitch = lastLoadedPartyKeyRef.current !== partyKey;
+    if (isPartySwitch) {
+      lastLoadedPartyKeyRef.current = partyKey;
+      const cached = readSellerBootCache(agencyId, partyId);
+      setRevokedReason('');
+      setSheetExists(false);
+      setActiveTab('My Bill');
+      if (cached?.party) {
+        setAgency(cached.agency);
+        setParty(cached.party);
+        setEntries(cached.entries);
+        setLoading(false);
+      } else {
+        setParty(null);
+        setEntries({
+          '1PM': createBlankRows(1),
+          '6PM': createBlankRows(1),
+          '8PM': createBlankRows(1),
+        });
+        setLoading(true);
+      }
+      setRecentlyPastedIds({ '1PM': [], '6PM': [], '8PM': [] });
+      setSessionHistory({
+        '1PM': { undo: [], redo: [] },
+        '6PM': { undo: [], redo: [] },
+        '8PM': { undo: [], redo: [] },
+      });
+      lastSerializedRef.current = '';
+      dirtyLocalRef.current = false;
+      pendingDirtySessionsRef.current.clear();
+    }
+
+    if (!uid) {
+      return;
+    }
 
     const unsub = subscribeSellerPortal(agencyId, partyId, {
       onAgency: (docData) => {
@@ -2562,85 +2642,79 @@ export function SellerPortalApp({
                     </div>
                   </div>
                 ) : (
-                  <Suspense fallback={<div className="p-6 text-center text-xs font-bold text-slate-500">Loading...</div>}>
-                    <PrizeListView
-                      date={effectiveBillingDate}
-                      prizeList={prizeList}
-                      sellers={sellerList}
-                      excludedNames={excludedNames}
-                      onPreviewMessage={(title, subtitle, message, waUrl) =>
-                        setPreviewModal({ isOpen: true, title, subtitle, message, waUrl })
-                      }
-                    />
-                  </Suspense>
+                  <PrizeListView
+                    date={effectiveBillingDate}
+                    prizeList={prizeList}
+                    sellers={sellerList}
+                    excludedNames={excludedNames}
+                    onPreviewMessage={(title, subtitle, message, waUrl) =>
+                      setPreviewModal({ isOpen: true, title, subtitle, message, waUrl })
+                    }
+                  />
                 )}
               </div>
             )}
             {activeTab === 'Chain' && isMasterSeller && (
-              <Suspense fallback={<div className="p-6 text-center text-xs font-bold text-slate-500">Loading Chain...</div>}>
-                <MasterChainTab
-                  masterUid={uid}
-                  masterParty={effectiveParty}
-                  billingDate={effectiveBillingDate}
-                  subParties={effectiveSubParties}
-                  allChainParties={
-                    effectiveAllChainParties.length > 0
-                      ? effectiveAllChainParties
-                      : effectiveSubParties
-                  }
-                  subPrivates={subPrivates}
-                  subSheets={effectiveSubSheets}
-                  subBillsByPartyId={subBillsByPartyId}
-                  config={sellerConfig}
-                  adminPreviewMode={adminPreviewMode || isArchiveViewMode}
-                  onPreviewMessage={(title, subtitle, message, waUrl, billData) =>
-                    setPreviewModal({ isOpen: true, title, subtitle, message, waUrl, billData })
-                  }
-                />
-              </Suspense>
+              <MasterChainTab
+                masterUid={uid}
+                masterParty={effectiveParty}
+                billingDate={effectiveBillingDate}
+                subParties={effectiveSubParties}
+                allChainParties={
+                  effectiveAllChainParties.length > 0
+                    ? effectiveAllChainParties
+                    : effectiveSubParties
+                }
+                subPrivates={subPrivates}
+                subSheets={effectiveSubSheets}
+                subBillsByPartyId={subBillsByPartyId}
+                config={sellerConfig}
+                adminPreviewMode={adminPreviewMode || isArchiveViewMode}
+                onPreviewMessage={(title, subtitle, message, waUrl, billData) =>
+                  setPreviewModal({ isOpen: true, title, subtitle, message, waUrl, billData })
+                }
+              />
             )}
             {activeTab === 'Archive' && (
-              <Suspense fallback={<div className="p-6 text-center text-xs font-bold text-slate-500">Loading Archive...</div>}>
-                <div className="space-y-3">
-                  {archiveToast && (
-                    <div className="bg-emerald-50 border border-emerald-200 text-emerald-950 rounded-2xl px-3.5 py-2.5 text-xs font-bold shadow-xs">
-                      {archiveToast}
-                    </div>
-                  )}
-                  <ArchiveView
-                    billingDate={billingDate}
-                    snapshots={partyArchives}
-                    recycleBin={partyRecycleBin}
-                    onArchiveNow={() => void handleSavePartyArchive()}
-                    onRestoreSnapshot={handleRestorePartySnapshot}
-                    onUpdateSnapshotDate={(id, nextDate) => void handleUpdatePartyArchiveDate(id, nextDate)}
-                    onDeleteSnapshot={(id) => void handleDeletePartyArchive(id)}
-                    onRecoverFromBin={(id) => void handleRecoverPartyArchiveFromBin(id)}
-                    onPermanentDeleteFromBin={handlePermanentDeletePartyFromBin}
-                    onEmptyRecycleBin={handleEmptyPartyRecycleBin}
-                    title={`${party.name} — Daily Archive (${partyArchives.length})`}
-                    partyOwnerName={party.name}
-                    subtitle={
-                      isMasterSeller && subParties.length > 0
-                        ? 'Har din ka Bill, 1PM/6PM/8PM Sheet, Sub-Sellers aur Prize snapshot safe rehta hai (30 days history). Restore dabakar kisi bhi purane din ka poora details dekh sakte hain.'
-                        : 'Aapka roz ka Bill, 1PM/6PM/8PM Sheet aur Prize record yahan 30 din tak safe rehta hai. Restore dabakar kisi bhi din ka poora details dekh sakte hain.'
-                    }
-                    archiveButtonLabel={archiveBusy ? 'Saving...' : 'Save Archive'}
-                    secondaryActionLabel={
-                      isMasterSeller && subParties.length > 0 && !adminPreviewMode
-                        ? 'Archive & Carry Due/Joma'
-                        : undefined
-                    }
-                    onSecondaryAction={
-                      isMasterSeller && subParties.length > 0 && !adminPreviewMode
-                        ? () => void handleArchiveAndCarryForwardSubs()
-                        : undefined
-                    }
-                    hideRestore={false}
-                    hideLimitPrize={true}
-                  />
-                </div>
-              </Suspense>
+              <div className="space-y-3">
+                {archiveToast && (
+                  <div className="bg-emerald-50 border border-emerald-200 text-emerald-950 rounded-2xl px-3.5 py-2.5 text-xs font-bold shadow-xs">
+                    {archiveToast}
+                  </div>
+                )}
+                <ArchiveView
+                  billingDate={billingDate}
+                  snapshots={partyArchives}
+                  recycleBin={partyRecycleBin}
+                  onArchiveNow={() => void handleSavePartyArchive()}
+                  onRestoreSnapshot={handleRestorePartySnapshot}
+                  onUpdateSnapshotDate={(id, nextDate) => void handleUpdatePartyArchiveDate(id, nextDate)}
+                  onDeleteSnapshot={(id) => void handleDeletePartyArchive(id)}
+                  onRecoverFromBin={(id) => void handleRecoverPartyArchiveFromBin(id)}
+                  onPermanentDeleteFromBin={handlePermanentDeletePartyFromBin}
+                  onEmptyRecycleBin={handleEmptyPartyRecycleBin}
+                  title={`${party.name} — Daily Archive (${partyArchives.length})`}
+                  partyOwnerName={party.name}
+                  subtitle={
+                    isMasterSeller && subParties.length > 0
+                      ? 'Har din ka Bill, 1PM/6PM/8PM Sheet, Sub-Sellers aur Prize snapshot safe rehta hai (30 days history). Restore dabakar kisi bhi purane din ka poora details dekh sakte hain.'
+                      : 'Aapka roz ka Bill, 1PM/6PM/8PM Sheet aur Prize record yahan 30 din tak safe rehta hai. Restore dabakar kisi bhi din ka poora details dekh sakte hain.'
+                  }
+                  archiveButtonLabel={archiveBusy ? 'Saving...' : 'Save Archive'}
+                  secondaryActionLabel={
+                    isMasterSeller && subParties.length > 0 && !adminPreviewMode
+                      ? 'Archive & Carry Due/Joma'
+                      : undefined
+                  }
+                  onSecondaryAction={
+                    isMasterSeller && subParties.length > 0 && !adminPreviewMode
+                      ? () => void handleArchiveAndCarryForwardSubs()
+                      : undefined
+                  }
+                  hideRestore={false}
+                  hideLimitPrize={true}
+                />
+              </div>
             )}
         </div>
         </div>
@@ -2723,17 +2797,15 @@ export function SellerPortalApp({
       </nav>
 
       {previewModal.isOpen && (
-        <Suspense fallback={null}>
-          <MessagePreviewModal
-            isOpen={previewModal.isOpen}
-            title={previewModal.title}
-            subtitle={previewModal.subtitle}
-            message={previewModal.message}
-            waUrl={previewModal.waUrl}
-            billData={previewModal.billData}
-            onClose={() => setPreviewModal((prev) => ({ ...prev, isOpen: false }))}
-          />
-        </Suspense>
+        <MessagePreviewModal
+          isOpen={previewModal.isOpen}
+          title={previewModal.title}
+          subtitle={previewModal.subtitle}
+          message={previewModal.message}
+          waUrl={previewModal.waUrl}
+          billData={previewModal.billData}
+          onClose={() => setPreviewModal((prev) => ({ ...prev, isOpen: false }))}
+        />
       )}
     </div>
   );

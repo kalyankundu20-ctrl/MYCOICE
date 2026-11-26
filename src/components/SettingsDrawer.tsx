@@ -1,5 +1,4 @@
 import { Check, Palette, Volume2, VolumeX, X } from 'lucide-react';
-import { AnimatePresence, motion } from 'motion/react';
 import { useState } from 'react';
 import { AgencyConfig, AppState, DaySnapshot } from '../types/ledger';
 import {
@@ -61,30 +60,20 @@ export function SettingsDrawer({
     previewSoundStyle(styleId);
   };
 
+  if (!isOpen) return null;
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          key="settings-backdrop"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.18 }}
-          onClick={onClose}
-          className="fixed inset-0 z-50 flex justify-end bg-slate-900/45 backdrop-blur-[2px]"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="settings-title"
-        >
-          <motion.div
-            key="settings-panel"
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'spring', stiffness: 420, damping: 38 }}
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md bg-white h-full overflow-y-auto overscroll-y-contain border-l border-slate-200 shadow-2xl flex flex-col"
-          >
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex justify-end bg-slate-900/45"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="kk-drawer-in w-full max-w-md bg-white h-full overflow-y-auto overscroll-y-contain border-l border-slate-200 shadow-2xl flex flex-col"
+      >
             <div className="kk-brand-gradient text-white sticky top-0 z-10 pt-[env(safe-area-inset-top)] transition-colors">
               <div className="px-5 py-3.5 flex items-center justify-between gap-2">
                 <h2 id="settings-title" className="text-sm font-bold">
@@ -390,9 +379,7 @@ export function SettingsDrawer({
                 </div>
               </section>
             </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+      </div>
+    </div>
   );
 }

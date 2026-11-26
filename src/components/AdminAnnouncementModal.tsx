@@ -13,7 +13,6 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
   sanitizeAnnouncementImageDataUrl,
@@ -325,87 +324,82 @@ export function AdminAnnouncementModal({
   const displayError = localError || error;
   const imageKB = estimateDataUrlKB(imageDataUrl);
 
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          key="ad-modal-backdrop"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.16 }}
-          onClick={() => {
-            AppSounds.tap();
-            onClose();
-          }}
-          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ad-modal-title"
-        >
-          <motion.div
-            key="ad-modal-card"
-            initial={{ opacity: 0, y: 24, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 16, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 460, damping: 34 }}
-            onClick={(e) => e.stopPropagation()}
-            className="w-full sm:max-w-lg max-h-[92vh] bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
-          >
-            {/* Header */}
-            <div className="kk-brand-gradient text-white px-5 py-4 flex items-center justify-between gap-3 shrink-0">
-              <div className="flex items-center gap-3 min-w-0">
-                <span className="w-10 h-10 rounded-xl bg-amber-400/20 text-amber-300 ring-1 ring-amber-300/40 flex items-center justify-center shrink-0">
-                  <Megaphone className="w-5 h-5" />
-                </span>
-                <div className="min-w-0">
-                  <h2 id="ad-modal-title" className="text-base font-extrabold tracking-tight truncate">
-                    Advertisement &amp; Urgent Message
-                  </h2>
-                  <p className="text-[11px] font-medium text-indigo-100 truncate">
-                    Photo, Emoji &amp; Offer — Sabhi Master &amp; Sub-Master ko live dikhega
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  AppSounds.tap();
-                  onClose();
-                }}
-                aria-label="Close advertisement modal"
-                className="p-2 rounded-xl text-white/80 hover:text-white hover:bg-white/15 transition-colors cursor-pointer shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+  if (!isOpen) return null;
 
-            {/* Body */}
-            <div className="flex-1 overflow-y-auto overscroll-y-contain p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-4">
-              {/* Live Status Bar */}
-              <div
-                className={`rounded-2xl px-3.5 py-2.5 border flex items-center justify-between gap-2 text-xs font-bold ${
-                  isCurrentlyLive
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
-                    : 'bg-slate-50 border-slate-200 text-slate-700'
-                }`}
-              >
-                <span className="inline-flex items-center gap-2">
-                  <span
-                    className={`w-2.5 h-2.5 rounded-full ${
-                      isCurrentlyLive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
-                    }`}
-                  />
-                  <span>
-                    {isCurrentlyLive
-                      ? 'LIVE — Sabhi Master, Sub-Master & Link par show ho raha hai'
-                      : 'OFF — Abhi koi advertisement live nahi hai'}
-                  </span>
-                </span>
-                {isCurrentlyLive && (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                )}
-              </div>
+  return (
+    <div
+      onClick={() => {
+        AppSounds.tap();
+        onClose();
+      }}
+      className="fixed inset-0 z-50 bg-slate-950/60 flex items-end sm:items-center justify-center pt-[max(3.25rem,calc(env(safe-area-inset-top)+0.75rem))] px-0 pb-0 sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="ad-modal-title"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="kk-modal-in w-full sm:max-w-lg max-h-full sm:max-h-[86dvh] bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
+      >
+        {/* Header */}
+        <div className="kk-brand-gradient text-white px-4 sm:px-5 py-3.5 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="w-9 h-9 rounded-xl bg-amber-400/20 text-amber-300 ring-1 ring-amber-300/40 flex items-center justify-center shrink-0">
+              <Megaphone className="w-4.5 h-4.5" />
+            </span>
+            <div className="min-w-0">
+              <h2 id="ad-modal-title" className="text-sm sm:text-base font-extrabold tracking-tight truncate">
+                Advertisement &amp; Urgent Message
+              </h2>
+              <p className="text-[11px] font-medium text-indigo-100 truncate">
+                Photo, Emoji &amp; Offer — Sabhi Master &amp; Sub-Master ko live dikhega
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              AppSounds.tap();
+              onClose();
+            }}
+            aria-label="Close advertisement modal"
+            className="p-2 rounded-xl text-white/80 hover:text-white hover:bg-white/15 transition-colors cursor-pointer shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Always-Visible Pinned Live/Off Status Strip (never hidden behind top notch or scroll) */}
+        <div
+          className={`shrink-0 px-4 py-2.5 border-b flex items-center justify-between gap-2 text-xs font-bold ${
+            isCurrentlyLive
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+              : 'bg-slate-100/95 border-slate-200 text-slate-800'
+          }`}
+        >
+          <span className="inline-flex items-center gap-2 min-w-0">
+            <span
+              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                isCurrentlyLive ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+              }`}
+            />
+            <span className="leading-snug">
+              {isCurrentlyLive
+                ? 'LIVE — Sabhi Master, Sub-Master & Link par show ho raha hai'
+                : 'OFF — Abhi koi advertisement live nahi hai'}
+            </span>
+          </span>
+          {isCurrentlyLive ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          ) : (
+            <span className="px-2 py-0.5 rounded-md bg-slate-200 text-slate-700 text-[10px] font-extrabold uppercase tracking-wide shrink-0">
+              OFF
+            </span>
+          )}
+        </div>
+
+        {/* Scrollable Body */}
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain p-4 sm:p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-4">
 
               {!isAdminSignedIn ? (
                 <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 space-y-3">
@@ -771,10 +765,8 @@ export function AdminAnnouncementModal({
                   </div>
                 </>
               )}
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </div>
+      </div>
+    </div>
   );
 }

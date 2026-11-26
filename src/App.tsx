@@ -1,47 +1,24 @@
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import { Archive, RefreshCw, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { AdminAnnouncementModal } from './components/AdminAnnouncementModal';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { AppShell } from './components/AppShell';
+import { ArchiveView } from './components/ArchiveView';
+import { GoogleSheetsSyncModal } from './components/GoogleSheetsSyncModal';
+import { LimitPrizeView } from './components/LimitPrizeView';
 import { LiveChainEntriesPanel } from './components/LiveChainEntriesPanel';
+import { MessagePreviewModal } from './components/MessagePreviewModal';
+import { PrizeListView } from './components/PrizeListView';
 import { SellerBillView } from './components/SellerBillView';
+import { SellerIdManagerModal } from './components/SellerIdManagerModal';
+import { SellerLoginView } from './components/SellerLoginView';
+import { SellerPortalApp } from './components/SellerPortalApp';
 import { SessionSheetView } from './components/SessionSheetView';
+import { SettingsDrawer } from './components/SettingsDrawer';
+import { WinningNumberView } from './components/WinningNumberView';
 import type { BillReceiptPayload } from './utils/billImageGenerator';
-
-const AdminAnnouncementModal = lazy(() =>
-  import('./components/AdminAnnouncementModal').then((m) => ({ default: m.AdminAnnouncementModal }))
-);
-const ArchiveView = lazy(() =>
-  import('./components/ArchiveView').then((m) => ({ default: m.ArchiveView }))
-);
-const GoogleSheetsSyncModal = lazy(() =>
-  import('./components/GoogleSheetsSyncModal').then((m) => ({ default: m.GoogleSheetsSyncModal }))
-);
-const LimitPrizeView = lazy(() =>
-  import('./components/LimitPrizeView').then((m) => ({ default: m.LimitPrizeView }))
-);
-const MessagePreviewModal = lazy(() =>
-  import('./components/MessagePreviewModal').then((m) => ({ default: m.MessagePreviewModal }))
-);
-const PrizeListView = lazy(() =>
-  import('./components/PrizeListView').then((m) => ({ default: m.PrizeListView }))
-);
-const SellerIdManagerModal = lazy(() =>
-  import('./components/SellerIdManagerModal').then((m) => ({ default: m.SellerIdManagerModal }))
-);
-const SellerLoginView = lazy(() =>
-  import('./components/SellerLoginView').then((m) => ({ default: m.SellerLoginView }))
-);
-const SellerPortalApp = lazy(() =>
-  import('./components/SellerPortalApp').then((m) => ({ default: m.SellerPortalApp }))
-);
-const SettingsDrawer = lazy(() =>
-  import('./components/SettingsDrawer').then((m) => ({ default: m.SettingsDrawer }))
-);
-const WinningNumberView = lazy(() =>
-  import('./components/WinningNumberView').then((m) => ({ default: m.WinningNumberView }))
-);
 import {
   auth,
   clearGoogleSheetsAccessToken,
@@ -3529,18 +3506,6 @@ export default function App() {
     [prizeList]
   );
 
-  // Silently warm lazy-loaded tabs during browser idle time so tab switching stays 0ms instant
-  useEffect(() => {
-    if (cloudSession.kind !== 'admin') return;
-    const cancel = scheduleIdlePersistence(() => {
-      void import('./components/WinningNumberView');
-      void import('./components/PrizeListView');
-      void import('./components/LimitPrizeView');
-      void import('./components/ArchiveView');
-    }, 1500);
-    return cancel;
-  }, [cloudSession.kind]);
-
   const shellCounts = useMemo(
     () => ({
       sellers: sellerBills.length,
@@ -5672,27 +5637,18 @@ export default function App() {
   // Route 1A: Admin Previewing a Seller or Sub-Seller's Mobile App (with instant Back to Admin & NO time lock)
   if (cloudSession.kind === 'admin' && authUser && adminPreviewParty) {
     return (
-      <Suspense
-        fallback={
-          <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--kk-canvas)] p-6 text-center gap-3">
-            <img src="/kk-logo.png" alt="KK Agency" className="w-14 h-14 rounded-2xl object-cover shadow-md" />
-            <p className="text-xs font-bold text-slate-600">Opening Portal...</p>
-          </div>
-        }
-      >
-        <SellerPortalApp
-          key={adminPreviewParty.partyId}
-          uid={authUser.uid}
-          agencyId={adminPreviewParty.agencyId}
-          partyId={adminPreviewParty.partyId}
-          soundEnabled={state.config.soundEnabled}
-          onToggleSound={handleToggleSound}
-          onSignOut={handleCloudSignOut}
-          adminPreviewMode
-          onExitAdminPreview={() => setAdminPreviewParty(null)}
-          announcement={publicAnnouncement}
-        />
-      </Suspense>
+      <SellerPortalApp
+        key={adminPreviewParty.partyId}
+        uid={authUser.uid}
+        agencyId={adminPreviewParty.agencyId}
+        partyId={adminPreviewParty.partyId}
+        soundEnabled={state.config.soundEnabled}
+        onToggleSound={handleToggleSound}
+        onSignOut={handleCloudSignOut}
+        adminPreviewMode
+        onExitAdminPreview={() => setAdminPreviewParty(null)}
+        announcement={publicAnnouncement}
+      />
     );
   }
 
@@ -5706,71 +5662,40 @@ export default function App() {
       (initialUrlLoginParams.forceAdmin || devicePortalMode === 'admin');
     const allowLogoAdminUnlock = !isLockedToSellerPortal;
     return (
-      <Suspense
-        fallback={
-          <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--kk-canvas)] p-6 text-center gap-3">
-            <img src="/kk-logo.png" alt="KK Agency" className="w-14 h-14 rounded-2xl object-cover shadow-md" />
-            <p className="text-xs font-bold text-slate-600">Loading Login...</p>
-          </div>
+      <SellerLoginView
+        busy={cloudBusy}
+        error={cloudError}
+        onLoginWithIdPassword={handleLoginWithIdPassword}
+        showAdminSignIn={showAdminSignIn}
+        allowLogoAdminUnlock={allowLogoAdminUnlock}
+        onAdminGoogleSignIn={allowLogoAdminUnlock ? handleAdminGoogleSignIn : undefined}
+        announcement={publicAnnouncement}
+        onCancelToAdmin={
+          canCancel
+            ? () => {
+                setCloudError('');
+                clearLoginQueryParams();
+                setSellerLoginMode(false);
+              }
+            : undefined
         }
-      >
-        <SellerLoginView
-          busy={cloudBusy}
-          error={cloudError}
-          onLoginWithIdPassword={handleLoginWithIdPassword}
-          showAdminSignIn={showAdminSignIn}
-          allowLogoAdminUnlock={allowLogoAdminUnlock}
-          onAdminGoogleSignIn={allowLogoAdminUnlock ? handleAdminGoogleSignIn : undefined}
-          announcement={publicAnnouncement}
-          onCancelToAdmin={
-            canCancel
-              ? () => {
-                  setCloudError('');
-                  clearLoginQueryParams();
-                  setSellerLoginMode(false);
-                }
-              : undefined
-          }
-        />
-      </Suspense>
+      />
     );
   }
 
-  // Route 1B: Signed-in Seller / Sub-Seller -> dedicated Mobile Portal App
+  // Route 1B: Signed-in Seller / Sub-Seller -> dedicated Mobile Portal App (0ms cache-first boot!)
   if (cloudSession.kind === 'seller') {
-    if (!authUser) {
-      return (
-        <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--kk-canvas)] p-6 text-center gap-3">
-          <img
-            src="/kk-logo.png"
-            alt="KK Agency"
-            referrerPolicy="no-referrer"
-            className="w-16 h-16 rounded-2xl object-cover shadow-md"
-          />
-          <p className="text-sm font-bold text-slate-700">Loading KK Agency Portal...</p>
-        </div>
-      );
-    }
     return (
-      <Suspense
-        fallback={
-          <div className="h-full w-full flex flex-col items-center justify-center bg-[var(--kk-canvas)] p-6 text-center gap-3">
-            <img src="/kk-logo.png" alt="KK Agency" className="w-14 h-14 rounded-2xl object-cover shadow-md" />
-            <p className="text-xs font-bold text-slate-600">Opening Portal...</p>
-          </div>
-        }
-      >
-        <SellerPortalApp
-          key={cloudSession.partyId}
-          uid={authUser.uid}
-          agencyId={cloudSession.agencyId}
-          partyId={cloudSession.partyId}
-          soundEnabled={state.config.soundEnabled}
-          onToggleSound={handleToggleSound}
-          onSignOut={handleCloudSignOut}
-          announcement={publicAnnouncement}
-        />
-      </Suspense>
+      <SellerPortalApp
+        key={cloudSession.partyId}
+        uid={authUser?.uid || ''}
+        agencyId={cloudSession.agencyId}
+        partyId={cloudSession.partyId}
+        soundEnabled={state.config.soundEnabled}
+        onToggleSound={handleToggleSound}
+        onSignOut={handleCloudSignOut}
+        announcement={publicAnnouncement}
+      />
     );
   }
 
@@ -5974,223 +5899,207 @@ export default function App() {
       )}
 
       {activeTab === 'Winning Number' && (
-        <Suspense fallback={<div className="p-6 text-center text-xs font-bold text-slate-500">Loading...</div>}>
-          <WinningNumberView
-            winningRaw={state.winningRaw}
-            parsedWinning={parsedWinning}
-            prizeCount={prizeList.length}
-            prizeTotal={prizeTotalAmount}
-            onChangeWinningRaw={handleChangeWinningRaw}
-            onClearAllWinning={handleClearAllWinning}
-            onOpenPrizeList={() => setActiveTab('Prize List')}
-          />
-        </Suspense>
+        <WinningNumberView
+          winningRaw={state.winningRaw}
+          parsedWinning={parsedWinning}
+          prizeCount={prizeList.length}
+          prizeTotal={prizeTotalAmount}
+          onChangeWinningRaw={handleChangeWinningRaw}
+          onClearAllWinning={handleClearAllWinning}
+          onOpenPrizeList={() => setActiveTab('Prize List')}
+        />
       )}
 
       {(activeTab === 'Prize List' || activeTab === 'Limit Prize') && (
-        <Suspense fallback={<div className="p-6 text-center text-xs font-bold text-slate-500">Loading...</div>}>
-          <div className="space-y-5">
-            <PrizeListView
-              date={state.date}
-              prizeList={prizeList}
-              sellers={state.sellers}
-              excludedNames={state.config.excludedPrizeNames}
-              onPreviewMessage={handleOpenPreview}
-            />
-            <LimitPrizeView
-              groups={limitPrizeGroups}
-              grandTotal={limitGrandTotal}
-              limitThreshold={state.config.limitThreshold}
-              onPreviewMessage={handleOpenPreview}
-            />
-          </div>
-        </Suspense>
+        <div className="space-y-5">
+          <PrizeListView
+            date={state.date}
+            prizeList={prizeList}
+            sellers={state.sellers}
+            excludedNames={state.config.excludedPrizeNames}
+            onPreviewMessage={handleOpenPreview}
+          />
+          <LimitPrizeView
+            groups={limitPrizeGroups}
+            grandTotal={limitGrandTotal}
+            limitThreshold={state.config.limitThreshold}
+            onPreviewMessage={handleOpenPreview}
+          />
+        </div>
       )}
 
       {activeTab === 'Archive' && (
-        <Suspense fallback={<div className="p-6 text-center text-xs font-bold text-slate-500">Loading...</div>}>
-          <ArchiveView
-            billingDate={state.date}
-            onChangeBillingDate={handleChangeDate}
-            snapshots={state.history}
-            recycleBin={state.recycleBin || []}
-            onArchiveNow={() => performArchiveAndRollover('manual')}
-            onRestoreSnapshot={handleRestoreSnapshot}
-            onSyncSnapshotToParties={handleSyncSingleArchiveToParties}
-            onUpdateSnapshotDate={(snapshotId, newDate) => {
-              setState((prev) => ({
+        <ArchiveView
+          billingDate={state.date}
+          onChangeBillingDate={handleChangeDate}
+          snapshots={state.history}
+          recycleBin={state.recycleBin || []}
+          onArchiveNow={() => performArchiveAndRollover('manual')}
+          onRestoreSnapshot={handleRestoreSnapshot}
+          onSyncSnapshotToParties={handleSyncSingleArchiveToParties}
+          onUpdateSnapshotDate={(snapshotId, newDate) => {
+            setState((prev) => ({
+              ...prev,
+              history: prev.history.map((h) =>
+                h.id === snapshotId ? { ...h, date: newDate } : h
+              ),
+            }));
+          }}
+          onDeleteSnapshot={(snapshotId) => {
+            const target = state.history.find((h) => h.id === snapshotId);
+            setState((prev) => {
+              const found = prev.history.find((h) => h.id === snapshotId);
+              const nextHistory = prev.history.filter((h) => h.id !== snapshotId);
+              if (!found) return { ...prev, history: nextHistory };
+              const binned: DaySnapshot = { ...found, deletedAt: new Date().toISOString() };
+              const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
+              return {
                 ...prev,
-                history: prev.history.map((h) =>
-                  h.id === snapshotId ? { ...h, date: newDate } : h
-                ),
-              }));
-            }}
-            onDeleteSnapshot={(snapshotId) => {
-              const target = state.history.find((h) => h.id === snapshotId);
-              setState((prev) => {
-                const found = prev.history.find((h) => h.id === snapshotId);
-                const nextHistory = prev.history.filter((h) => h.id !== snapshotId);
-                if (!found) return { ...prev, history: nextHistory };
-                const binned: DaySnapshot = { ...found, deletedAt: new Date().toISOString() };
-                const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
-                return {
-                  ...prev,
-                  history: nextHistory,
-                  recycleBin: [binned, ...existingBin.filter((b) => b.id !== snapshotId)].slice(0, 120),
-                };
-              });
-              if (target) {
-                showToast(`${formatDateDDMM(target.date)} Recycle Bin me move ho gaya`);
-              }
-            }}
-            onRecoverFromBin={(snapshotId) => {
-              const target = (state.recycleBin || []).find((b) => b.id === snapshotId);
-              setState((prev) => {
-                const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
-                const found = existingBin.find((b) => b.id === snapshotId);
-                if (!found) return prev;
-                const { deletedAt: _removed, ...cleanSnap } = found;
-                return {
-                  ...prev,
-                  history: preserveSavedSnapshots([
-                    cleanSnap,
-                    ...prev.history.filter((h) => h.id !== cleanSnap.id),
-                  ]).slice(0, 180),
-                  recycleBin: existingBin.filter((b) => b.id !== snapshotId),
-                };
-              });
-              if (target) {
-                showToast(`${formatDateDDMM(target.date)} Recycle Bin se Recover ho gaya!`);
-              }
-            }}
-            onPermanentDeleteFromBin={(snapshotId) => {
-              setState((prev) => ({
+                history: nextHistory,
+                recycleBin: [binned, ...existingBin.filter((b) => b.id !== snapshotId)].slice(0, 120),
+              };
+            });
+            if (target) {
+              showToast(`${formatDateDDMM(target.date)} Recycle Bin me move ho gaya`);
+            }
+          }}
+          onRecoverFromBin={(snapshotId) => {
+            const target = (state.recycleBin || []).find((b) => b.id === snapshotId);
+            setState((prev) => {
+              const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
+              const found = existingBin.find((b) => b.id === snapshotId);
+              if (!found) return prev;
+              const { deletedAt: _removed, ...cleanSnap } = found;
+              return {
                 ...prev,
-                recycleBin: (prev.recycleBin || []).filter((b) => b.id !== snapshotId),
-              }));
-              showToast('Archive Recycle Bin se permanently delete ho gaya');
-            }}
-            onEmptyRecycleBin={() => {
-              setState((prev) => ({
-                ...prev,
-                recycleBin: [],
-              }));
-              showToast('Recycle Bin khali ho gaya');
-            }}
-          />
-        </Suspense>
+                history: preserveSavedSnapshots([
+                  cleanSnap,
+                  ...prev.history.filter((h) => h.id !== cleanSnap.id),
+                ]).slice(0, 180),
+                recycleBin: existingBin.filter((b) => b.id !== snapshotId),
+              };
+            });
+            if (target) {
+              showToast(`${formatDateDDMM(target.date)} Recycle Bin se Recover ho gaya!`);
+            }
+          }}
+          onPermanentDeleteFromBin={(snapshotId) => {
+            setState((prev) => ({
+              ...prev,
+              recycleBin: (prev.recycleBin || []).filter((b) => b.id !== snapshotId),
+            }));
+            showToast('Archive Recycle Bin se permanently delete ho gaya');
+          }}
+          onEmptyRecycleBin={() => {
+            setState((prev) => ({
+              ...prev,
+              recycleBin: [],
+            }));
+            showToast('Recycle Bin khali ho gaya');
+          }}
+        />
       )}
 
       {previewModal.isOpen && (
-        <Suspense fallback={null}>
-          <MessagePreviewModal
-            isOpen={previewModal.isOpen}
-            title={previewModal.title}
-            subtitle={previewModal.subtitle}
-            message={previewModal.message}
-            waUrl={previewModal.waUrl}
-            billData={previewModal.billData}
-            onClose={() => setPreviewModal((prev) => ({ ...prev, isOpen: false }))}
-          />
-        </Suspense>
+        <MessagePreviewModal
+          isOpen={previewModal.isOpen}
+          title={previewModal.title}
+          subtitle={previewModal.subtitle}
+          message={previewModal.message}
+          waUrl={previewModal.waUrl}
+          billData={previewModal.billData}
+          onClose={() => setPreviewModal((prev) => ({ ...prev, isOpen: false }))}
+        />
       )}
 
       {settingsOpen && (
-        <Suspense fallback={null}>
-          <SettingsDrawer
-            isOpen={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
-            state={state}
-            onChangeBillingDate={handleChangeDate}
-            onUpdateConfig={handleUpdateConfig}
-            onUpdateExtraNames={handleUpdateExtraNames}
-            onRestoreSnapshot={handleRestoreSnapshot}
-            onArchiveNow={() => performArchiveAndRollover('manual')}
-            onOpenArchiveSheet={() => setActiveTab('Archive')}
-          />
-        </Suspense>
+        <SettingsDrawer
+          isOpen={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          state={state}
+          onChangeBillingDate={handleChangeDate}
+          onUpdateConfig={handleUpdateConfig}
+          onUpdateExtraNames={handleUpdateExtraNames}
+          onRestoreSnapshot={handleRestoreSnapshot}
+          onArchiveNow={() => performArchiveAndRollover('manual')}
+          onOpenArchiveSheet={() => setActiveTab('Archive')}
+        />
       )}
 
       {sellerIdsOpen && (
-        <Suspense fallback={null}>
-          <SellerIdManagerModal
-            isOpen={sellerIdsOpen}
-            onClose={() => setSellerIdsOpen(false)}
-            isAdminSignedIn={cloudSession.kind === 'admin'}
-            adminEmail={authUser?.email || null}
-            cloudBusy={cloudBusy}
-            cloudError={cloudError}
-            sellers={visibleSellersForBill}
-            allCloudParties={cloudParties}
-            partiesBySellerId={partiesBySellerId}
-            privatesByPartyId={privatesByPartyId}
-            subSellersCountByMasterId={subSellersCountByMasterId}
-            onAdminSignIn={handleAdminGoogleSignIn}
-            onSignOut={handleCloudSignOut}
-            onSyncAllSellersNow={() => syncAllSellersToCloud(true)}
-            onEnableChainAll={handleEnableChainAll}
-            onTogglePartyChainRole={handleTogglePartyChainRole}
-            onResetPartyKey={handleResetPartyKey}
-            onUpdatePartyCredentials={handleUpdatePartyCredentials}
-            onCreateSubSellerForMaster={handleCreateSubSellerForMaster}
-            onDeleteSubParty={handleDeleteSubParty}
-            onAddSeller={handleAddSeller}
-            onPreviewSeller={(party) => {
-              setSellerIdsOpen(false);
-              if (adminRestoredModeRef.current || pendingRestoredCloudPromiseRef.current) {
-                void flushRestoredArchiveEditNow().finally(() => {
-                  setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
-                });
-              } else {
+        <SellerIdManagerModal
+          isOpen={sellerIdsOpen}
+          onClose={() => setSellerIdsOpen(false)}
+          isAdminSignedIn={cloudSession.kind === 'admin'}
+          adminEmail={authUser?.email || null}
+          cloudBusy={cloudBusy}
+          cloudError={cloudError}
+          sellers={visibleSellersForBill}
+          allCloudParties={cloudParties}
+          partiesBySellerId={partiesBySellerId}
+          privatesByPartyId={privatesByPartyId}
+          subSellersCountByMasterId={subSellersCountByMasterId}
+          onAdminSignIn={handleAdminGoogleSignIn}
+          onSignOut={handleCloudSignOut}
+          onSyncAllSellersNow={() => syncAllSellersToCloud(true)}
+          onEnableChainAll={handleEnableChainAll}
+          onTogglePartyChainRole={handleTogglePartyChainRole}
+          onResetPartyKey={handleResetPartyKey}
+          onUpdatePartyCredentials={handleUpdatePartyCredentials}
+          onCreateSubSellerForMaster={handleCreateSubSellerForMaster}
+          onDeleteSubParty={handleDeleteSubParty}
+          onAddSeller={handleAddSeller}
+          onPreviewSeller={(party) => {
+            setSellerIdsOpen(false);
+            if (adminRestoredModeRef.current || pendingRestoredCloudPromiseRef.current) {
+              void flushRestoredArchiveEditNow().finally(() => {
                 setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
-              }
-            }}
-            onOpenSellerLoginMode={() => {
-              setCloudError('');
-              setSellerLoginMode(true);
-            }}
-          />
-        </Suspense>
+              });
+            } else {
+              setAdminPreviewParty({ agencyId: party.agencyId, partyId: party.partyId });
+            }
+          }}
+          onOpenSellerLoginMode={() => {
+            setCloudError('');
+            setSellerLoginMode(true);
+          }}
+        />
       )}
 
       {googleSheetsModalOpen && (
-        <Suspense fallback={null}>
-          <GoogleSheetsSyncModal
-            isOpen={googleSheetsModalOpen}
-            onClose={() => setGoogleSheetsModalOpen(false)}
-            config={gsheetConfig}
-            hasAccessToken={gsheetHasToken}
-            connectionMode={gsheetConnectionMode}
-            connectedEmail={authUser?.email || ''}
-            availableTabs={gsheetTabs}
-            syncing={gsheetSyncing}
-            connecting={gsheetConnecting}
-            lastSyncedAt={gsheetLastSyncedAt}
-            rowCounts={gsheetRowCounts}
-            errorMessage={gsheetError}
-            onSignInGoogleSheets={handleSignInGoogleSheets}
-            onConnectSpreadsheet={handleConnectSpreadsheet}
-            onUpdateConfig={handleUpdateGsheetConfig}
-            onSyncNow={() => runGoogleSheetsSync(undefined, true)}
-            onDisconnectSheet={handleDisconnectGoogleSheet}
-            onClearSyncedRows={handleClearGoogleSheetRows}
-          />
-        </Suspense>
+        <GoogleSheetsSyncModal
+          isOpen={googleSheetsModalOpen}
+          onClose={() => setGoogleSheetsModalOpen(false)}
+          config={gsheetConfig}
+          hasAccessToken={gsheetHasToken}
+          connectionMode={gsheetConnectionMode}
+          connectedEmail={authUser?.email || ''}
+          availableTabs={gsheetTabs}
+          syncing={gsheetSyncing}
+          connecting={gsheetConnecting}
+          lastSyncedAt={gsheetLastSyncedAt}
+          rowCounts={gsheetRowCounts}
+          errorMessage={gsheetError}
+          onSignInGoogleSheets={handleSignInGoogleSheets}
+          onConnectSpreadsheet={handleConnectSpreadsheet}
+          onUpdateConfig={handleUpdateGsheetConfig}
+          onSyncNow={() => runGoogleSheetsSync(undefined, true)}
+          onDisconnectSheet={handleDisconnectGoogleSheet}
+          onClearSyncedRows={handleClearGoogleSheetRows}
+        />
       )}
 
       {announcementModalOpen && (
-        <Suspense fallback={null}>
-          <AdminAnnouncementModal
-            isOpen={announcementModalOpen}
-            onClose={() => setAnnouncementModalOpen(false)}
-            isAdminSignedIn={cloudSession.kind === 'admin'}
-            announcement={publicAnnouncement}
-            busy={announcementBusy || cloudBusy}
-            error={announcementError || cloudError}
-            onAdminSignIn={handleAdminGoogleSignIn}
-            onSaveAnnouncement={handleSavePublicAnnouncement}
-          />
-        </Suspense>
+        <AdminAnnouncementModal
+          isOpen={announcementModalOpen}
+          onClose={() => setAnnouncementModalOpen(false)}
+          isAdminSignedIn={cloudSession.kind === 'admin'}
+          announcement={publicAnnouncement}
+          busy={announcementBusy || cloudBusy}
+          error={announcementError || cloudError}
+          onAdminSignIn={handleAdminGoogleSignIn}
+          onSaveAnnouncement={handleSavePublicAnnouncement}
+        />
       )}
     </AppShell>
   );
