@@ -92,8 +92,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          // Only enable dev SW when HMR is active; registerDevSW relies on Vite HMR send()
-          enabled: process.env.DISABLE_HMR !== 'true',
+          enabled: true,
           type: 'module',
         },
       }),

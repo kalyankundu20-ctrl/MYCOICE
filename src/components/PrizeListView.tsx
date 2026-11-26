@@ -1,6 +1,6 @@
 import { Check, Copy, Eye, RotateCcw, Search, Send, Trophy } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   computeSellerPrizeDispatches,
   formatDateDDMM,
@@ -78,7 +78,7 @@ function getRankBadgeClass(rank: string): string {
   return 'bg-slate-100 text-slate-800 border-slate-200';
 }
 
-export const PrizeListView = memo(function PrizeListView({
+export function PrizeListView({
   date,
   prizeList,
   sellers,
@@ -88,8 +88,6 @@ export const PrizeListView = memo(function PrizeListView({
   const [sessionFilter, setSessionFilter] = useState<'ALL' | SessionId>('ALL');
   const [selectedNames, setSelectedNames] = useState<Set<string> | null>(null);
   const [search, setSearch] = useState('');
-  const deferredSearch = useDeferredValue(search);
-  const [visibleLimit, setVisibleLimit] = useState(120);
   const [revealKey, setRevealKey] = useState(1);
   const [copiedSellerKey, setCopiedSellerKey] = useState<string | null>(null);
   const prevPrizeSignatureRef = useRef<string>('');
@@ -126,50 +124,33 @@ export const PrizeListView = memo(function PrizeListView({
       }));
   }, [visiblePrizeList, sessionFilter]);
 
-  const filtered = useMemo(() => {
-    const q = deferredSearch.trim().toLowerCase();
-    return visiblePrizeList.filter((row) => {
-      if (sessionFilter !== 'ALL' && row.time !== sessionFilter) return false;
-      if (selectedNames !== null && !selectedNames.has(row.name.trim().toUpperCase())) return false;
-      if (q) {
-        return (
-          row.name.toLowerCase().includes(q) ||
-          row.number.toLowerCase().includes(q) ||
-          row.rank.toLowerCase().includes(q) ||
-          row.item.toLowerCase().includes(q)
-        );
-      }
-      return true;
-    });
-  }, [visiblePrizeList, sessionFilter, selectedNames, deferredSearch]);
-
-  useEffect(() => {
-    setVisibleLimit(120);
-  }, [sessionFilter, selectedNames, deferredSearch]);
-
-  const totals = useMemo(() => {
-    let prize = 0;
-    let vc = 0;
-    let svc = 0;
-    let total = 0;
-    for (let i = 0; i < filtered.length; i++) {
-      const r = filtered[i];
-      prize += r.prize;
-      vc += r.vc;
-      svc += r.svc;
-      total += r.total;
+  const filtered = visiblePrizeList.filter((row) => {
+    if (sessionFilter !== 'ALL' && row.time !== sessionFilter) return false;
+    if (selectedNames !== null && !selectedNames.has(row.name.trim().toUpperCase())) return false;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      return (
+        row.name.toLowerCase().includes(q) ||
+        row.number.toLowerCase().includes(q) ||
+        row.rank.toLowerCase().includes(q) ||
+        row.item.toLowerCase().includes(q)
+      );
     }
-    return { prize, vc, svc, total };
-  }, [filtered]);
+    return true;
+  });
+
+  const totals = filtered.reduce(
+    (acc, r) => ({
+      prize: acc.prize + r.prize,
+      vc: acc.vc + r.vc,
+      svc: acc.svc + r.svc,
+      total: acc.total + r.total,
+    }),
+    { prize: 0, vc: 0, svc: 0, total: 0 }
+  );
 
   // Trigger celebratory reveal animation + ascending chime when prizeList appears or updates
-  const prizeSignature = useMemo(() => {
-    if (visiblePrizeList.length === 0) return '';
-    const first = visiblePrizeList[0]?.id || '';
-    const last = visiblePrizeList[visiblePrizeList.length - 1]?.id || '';
-    return `${visiblePrizeList.length}:${first}:${last}:${totals.total}`;
-  }, [visiblePrizeList, totals.total]);
-
+  const prizeSignature = visiblePrizeList.map((p) => p.id).join('|');
   useEffect(() => {
     if (visiblePrizeList.length > 0 && prizeSignature !== prevPrizeSignatureRef.current) {
       prevPrizeSignatureRef.current = prizeSignature;
@@ -497,93 +478,79 @@ export const PrizeListView = memo(function PrizeListView({
                 </td>
               </tr>
             ) : (
-              filtered.slice(0, visibleLimit).map((row, idx) => {
-                const animateRow = filtered.length <= 40;
-                const cells = (
-                  <>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-600 border-r border-slate-200/70 truncate">
-                      {row.time}
-                    </td>
-                    <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-950 border-r border-slate-200/70 whitespace-normal break-words leading-tight">
-                      {row.name}
-                    </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-[var(--kk-brand)] border-r border-slate-200/70 tracking-[-0.02em] sm:tracking-normal whitespace-nowrap">
-                      {row.number}
-                    </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-sans font-bold border-r border-slate-200/70">
-                      <span
-                        className={`inline-block px-1 sm:px-2 py-0.5 rounded border text-[9.5px] sm:text-xs leading-tight ${getRankBadgeClass(
-                          row.rank
-                        )}`}
-                      >
-                        {row.rank}
-                      </span>
-                    </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-slate-800 border-r border-slate-200/70 whitespace-nowrap">
-                      {row.item}
-                    </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
-                      {formatINR(row.prize)}
-                    </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
-                      {formatINR(row.vc)}
-                    </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
-                      {formatINR(row.svc)}
-                    </td>
-                    <td className="px-1 sm:px-3 py-2.5 sm:py-3 text-right font-extrabold text-emerald-700 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
-                      {formatINR(row.total)}
-                    </td>
-                  </>
-                );
-
-                if (!animateRow) {
-                  return (
-                    <tr
-                      key={row.id}
-                      className={`${
-                        idx % 2 === 1 ? 'bg-slate-50/70' : 'bg-white'
-                      } hover:bg-emerald-50/45 transition-colors align-middle`}
+              filtered.map((row, idx) => (
+                <motion.tr
+                  key={`${revealKey}-${row.id}`}
+                  initial={{
+                    opacity: 0,
+                    y: 12,
+                    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+                  }}
+                  animate={{
+                    opacity: 1,
+                    y: 0,
+                    backgroundColor: idx % 2 === 1 ? 'rgba(248, 250, 252, 0.7)' : 'rgba(255, 255, 255, 0)',
+                  }}
+                  transition={{
+                    duration: 0.32,
+                    delay: Math.min(idx * 0.045, 0.72),
+                    ease: [0.22, 1, 0.36, 1],
+                    backgroundColor: {
+                      duration: 0.9,
+                      delay: Math.min(idx * 0.045, 0.72) + 0.08,
+                    },
+                  }}
+                  className="hover:bg-emerald-50/45 transition-colors align-middle"
+                >
+                  <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-600 border-r border-slate-200/70 truncate">
+                    {row.time}
+                  </td>
+                  <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-950 border-r border-slate-200/70 whitespace-normal break-words leading-tight">
+                    {row.name}
+                  </td>
+                  <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-[var(--kk-brand)] border-r border-slate-200/70 tracking-[-0.02em] sm:tracking-normal whitespace-nowrap">
+                    {row.number}
+                  </td>
+                  <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-sans font-bold border-r border-slate-200/70">
+                    <span
+                      className={`inline-block px-1 sm:px-2 py-0.5 rounded border text-[9.5px] sm:text-xs leading-tight ${getRankBadgeClass(
+                        row.rank
+                      )}`}
                     >
-                      {cells}
-                    </tr>
-                  );
-                }
-
-                return (
-                  <motion.tr
-                    key={`${revealKey}-${row.id}`}
-                    initial={{
-                      opacity: 0,
-                      y: 12,
-                      backgroundColor: 'rgba(16, 185, 129, 0.16)',
-                    }}
-                    animate={{
-                      opacity: 1,
-                      y: 0,
-                      backgroundColor:
-                        idx % 2 === 1 ? 'rgba(248, 250, 252, 0.7)' : 'rgba(255, 255, 255, 0)',
-                    }}
-                    transition={{
-                      duration: 0.32,
-                      delay: Math.min(idx * 0.04, 0.55),
-                      ease: [0.22, 1, 0.36, 1],
-                      backgroundColor: {
-                        duration: 0.85,
-                        delay: Math.min(idx * 0.04, 0.55) + 0.08,
-                      },
-                    }}
-                    className="hover:bg-emerald-50/45 transition-colors align-middle"
-                  >
-                    {cells}
-                  </motion.tr>
-                );
-              })
+                      {row.rank}
+                    </span>
+                  </td>
+                  <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-slate-800 border-r border-slate-200/70 whitespace-nowrap">
+                    {row.item}
+                  </td>
+                  <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    {formatINR(row.prize)}
+                  </td>
+                  <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    {formatINR(row.vc)}
+                  </td>
+                  <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    {formatINR(row.svc)}
+                  </td>
+                  <td className="px-1 sm:px-3 py-2.5 sm:py-3 text-right font-extrabold text-emerald-700 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    {formatINR(row.total)}
+                  </td>
+                </motion.tr>
+              ))
             )}
           </tbody>
           {filtered.length > 0 && (
             <tfoot>
-              <tr className="bg-slate-100 font-extrabold text-[10.5px] sm:text-[13.5px] font-mono-tabular text-slate-950 border-t border-slate-200 align-middle">
+              <motion.tr
+                key={`total-${revealKey}`}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{
+                  duration: 0.3,
+                  delay: Math.min(filtered.length * 0.045, 0.72) + 0.08,
+                }}
+                className="bg-slate-100 font-extrabold text-[10.5px] sm:text-[13.5px] font-mono-tabular text-slate-950 border-t border-slate-200 align-middle"
+              >
                 <td colSpan={5} className="px-1.5 sm:px-3 py-2.5 sm:py-3 font-sans text-left border-r border-slate-200 truncate">
                   TOTAL ({filtered.length})
                 </td>
@@ -599,32 +566,11 @@ export const PrizeListView = memo(function PrizeListView({
                 <td className="px-1 sm:px-3 py-2.5 sm:py-3 text-right text-emerald-800 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
                   <span className="hidden sm:inline">₹</span>{formatINR(totals.total)}
                 </td>
-              </tr>
+              </motion.tr>
             </tfoot>
           )}
         </table>
-        {filtered.length > visibleLimit && (
-          <div className="px-3 py-2.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-center gap-2">
-            <span className="text-xs font-semibold text-slate-600 font-mono-tabular">
-              Showing {visibleLimit} of {filtered.length} winning tickets
-            </span>
-            <button
-              type="button"
-              onClick={() => setVisibleLimit((cur) => cur + 200)}
-              className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-200 text-xs font-bold text-slate-900 cursor-pointer"
-            >
-              Show +200 more
-            </button>
-            <button
-              type="button"
-              onClick={() => setVisibleLimit(filtered.length)}
-              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-bold text-white cursor-pointer"
-            >
-              Show All ({filtered.length})
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );
-});
+}
