@@ -26,6 +26,7 @@ import {
   formatFirebaseAuthError,
   getGoogleSheetsAccessToken,
   googleProvider,
+  isFirestoreQuotaExceededError,
   isGoogleSheetsTokenExpiringSoon,
   popupRedirectResolver,
   recoverFirestoreNetwork,
@@ -2480,35 +2481,44 @@ export default function App() {
           );
         }
 
-        // 3. On manual "Sync IDs" tap: FORCE-PUSH Agency Date/Winning/Config + ALL Live Sheets + Sub-Seller Lineage
-        // regardless of whether each Master/Sub-Master is currently logged in or logged out!
+        // 3. On manual "Sync IDs" tap: Sync Agency Date/Winning/Config + any missing/changed Live Sheets + Sub-Seller Lineage
+        // via stateless dbLite REST calls regardless of whether each Master/Sub-Master is logged in or logged out!
         if (isManual) {
           parallelTasks.push(syncAdminAgencyState(currState));
 
+          const sheetByPartyId = new Map(cloudSheetsRef.current.map((s) => [s.partyId, s]));
           for (const party of directParties) {
             const sliced = manualSheetGrouped[party.partyId] || { '1PM': [], '6PM': [], '8PM': [] };
             const clean1 = sanitizeSheetEntriesForCloud(sliced['1PM'], party.name);
             const clean6 = sanitizeSheetEntriesForCloud(sliced['6PM'], party.name);
             const clean8 = sanitizeSheetEntriesForCloud(sliced['8PM'], party.name);
             const sig = serializeSheetEntries(clean1, clean6, clean8);
-            const sheetExists = existingSheetIds.has(party.partyId);
+            const remoteSheet = sheetByPartyId.get(party.partyId);
+            const remoteSig = remoteSheet
+              ? serializeSheetEntries(
+                  sanitizeSheetEntriesForCloud(remoteSheet.entries1PM || [], party.name),
+                  sanitizeSheetEntriesForCloud(remoteSheet.entries6PM || [], party.name),
+                  sanitizeSheetEntriesForCloud(remoteSheet.entries8PM || [], party.name)
+                )
+              : '';
             lastCloudSheetSigRef.current[party.partyId] = sig;
             lastAdminPushSigRef.current[party.partyId] = sig;
-            parallelTasks.push(
-              pushAdminSheetRowsForParty(
-                authUser.uid,
-                party,
-                currState.date,
-                clean1,
-                clean6,
-                clean8,
-                sheetExists
-              )
-            );
+            if (!remoteSheet || remoteSheet.date !== currState.date || remoteSig !== sig) {
+              parallelTasks.push(
+                pushAdminSheetRowsForParty(
+                  authUser.uid,
+                  party,
+                  currState.date,
+                  clean1,
+                  clean6,
+                  clean8,
+                  Boolean(remoteSheet)
+                )
+              );
+            }
           }
 
           const privateIds = new Set(cloudPrivatesRef.current.map((pr) => pr.partyId));
-          const sheetByPartyId = new Map(cloudSheetsRef.current.map((s) => [s.partyId, s]));
           const sameArr = (a?: string[], b?: string[]) => {
             const la = a || [];
             const lb = b || [];
@@ -2546,14 +2556,15 @@ export default function App() {
 
         const results = await withNetworkTimeout(
           Promise.allSettled(parallelTasks),
-          14000,
-          'NETWORK_TIMEOUT: Sync IDs me network timeout ho gaya. 1 baar dubara Sync IDs dabayein.'
+          20000,
+          'NETWORK_TIMEOUT: Sync IDs me server response slow hai. 1 baar dubara Sync IDs dabayein.'
         );
-        const firstRejected = results.find(
+        const rejectedResults = results.filter(
           (r): r is PromiseRejectedResult => r.status === 'rejected'
         );
-        if (firstRejected) {
-          throw firstRejected.reason;
+        if (rejectedResults.length > 0) {
+          const quotaErr = rejectedResults.find((r) => isFirestoreQuotaExceededError(r.reason));
+          throw (quotaErr || rejectedResults[0]).reason;
         }
 
         if (isManual) {

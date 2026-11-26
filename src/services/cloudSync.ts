@@ -14,8 +14,18 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import {
+  deleteDoc as deleteDocLite,
+  doc as docLite,
+  getDoc as getDocLite,
+  serverTimestamp as serverTimestampLite,
+  setDoc as setDocLite,
+  updateDoc as updateDocLite,
+  writeBatch as writeBatchLite,
+} from 'firebase/firestore/lite';
+import {
   auth,
   db,
+  dbLite,
   handleFirestoreError,
   OperationType,
   recoverFirestoreNetwork,
@@ -718,7 +728,7 @@ export async function syncAdminAgencyState(state: AppState): Promise<void> {
   const path = `agencies/${AGENCY_ID}`;
   try {
     await withNetworkTimeout(
-      updateDoc(doc(db, 'agencies', AGENCY_ID), {
+      updateDocLite(docLite(dbLite, 'agencies', AGENCY_ID), {
         date: sanitizeIsoDate(state.date),
         limitThreshold: sanitizeNumber(state.config.limitThreshold, 1, 1000, 10),
         sellerLimitThreshold: sanitizeNumber(state.config.sellerLimitThreshold ?? 20, 1, 1000, 20),
@@ -727,10 +737,10 @@ export async function syncAdminAgencyState(state: AppState): Promise<void> {
         winning1PM: String(state.winningRaw['1PM'] || '').slice(0, 20000),
         winning6PM: String(state.winningRaw['6PM'] || '').slice(0, 20000),
         winning8PM: String(state.winningRaw['8PM'] || '').slice(0, 20000),
-        updatedAt: serverTimestamp(),
+        updatedAt: serverTimestampLite(),
       }),
-      12000,
-      'NETWORK_TIMEOUT: Agency sync timeout ho gaya. Internet check karke dubara Sync IDs dabayein.'
+      15000,
+      'NETWORK_TIMEOUT: Agency sync timeout ho gaya. 1 baar dubara Sync IDs dabayein.'
     );
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
@@ -1158,14 +1168,14 @@ export async function syncAllSellerPartiesBatch(
 
   await Promise.all(
     chunks.map(async (chunk) => {
-      const batch = writeBatch(db);
+      const batch = writeBatchLite(dbLite);
       for (const t of chunk) {
-        const partyRef = doc(db, 'agencies', AGENCY_ID, 'parties', t.partyId);
-        const privateRef = doc(db, 'agencies', AGENCY_ID, 'partyPrivate', t.partyId);
+        const partyRef = docLite(dbLite, 'agencies', AGENCY_ID, 'parties', t.partyId);
+        const privateRef = docLite(dbLite, 'agencies', AGENCY_ID, 'partyPrivate', t.partyId);
 
         if (t.mode === 'create' && t.accessKey && t.loginId && t.loginPassword) {
-          const inviteRef = doc(db, 'partyInvites', t.accessKey);
-          const sheetRef = doc(db, 'agencies', AGENCY_ID, 'sheets', t.partyId);
+          const inviteRef = docLite(dbLite, 'partyInvites', t.accessKey);
+          const sheetRef = docLite(dbLite, 'agencies', AGENCY_ID, 'sheets', t.partyId);
           const init = initialEntriesByPartyId[t.partyId] || { '1PM': [], '6PM': [], '8PM': [] };
 
           batch.set(partyRef, {
@@ -1183,8 +1193,8 @@ export async function syncAllSellerPartiesBatch(
             active: true,
             accessKey: t.accessKey,
             assignedUid: '',
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt: serverTimestampLite(),
+            updatedAt: serverTimestampLite(),
           });
           batch.set(privateRef, {
             agencyId: AGENCY_ID,
@@ -1197,7 +1207,7 @@ export async function syncAllSellerPartiesBatch(
             assignedEmail: '',
             loginId: t.loginId,
             loginPassword: t.loginPassword,
-            updatedAt: serverTimestamp(),
+            updatedAt: serverTimestampLite(),
           });
           batch.set(inviteRef, {
             accessKey: t.accessKey,
@@ -1210,8 +1220,8 @@ export async function syncAllSellerPartiesBatch(
             ownerUid,
             createdByUid: adminUid,
             active: true,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt: serverTimestampLite(),
+            updatedAt: serverTimestampLite(),
           });
           batch.set(sheetRef, {
             agencyId: AGENCY_ID,
@@ -1229,14 +1239,14 @@ export async function syncAllSellerPartiesBatch(
             entries6PM: sanitizeSheetEntriesForCloud(init['6PM'], t.cleanName),
             entries8PM: sanitizeSheetEntriesForCloud(init['8PM'], t.cleanName),
             updatedByUid: adminUid,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt: serverTimestampLite(),
+            updatedAt: serverTimestampLite(),
           });
         } else if (t.mode === 'backfill' && t.existingParty && t.accessKey && t.loginId && t.loginPassword) {
           if (t.existingParty.accessKey && t.existingParty.accessKey !== t.accessKey) {
-            batch.delete(doc(db, 'partyInvites', t.existingParty.accessKey));
+            batch.delete(docLite(dbLite, 'partyInvites', t.existingParty.accessKey));
           }
-          batch.set(doc(db, 'partyInvites', t.accessKey), {
+          batch.set(docLite(dbLite, 'partyInvites', t.accessKey), {
             accessKey: t.accessKey,
             agencyId: AGENCY_ID,
             partyId: t.partyId,
@@ -1247,8 +1257,8 @@ export async function syncAllSellerPartiesBatch(
             ownerUid: t.existingParty.ownerUid,
             createdByUid: adminUid,
             active: true,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt: serverTimestampLite(),
+            updatedAt: serverTimestampLite(),
           });
           batch.update(partyRef, {
             name: t.cleanName,
@@ -1257,7 +1267,7 @@ export async function syncAllSellerPartiesBatch(
             joma: t.cleanJoma,
             active: true,
             accessKey: t.accessKey,
-            updatedAt: serverTimestamp(),
+            updatedAt: serverTimestampLite(),
           });
           if (t.existingPriv) {
             batch.update(privateRef, {
@@ -1265,7 +1275,7 @@ export async function syncAllSellerPartiesBatch(
               mobile: t.cleanMobile,
               loginId: t.loginId,
               loginPassword: t.loginPassword,
-              updatedAt: serverTimestamp(),
+              updatedAt: serverTimestampLite(),
             });
           } else {
             batch.set(privateRef, {
@@ -1279,7 +1289,7 @@ export async function syncAllSellerPartiesBatch(
               assignedEmail: '',
               loginId: t.loginId,
               loginPassword: t.loginPassword,
-              updatedAt: serverTimestamp(),
+              updatedAt: serverTimestampLite(),
             });
           }
         } else if (t.existingParty) {
@@ -1290,16 +1300,16 @@ export async function syncAllSellerPartiesBatch(
               due: t.cleanDue,
               joma: t.cleanJoma,
               active: true,
-              updatedAt: serverTimestamp(),
+              updatedAt: serverTimestampLite(),
             });
             if (
               (t.existingParty.name !== t.cleanName || t.existingParty.active === false) &&
               t.existingParty.accessKey
             ) {
-              batch.update(doc(db, 'partyInvites', t.existingParty.accessKey), {
+              batch.update(docLite(dbLite, 'partyInvites', t.existingParty.accessKey), {
                 partyName: t.cleanName,
                 active: true,
-                updatedAt: serverTimestamp(),
+                updatedAt: serverTimestampLite(),
               });
             }
           }
@@ -1307,7 +1317,7 @@ export async function syncAllSellerPartiesBatch(
             if (t.existingPriv) {
               batch.update(privateRef, {
                 mobile: t.cleanMobile,
-                updatedAt: serverTimestamp(),
+                updatedAt: serverTimestampLite(),
               });
             } else {
               batch.set(privateRef, {
@@ -1319,7 +1329,7 @@ export async function syncAllSellerPartiesBatch(
                 parentMasterUid: t.existingParty.parentMasterUid || '',
                 mobile: t.cleanMobile,
                 assignedEmail: '',
-                updatedAt: serverTimestamp(),
+                updatedAt: serverTimestampLite(),
               });
             }
           }
@@ -1329,15 +1339,21 @@ export async function syncAllSellerPartiesBatch(
       try {
         await withNetworkTimeout(
           batch.commit(),
-          12000,
-          'NETWORK_TIMEOUT: Seller IDs sync timeout ho gaya. Internet check karke dubara Sync IDs dabayein.'
+          15000,
+          'NETWORK_TIMEOUT: Seller IDs sync timeout ho gaya. 1 baar dubara Sync IDs dabayein.'
         );
       } catch (batchErr) {
         const msg = batchErr instanceof Error ? batchErr.message : String(batchErr);
-        if (msg.includes('NETWORK_TIMEOUT') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('resource-exhausted')) {
+        const lower = msg.toLowerCase();
+        if (
+          msg.includes('NETWORK_TIMEOUT') ||
+          lower.includes('quota') ||
+          lower.includes('resource-exhausted') ||
+          lower.includes('permission')
+        ) {
           throw batchErr;
         }
-        // Fallback to parallel per-party commit if any single doc failed rules
+        // Fallback to parallel per-party commit if any single doc failed rules (e.g. missing invite doc)
         await Promise.all(
           chunk.map((t) =>
             createOrSyncSellerParty(
@@ -1373,7 +1389,7 @@ export async function pushAdminSheetRowsForParty(
   sheetExists: boolean
 ): Promise<void> {
   const path = `agencies/${AGENCY_ID}/sheets/${party.partyId}`;
-  const sheetRef = doc(db, 'agencies', AGENCY_ID, 'sheets', party.partyId);
+  const sheetRef = docLite(dbLite, 'agencies', AGENCY_ID, 'sheets', party.partyId);
   const cleanDate = sanitizeIsoDate(date);
   const e1 = sanitizeSheetEntriesForCloud(entries1PM, party.name);
   const e6 = sanitizeSheetEntriesForCloud(entries6PM, party.name);
@@ -1381,35 +1397,43 @@ export async function pushAdminSheetRowsForParty(
 
   try {
     if (sheetExists) {
-      await updateDoc(sheetRef, {
-        partyName: party.name,
-        date: cleanDate,
-        entries1PM: e1,
-        entries6PM: e6,
-        entries8PM: e8,
-        updatedByUid: adminUid,
-        updatedAt: serverTimestamp(),
-      });
+      await withNetworkTimeout(
+        updateDocLite(sheetRef, {
+          partyName: party.name,
+          date: cleanDate,
+          entries1PM: e1,
+          entries6PM: e6,
+          entries8PM: e8,
+          updatedByUid: adminUid,
+          updatedAt: serverTimestampLite(),
+        }),
+        15000,
+        'NETWORK_TIMEOUT: Sheet sync timeout ho gaya. 1 baar dubara Sync IDs dabayein.'
+      );
     } else {
-      await setDoc(sheetRef, {
-        agencyId: AGENCY_ID,
-        sheetId: party.partyId,
-        partyId: party.partyId,
-        partyName: party.name,
-        role: party.role,
-        ownerUid: party.ownerUid,
-        adminUids: party.adminUids,
-        assignedUid: party.assignedUid || '',
-        parentMasterId: party.parentMasterId || '',
-        parentMasterUid: party.parentMasterUid || '',
-        date: cleanDate,
-        entries1PM: e1,
-        entries6PM: e6,
-        entries8PM: e8,
-        updatedByUid: adminUid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await withNetworkTimeout(
+        setDocLite(sheetRef, {
+          agencyId: AGENCY_ID,
+          sheetId: party.partyId,
+          partyId: party.partyId,
+          partyName: party.name,
+          role: party.role,
+          ownerUid: party.ownerUid,
+          adminUids: party.adminUids,
+          assignedUid: party.assignedUid || '',
+          parentMasterId: party.parentMasterId || '',
+          parentMasterUid: party.parentMasterUid || '',
+          date: cleanDate,
+          entries1PM: e1,
+          entries6PM: e6,
+          entries8PM: e8,
+          updatedByUid: adminUid,
+          createdAt: serverTimestampLite(),
+          updatedAt: serverTimestampLite(),
+        }),
+        15000,
+        'NETWORK_TIMEOUT: Sheet create timeout ho gaya. 1 baar dubara Sync IDs dabayein.'
+      );
     }
   } catch (err) {
     handleFirestoreError(err, sheetExists ? OperationType.UPDATE : OperationType.CREATE, path);
@@ -1438,6 +1462,25 @@ async function safeUpdateCompanionDoc(
   }
 }
 
+async function safeDeleteCompanionDocLite(ref: ReturnType<typeof docLite>): Promise<void> {
+  try {
+    await deleteDocLite(ref);
+  } catch {
+    // Companion doc may already be deleted, missing, or reassigned to another session
+  }
+}
+
+async function safeUpdateCompanionDocLite(
+  ref: ReturnType<typeof docLite>,
+  patch: Record<string, unknown>
+): Promise<void> {
+  try {
+    await updateDocLite(ref, patch);
+  } catch {
+    // Companion doc may be missing or reassigned to another session
+  }
+}
+
 /**
  * Instantly Pause or Re-activate a Seller ID across party, invite, and active member docs.
  */
@@ -1448,27 +1491,30 @@ export async function toggleSellerPartyActive(
   const path = `agencies/${AGENCY_ID}/parties/${party.partyId}`;
   const activeUid = auth.currentUser?.uid || '';
   try {
-    await updateDoc(doc(db, 'agencies', AGENCY_ID, 'parties', party.partyId), {
-      active: nextActive,
-      updatedAt: serverTimestamp(),
-    });
+    await withNetworkTimeout(
+      updateDocLite(docLite(dbLite, 'agencies', AGENCY_ID, 'parties', party.partyId), {
+        active: nextActive,
+        updatedAt: serverTimestampLite(),
+      }),
+      12000
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
   const tasks: Promise<void>[] = [];
   if (party.accessKey) {
     tasks.push(
-      safeUpdateCompanionDoc(doc(db, 'partyInvites', party.accessKey), {
+      safeUpdateCompanionDocLite(docLite(dbLite, 'partyInvites', party.accessKey), {
         active: nextActive,
-        updatedAt: serverTimestamp(),
+        updatedAt: serverTimestampLite(),
       })
     );
   }
   if (party.assignedUid && party.assignedUid !== activeUid) {
     tasks.push(
-      safeUpdateCompanionDoc(doc(db, 'agencies', AGENCY_ID, 'members', party.assignedUid), {
+      safeUpdateCompanionDocLite(docLite(dbLite, 'agencies', AGENCY_ID, 'members', party.assignedUid), {
         active: nextActive,
-        updatedAt: serverTimestamp(),
+        updatedAt: serverTimestampLite(),
       })
     );
   }
@@ -1511,17 +1557,17 @@ export async function updatePartyLoginCredentials(
   }
 
   const path = `agencies/${agencyId}/parties/${party.partyId}`;
-  const batch = writeBatch(db);
+  const batch = writeBatchLite(dbLite);
 
   if (existingInvite) {
-    batch.update(doc(db, 'partyInvites', newKey), {
+    batch.update(docLite(dbLite, 'partyInvites', newKey), {
       partyName: party.name,
       role: party.role,
       active: true,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   } else {
-    batch.set(doc(db, 'partyInvites', newKey), {
+    batch.set(docLite(dbLite, 'partyInvites', newKey), {
       accessKey: newKey,
       agencyId,
       partyId: party.partyId,
@@ -1532,25 +1578,25 @@ export async function updatePartyLoginCredentials(
       ownerUid: party.ownerUid,
       createdByUid: activeActorUid,
       active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      createdAt: serverTimestampLite(),
+      updatedAt: serverTimestampLite(),
     });
   }
 
-  batch.update(doc(db, 'agencies', agencyId, 'parties', party.partyId), {
+  batch.update(docLite(dbLite, 'agencies', agencyId, 'parties', party.partyId), {
     accessKey: newKey,
     ...(unbindOldPhone ? { assignedUid: '' } : {}),
     active: true,
-    updatedAt: serverTimestamp(),
+    updatedAt: serverTimestampLite(),
   });
 
-  const privateRef = doc(db, 'agencies', agencyId, 'partyPrivate', party.partyId);
+  const privateRef = docLite(dbLite, 'agencies', agencyId, 'partyPrivate', party.partyId);
   if (existingPrivate) {
     batch.update(privateRef, {
       parentMasterId: party.parentMasterId || '',
       loginId,
       loginPassword,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   } else {
     batch.set(privateRef, {
@@ -1564,12 +1610,16 @@ export async function updatePartyLoginCredentials(
       assignedEmail: '',
       loginId,
       loginPassword,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   }
 
   try {
-    await batch.commit();
+    await withNetworkTimeout(
+      batch.commit(),
+      15000,
+      'NETWORK_TIMEOUT: Login ID/Password save timeout ho gaya. Dubara try karein.'
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
@@ -1577,22 +1627,22 @@ export async function updatePartyLoginCredentials(
   // Clean up old invite / old phone member / sheet assignedUid safely without failing the credential save
   const cleanupTasks: Promise<void>[] = [];
   if (party.accessKey && party.accessKey !== newKey) {
-    cleanupTasks.push(safeDeleteCompanionDoc(doc(db, 'partyInvites', party.accessKey)));
+    cleanupTasks.push(safeDeleteCompanionDocLite(docLite(dbLite, 'partyInvites', party.accessKey)));
   }
   if (unbindOldPhone && party.assignedUid && party.assignedUid !== activeActorUid) {
     cleanupTasks.push(
-      safeUpdateCompanionDoc(doc(db, 'agencies', agencyId, 'members', party.assignedUid), {
+      safeUpdateCompanionDocLite(docLite(dbLite, 'agencies', agencyId, 'members', party.assignedUid), {
         active: false,
-        updatedAt: serverTimestamp(),
+        updatedAt: serverTimestampLite(),
       })
     );
   }
   if (unbindOldPhone && sheetExists) {
     cleanupTasks.push(
-      safeUpdateCompanionDoc(doc(db, 'agencies', agencyId, 'sheets', party.partyId), {
+      safeUpdateCompanionDocLite(docLite(dbLite, 'agencies', agencyId, 'sheets', party.partyId), {
         assignedUid: '',
         updatedByUid: activeActorUid,
-        updatedAt: serverTimestamp(),
+        updatedAt: serverTimestampLite(),
       })
     );
   }
@@ -1663,7 +1713,10 @@ export async function lookupPartyInvite(
   const accessKey = rawAccessKey.trim();
   if (!/^[a-zA-Z0-9_\-]{16,64}$/.test(accessKey)) return null;
   try {
-    const snap = await getDoc(doc(db, 'partyInvites', accessKey));
+    const snap = await withNetworkTimeout(
+      getDocLite(docLite(dbLite, 'partyInvites', accessKey)),
+      10000
+    );
     if (!snap.exists()) return null;
     return snap.data() as CloudPartyInviteDoc;
   } catch {
@@ -1691,12 +1744,12 @@ export async function claimSellerAccessKey(
   }
 
   const invitePath = `partyInvites/${accessKey}`;
-  const inviteDocRef = doc(db, 'partyInvites', accessKey);
+  const inviteDocRef = docLite(dbLite, 'partyInvites', accessKey);
   let inviteSnap;
   try {
     inviteSnap = await withNetworkTimeout(
-      getDoc(inviteDocRef),
-      10000,
+      getDocLite(inviteDocRef),
+      12000,
       'NETWORK_TIMEOUT: Login verify karne me network slow hai. Dubara try karein.'
     );
   } catch (firstErr) {
@@ -1705,8 +1758,8 @@ export async function claimSellerAccessKey(
       await recoverFirestoreNetwork();
       try {
         inviteSnap = await withNetworkTimeout(
-          getDoc(inviteDocRef),
-          10000,
+          getDocLite(inviteDocRef),
+          12000,
           'NETWORK_TIMEOUT: Server se connection nahi ban pa raha. Internet check karke dubara Login dabayein.'
         );
       } catch (retryErr) {
@@ -1728,16 +1781,16 @@ export async function claimSellerAccessKey(
 
   const agencyId = invite.agencyId;
   const partyId = invite.partyId;
-  const memberRef = doc(db, 'agencies', agencyId, 'members', uid);
-  const partyRef = doc(db, 'agencies', agencyId, 'parties', partyId);
-  const profileRef = doc(db, 'userProfiles', uid);
+  const memberRef = docLite(dbLite, 'agencies', agencyId, 'members', uid);
+  const partyRef = docLite(dbLite, 'agencies', agencyId, 'parties', partyId);
+  const profileRef = docLite(dbLite, 'userProfiles', uid);
 
   let memberExists = false;
   let profileExists = false;
   try {
     const [mSnap, pSnap] = await withNetworkTimeout(
-      Promise.all([getDoc(memberRef), getDoc(profileRef)]),
-      10000,
+      Promise.all([getDocLite(memberRef), getDocLite(profileRef)]),
+      12000,
       'NETWORK_TIMEOUT: Profile load hone me samay lag raha hai. Dubara Login dabayein.'
     );
     memberExists = mSnap.exists();
@@ -1746,7 +1799,7 @@ export async function claimSellerAccessKey(
     handleFirestoreError(err, OperationType.GET, `agencies/${agencyId}/members/${uid}`);
   }
 
-  const batch = writeBatch(db);
+  const batch = writeBatchLite(dbLite);
   if (memberExists) {
     batch.update(memberRef, {
       partyId,
@@ -1754,7 +1807,7 @@ export async function claimSellerAccessKey(
       parentMasterId: invite.parentMasterId || '',
       accessKey,
       active: true,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   } else {
     batch.set(memberRef, {
@@ -1766,14 +1819,14 @@ export async function claimSellerAccessKey(
       ownerUid: invite.ownerUid,
       accessKey,
       active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      createdAt: serverTimestampLite(),
+      updatedAt: serverTimestampLite(),
     });
   }
 
   batch.update(partyRef, {
     assignedUid: uid,
-    updatedAt: serverTimestamp(),
+    updatedAt: serverTimestampLite(),
   });
 
   if (profileExists) {
@@ -1781,7 +1834,7 @@ export async function claimSellerAccessKey(
       agencyId,
       partyId,
       role: invite.role,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   } else {
     batch.set(profileRef, {
@@ -1789,15 +1842,15 @@ export async function claimSellerAccessKey(
       agencyId,
       partyId,
       role: invite.role,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   }
 
   try {
     await withNetworkTimeout(
       batch.commit(),
-      12000,
-      'NETWORK_TIMEOUT: Login save hone me timeout ho gaya. Internet check karke dubara Login dabayein.'
+      15000,
+      'NETWORK_TIMEOUT: Login save hone me timeout ho gaya. Dubara Login dabayein.'
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2625,36 +2678,36 @@ export async function syncSubSellerChainLineage(
   hasSheet: boolean
 ): Promise<void> {
   const agencyId = subParty.agencyId;
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'agencies', agencyId, 'parties', subParty.partyId), {
+  const batch = writeBatchLite(dbLite);
+  batch.update(docLite(dbLite, 'agencies', agencyId, 'parties', subParty.partyId), {
     parentMasterUid: lineage.parentMasterUid,
     ancestorMasterIds: lineage.ancestorMasterIds,
     ancestorMasterUids: lineage.ancestorMasterUids,
-    updatedAt: serverTimestamp(),
+    updatedAt: serverTimestampLite(),
   });
   if (hasPrivate && lineage.parentMasterUid && subParty.parentMasterUid !== lineage.parentMasterUid) {
-    batch.update(doc(db, 'agencies', agencyId, 'partyPrivate', subParty.partyId), {
+    batch.update(docLite(dbLite, 'agencies', agencyId, 'partyPrivate', subParty.partyId), {
       parentMasterUid: lineage.parentMasterUid,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   }
   if (subParty.accessKey && lineage.parentMasterUid && subParty.parentMasterUid !== lineage.parentMasterUid) {
-    batch.update(doc(db, 'partyInvites', subParty.accessKey), {
+    batch.update(docLite(dbLite, 'partyInvites', subParty.accessKey), {
       parentMasterUid: lineage.parentMasterUid,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   }
   if (hasSheet) {
-    batch.update(doc(db, 'agencies', agencyId, 'sheets', subParty.partyId), {
+    batch.update(docLite(dbLite, 'agencies', agencyId, 'sheets', subParty.partyId), {
       parentMasterUid: lineage.parentMasterUid,
       ancestorMasterIds: lineage.ancestorMasterIds,
       ancestorMasterUids: lineage.ancestorMasterUids,
       updatedByUid: adminUid,
-      updatedAt: serverTimestamp(),
+      updatedAt: serverTimestampLite(),
     });
   }
   try {
-    await batch.commit();
+    await withNetworkTimeout(batch.commit(), 12000);
   } catch (err) {
     handleFirestoreError(
       err,

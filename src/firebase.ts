@@ -23,6 +23,10 @@ import {
   memoryLocalCache,
   type Firestore,
 } from 'firebase/firestore';
+import {
+  getFirestore as getFirestoreLite,
+  type Firestore as FirestoreLite,
+} from 'firebase/firestore/lite';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -31,10 +35,9 @@ const FIRESTORE_DATABASE_ID =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-kkagencyledger-4009c142-a714-4d4b-9dd5-d98e312a9f6e';
 
-// Use memoryLocalCache + experimentalForceLongPolling:
+// Use memoryLocalCache() with Firebase v13 default auto-detect transport:
 // 1. Eliminates IndexedDB multi-tab owner-lease deadlocks on iOS Safari / Android PWA
-// 2. Eliminates silent WebChannel stream hangs on Indian 5G+ mobile CGNAT/IPv6 networks
-// 3. Prevents batch.commit() / updateDoc() from hanging forever in an offline queue
+// 2. Avoids performance degradation and Safari 6-connection stalls caused by forced long polling
 // (App-level IndexedDB in src/utils/storage.ts already handles 100% of offline local ledger caching.)
 let firestoreInstance: Firestore;
 try {
@@ -42,7 +45,6 @@ try {
     app,
     {
       localCache: memoryLocalCache(),
-      experimentalForceLongPolling: true,
     },
     FIRESTORE_DATABASE_ID
   );
@@ -51,6 +53,12 @@ try {
 }
 
 export const db = firestoreInstance;
+
+// Stateless REST Firestore Lite instance (same app, auth token, and database ID):
+// Executes direct HTTPS fetch() calls completely independent of the full SDK's
+// PersistentWriteStream FIFO queue — never hangs silently behind background uploads
+// or transient retry backoff, and surfaces real server errors (e.g. quota/rules) immediately.
+export const dbLite: FirestoreLite = getFirestoreLite(app, FIRESTORE_DATABASE_ID);
 
 export async function withNetworkTimeout<T>(
   promise: Promise<T>,
