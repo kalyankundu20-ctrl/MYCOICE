@@ -220,9 +220,25 @@ const FastCellInput = memo(function FastCellInput({
       aria-label={ariaLabel}
       value={localValue}
       placeholder={placeholder}
-      onFocus={() => {
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize={inputMode === 'numeric' || inputMode === 'decimal' ? 'off' : 'characters'}
+      spellCheck={false}
+      enterKeyHint="next"
+      onFocus={(e) => {
         focusedRef.current = true;
         onFocus();
+        const inputEl = e.currentTarget;
+        // Defer full-cell selection by 1 tick so iOS Safari doesn't override it with start-of-text caret
+        window.setTimeout(() => {
+          if (document.activeElement === inputEl && inputEl.value.length > 0) {
+            try {
+              inputEl.setSelectionRange(0, inputEl.value.length);
+            } catch {
+              inputEl.select();
+            }
+          }
+        }, 0);
       }}
       onBlur={() => {
         focusedRef.current = false;
@@ -265,13 +281,14 @@ const FastCellInput = memo(function FastCellInput({
         }
         onKeyDown?.(e);
       }}
-      className={className}
+      className={`select-text ${className}`}
     />
   );
 });
 
 const toUpperTransform = (v: string) => v.toUpperCase();
 const digits5Transform = (v: string) => v.replace(/\D/g, '').slice(0, 5);
+const qtyNumericTransform = (v: string) => v.replace(/[^\d.]/g, '');
 const flushOnFiveDigits = (next: string, prev: string) => next.length === 5 && prev.length < 5;
 
 interface VirtualSheetRowProps {
@@ -436,8 +453,14 @@ const VirtualSheetTableRow = memo(function VirtualSheetTableRow({
                 rangeOverride: '',
               })
             }
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onFocusField(`input[data-row-field="table-start-${row.id}"]`);
+              }
+            }}
             onPaste={(e) => onSmartPaste(e, row.id)}
-            className="ios-compact-input w-full px-0 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular uppercase text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+            className="ios-compact-input w-full px-0 sm:px-1 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular uppercase text-slate-800 placeholder:text-slate-300 bg-transparent focus:bg-blue-50/70 rounded-md focus:outline-none disabled:opacity-90"
           />
         </div>
       </td>
@@ -529,15 +552,17 @@ const VirtualSheetTableRow = memo(function VirtualSheetTableRow({
       >
         <div className="ios-compact-wrap">
           <FastCellInput
-            type="number"
+            type="text"
+            inputMode="decimal"
             disabled={readOnly}
             debounceMs={commitDelayMs}
             ariaLabel={`Row ${row.rowIndex + 2} Qty`}
             value={qtyDisplay}
             placeholder="0"
+            transform={qtyNumericTransform}
             onFocus={() => onCellFocus(visibleIdx, 4)}
             onCommit={(nextVal) => onUpdateRow(row.id, { qtyOverride: nextVal })}
-            className="ios-compact-input w-full px-0.5 sm:px-1.5 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-950 placeholder:text-slate-400 bg-transparent focus:bg-slate-50 rounded-md focus:outline-none disabled:opacity-90"
+            className="ios-compact-input w-full px-0.5 sm:px-1.5 py-1.5 sm:py-2 text-center text-xs sm:text-sm font-bold font-mono-tabular text-slate-950 placeholder:text-slate-400 bg-transparent focus:bg-blue-50/70 rounded-md focus:outline-none disabled:opacity-90"
           />
         </div>
       </td>
@@ -702,6 +727,7 @@ export function SessionSheetView({
   // Google Sheets-style Selection State
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
+  const [showSelectionHandles, setShowSelectionHandles] = useState(false);
   const [bulkEditOpen, setBulkEditOpen] = useState(false);
   const [bulkEditValue, setBulkEditValue] = useState('');
   const lastCheckedIdxRef = useRef<number | null>(null);
@@ -1146,6 +1172,8 @@ export function SessionSheetView({
     rangeAnchorRef.current = coord;
     rangeFocusRef.current = coord;
     setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
+    // Hide corner drag handles during direct single-cell typing so adjacent boxes stay 100% tappable
+    setShowSelectionHandles(false);
     setRangeAnchor(coord);
     setRangeFocus(coord);
   }, []);
@@ -1162,6 +1190,7 @@ export function SessionSheetView({
       const startX = touch.clientX;
       const startY = touch.clientY;
       touchStartPosRef.current = { x: startX, y: startY };
+      // Long-press (550ms steady hold) activates multi-cell range selection handles; quick taps always edit directly
       longPressTimerRef.current = window.setTimeout(() => {
         longPressTimerRef.current = null;
         const coord = { rowIdx: visibleIdx, colIdx };
@@ -1174,9 +1203,10 @@ export function SessionSheetView({
         rangeFocusRef.current = coord;
         setSelectedRowIds((prev) => (prev.size > 0 ? new Set() : prev));
         setBulkEditOpen(false);
+        setShowSelectionHandles(true);
         setRangeAnchor(coord);
         setRangeFocus(coord);
-      }, 360);
+      }, 550);
     },
     []
   );
@@ -1835,6 +1865,7 @@ export function SessionSheetView({
   const clearSelection = useCallback(() => {
     setSelectedRowIds(new Set());
     setRangeSelectMode(false);
+    setShowSelectionHandles(false);
     setBulkEditOpen(false);
     setBulkEditValue('');
     setRangeAnchor(null);
@@ -3154,8 +3185,8 @@ export function SessionSheetView({
           <div ref={tableScrollRef}>
             <div ref={tableContainerRef} className="relative">
               <div
-                className={`kk-surface-card rounded-2xl overflow-hidden select-none sm:select-auto ${
-                  isTouchDragging ? 'touch-none' : ''
+                className={`kk-surface-card rounded-2xl overflow-hidden ${
+                  isTouchDragging ? 'select-none touch-none' : ''
                 }`}
               >
                 <table className="w-full table-fixed border-collapse">
@@ -3312,7 +3343,7 @@ export function SessionSheetView({
           </table>
           </div>
 
-          {/* Single Persistent Google Sheets Selection Box + Never-Unmounted Corner Handles */}
+          {/* Single Persistent Google Sheets Selection Box (handles only in multi-select/long-press so single-tap editing is never blocked) */}
           {cellRangeBounds && overlayRect && (
             <div
               ref={selectionBoxRef}
@@ -3323,29 +3354,33 @@ export function SessionSheetView({
                 height: `${overlayRect.height}px`,
               }}
               className={`pointer-events-none absolute top-0 left-0 z-10 border-2 border-blue-600 will-change-transform ${
-                hasMultiCellRange ? 'bg-blue-500/[0.14]' : 'bg-blue-500/[0.06]'
+                hasMultiCellRange ? 'bg-blue-500/[0.14]' : 'bg-blue-500/[0.05]'
               }`}
             >
-              <span
-                key="sheet-handle-tl"
-                role="presentation"
-                aria-label="Drag selection start handle"
-                onTouchStart={(e) => startCornerHandleDrag('topLeft', e)}
-                onMouseDown={(e) => startCornerHandleDrag('topLeft', e)}
-                className="pointer-events-auto absolute -top-[22px] -left-[22px] w-11 h-11 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
-              >
-                <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
-              </span>
-              <span
-                key="sheet-handle-br"
-                role="presentation"
-                aria-label="Drag selection end handle"
-                onTouchStart={(e) => startCornerHandleDrag('bottomRight', e)}
-                onMouseDown={(e) => startCornerHandleDrag('bottomRight', e)}
-                className="pointer-events-auto absolute -bottom-[22px] -right-[22px] w-11 h-11 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
-              >
-                <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
-              </span>
+              {(showSelectionHandles || hasMultiCellRange || isTouchDragging) && (
+                <>
+                  <span
+                    key="sheet-handle-tl"
+                    role="presentation"
+                    aria-label="Drag selection start handle"
+                    onTouchStart={(e) => startCornerHandleDrag('topLeft', e)}
+                    onMouseDown={(e) => startCornerHandleDrag('topLeft', e)}
+                    className="pointer-events-auto absolute -top-[16px] -left-[16px] w-8 h-8 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
+                  >
+                    <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
+                  </span>
+                  <span
+                    key="sheet-handle-br"
+                    role="presentation"
+                    aria-label="Drag selection end handle"
+                    onTouchStart={(e) => startCornerHandleDrag('bottomRight', e)}
+                    onMouseDown={(e) => startCornerHandleDrag('bottomRight', e)}
+                    className="pointer-events-auto absolute -bottom-[16px] -right-[16px] w-8 h-8 flex items-center justify-center z-20 touch-none cursor-nwse-resize select-none"
+                  >
+                    <span className="w-[11px] h-[11px] rounded-full bg-blue-600 ring-2 ring-white shadow-md pointer-events-none" />
+                  </span>
+                </>
+              )}
             </div>
           )}
         </div>
