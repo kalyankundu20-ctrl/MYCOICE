@@ -680,7 +680,7 @@ const SESSION_ACCENT: Record<
   },
 };
 
-export function SessionSheetView({
+export const SessionSheetView = memo(function SessionSheetView({
   sessionId,
   computation,
   availableNames,
@@ -2801,7 +2801,7 @@ export function SessionSheetView({
       {/* Sticky Search & Match Bar (always visible while scrolled so user can search again without scrolling up) */}
       <div
         ref={stickySearchBarRef}
-        className="sticky top-0 z-30 bg-[var(--kk-canvas)]/95 backdrop-blur-xs pt-0.5 pb-1.5 -mx-2 px-2 sm:mx-0 sm:px-0 space-y-1.5"
+        className="sticky top-0 z-30 bg-[var(--kk-canvas)] pt-0.5 pb-1.5 -mx-2 px-2 sm:mx-0 sm:px-0 space-y-1.5"
       >
         <div className="kk-surface-card rounded-2xl p-2 flex items-center gap-1.5 shadow-xs">
           <div className="relative flex-1 min-w-0">
@@ -4016,4 +4016,4 @@ export function SessionSheetView({
       </AnimatePresence>
     </div>
   );
-}
+});

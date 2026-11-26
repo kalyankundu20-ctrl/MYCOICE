@@ -151,27 +151,27 @@
     transform-origin: top left !important;
   }
 
-  /* All Cols Screen 1 fit: full NAME visible without ellipsis + MOR..FRESH clean layout */
+  /* All Cols Screen 1 fit: NAME tightly cropped to full name (e.g. PRASANTA) + MOR..FRESH clean fit */
   .bill-col-name {
-    width: auto;
-    min-width: max(92px, calc((100vw - 18px) * 0.25));
+    width: 1%;
+    min-width: 74px;
     max-width: none;
   }
   .bill-col-sess {
-    width: calc((100vw - 18px) * 0.11);
-    min-width: calc((100vw - 18px) * 0.11);
+    width: calc((100vw - 18px) * 0.115);
+    min-width: calc((100vw - 18px) * 0.115);
   }
   .bill-col-sold {
-    width: calc((100vw - 18px) * 0.125);
-    min-width: calc((100vw - 18px) * 0.125);
+    width: calc((100vw - 18px) * 0.135);
+    min-width: calc((100vw - 18px) * 0.135);
   }
   .bill-col-bill {
-    width: calc((100vw - 18px) * 0.145);
-    min-width: calc((100vw - 18px) * 0.145);
+    width: calc((100vw - 18px) * 0.155);
+    min-width: calc((100vw - 18px) * 0.155);
   }
   .bill-col-fresh {
-    width: calc((100vw - 18px) * 0.15);
-    min-width: calc((100vw - 18px) * 0.15);
+    width: calc((100vw - 18px) * 0.155);
+    min-width: calc((100vw - 18px) * 0.155);
   }
 }
 
@@ -209,28 +209,35 @@
   color: #ffffff;
 }
 
+/* Native momentum scrolling + paint/layout isolation for silky 60/120fps scrolling */
+[data-kk-scroll-root="true"] {
+  -webkit-overflow-scrolling: touch;
+  contain: layout style;
+}
+
 .kk-surface-card {
   background-color: var(--kk-surface);
   border: 1px solid rgba(15, 23, 42, 0.09);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 18px -8px rgba(15, 23, 42, 0.06);
+  contain: layout style;
 }
 
-/* Crisp Fluid Spring Motion System */
+/* Crisp GPU-Only Motion System */
 @keyframes kkFadeUp {
   from {
     opacity: 0;
-    transform: translate3d(0, 10px, 0) scale(0.99);
+    transform: translate3d(0, 6px, 0);
   }
   to {
     opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0);
   }
 }
 
 @keyframes kkModalIn {
   from {
     opacity: 0;
-    transform: scale(0.94) translate3d(0, 12px, 0);
+    transform: scale(0.96) translate3d(0, 8px, 0);
   }
   to {
     opacity: 1;
@@ -241,7 +248,7 @@
 @keyframes kkDrawerIn {
   from {
     opacity: 0;
-    transform: translate3d(36px, 0, 0);
+    transform: translate3d(24px, 0, 0);
   }
   to {
     opacity: 1;
@@ -250,35 +257,30 @@
 }
 
 .kk-tab-enter {
-  animation: kkFadeUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: kkFadeUp 0.12s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .kk-modal-in {
-  animation: kkModalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: kkModalIn 0.14s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .kk-drawer-in {
-  animation: kkDrawerIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: kkDrawerIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .kk-card-lift {
-  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s ease;
+  transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.14s ease;
 }
 
-.kk-card-lift:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px -8px rgba(15, 23, 42, 0.12);
-}
-
-button:not(:disabled),
-a[role="button"] {
-  transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+@media (hover: hover) {
+  .kk-card-lift:hover {
+    transform: translateY(-1px);
+  }
 }
 
 button:not(:disabled):active,
 a[role="button"]:active {
   transform: scale(0.97);
-  transition: transform 0.06s ease;
 }
 
 @media (prefers-reduced-motion: reduce) {

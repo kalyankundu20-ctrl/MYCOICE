@@ -14,12 +14,16 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import {
+  collection as collectionLite,
   deleteDoc as deleteDocLite,
   doc as docLite,
   getDoc as getDocLite,
+  getDocs as getDocsLite,
+  query as queryLite,
   serverTimestamp as serverTimestampLite,
   setDoc as setDocLite,
   updateDoc as updateDocLite,
+  where as whereLite,
   writeBatch as writeBatchLite,
 } from 'firebase/firestore/lite';
 import {
@@ -87,6 +91,7 @@ export interface CloudPublicAnnouncement {
   kind: CloudAnnouncementKind;
   title: string;
   message: string;
+  imageDataUrl?: string;
   ownerUid: string;
   updatedByUid: string;
   updatedAtMs: number;
@@ -2997,13 +3002,131 @@ export function subscribeMasterSubChain(
     };
   }
 
-  // Signed-in Master / Sub-Master live multi-level listeners:
-  // Merge direct children (parentMasterId == masterPartyId, works even before UID backfill)
-  // AND deep chain descendants (ancestorMasterIds array-contains masterPartyId).
+  // Signed-in Master / Sub-Master live multi-level listeners (Ultra-Low-Read):
+  // Subscribe to parties FIRST; only attach partyPrivate & sheets listeners once at least 1
+  // Sub-Seller actually exists (eliminates 4 unnecessary live listeners on Masters with 0 subs!).
   const directPartyMap = new Map<string, CloudPartyDoc>();
   const deepPartyMap = new Map<string, CloudPartyDoc>();
   const directSheetMap = new Map<string, CloudPartySheetDoc>();
   const deepSheetMap = new Map<string, CloudPartySheetDoc>();
+  const uidPrivMap = new Map<string, CloudPartyPrivateDoc>();
+  const idPrivMap = new Map<string, CloudPartyPrivateDoc>();
+
+  let childListenersActive = false;
+  let unsubPrivatesByUid: Unsubscribe | null = null;
+  let unsubPrivatesByMasterId: Unsubscribe | null = null;
+  let unsubDirectSheets: Unsubscribe | null = null;
+  let unsubDeepSheets: Unsubscribe | null = null;
+
+  const emitPrivates = () => {
+    const merged = new Map<string, CloudPartyPrivateDoc>();
+    for (const [id, pr] of uidPrivMap.entries()) merged.set(id, pr);
+    for (const [id, pr] of idPrivMap.entries()) merged.set(id, pr);
+    callbacks.onSubPrivates(Array.from(merged.values()));
+  };
+
+  const emitSheets = () => {
+    const merged = new Map<string, CloudPartySheetDoc>();
+    for (const [id, s] of directSheetMap.entries()) merged.set(id, s);
+    for (const [id, s] of deepSheetMap.entries()) merged.set(id, s);
+    callbacks.onSubSheets(Array.from(merged.values()));
+  };
+
+  const detachChildListeners = () => {
+    if (!childListenersActive) return;
+    childListenersActive = false;
+    unsubPrivatesByUid?.();
+    unsubPrivatesByMasterId?.();
+    unsubDirectSheets?.();
+    unsubDeepSheets?.();
+    unsubPrivatesByUid = null;
+    unsubPrivatesByMasterId = null;
+    unsubDirectSheets = null;
+    unsubDeepSheets = null;
+    uidPrivMap.clear();
+    idPrivMap.clear();
+    directSheetMap.clear();
+    deepSheetMap.clear();
+    callbacks.onSubPrivates([]);
+    callbacks.onSubSheets([]);
+  };
+
+  const ensureChildListeners = () => {
+    if (childListenersActive) return;
+    childListenersActive = true;
+
+    unsubPrivatesByUid = onSnapshot(
+      query(
+        collection(db, 'agencies', agencyId, 'partyPrivate'),
+        where('parentMasterUid', '==', queryUid)
+      ),
+      (snap) => {
+        uidPrivMap.clear();
+        snap.docs.forEach((d) => {
+          const pr = d.data() as CloudPartyPrivateDoc;
+          uidPrivMap.set(pr.partyId, pr);
+        });
+        emitPrivates();
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyPrivate`);
+      }
+    );
+
+    unsubPrivatesByMasterId = onSnapshot(
+      query(
+        collection(db, 'agencies', agencyId, 'partyPrivate'),
+        where('parentMasterId', '==', masterPartyId)
+      ),
+      (snap) => {
+        idPrivMap.clear();
+        snap.docs.forEach((d) => {
+          const pr = d.data() as CloudPartyPrivateDoc;
+          idPrivMap.set(pr.partyId, pr);
+        });
+        emitPrivates();
+      },
+      () => {
+        // Fallback silently; UID listener remains active.
+      }
+    );
+
+    unsubDirectSheets = onSnapshot(
+      query(
+        collection(db, 'agencies', agencyId, 'sheets'),
+        where('parentMasterId', '==', masterPartyId)
+      ),
+      (snap) => {
+        directSheetMap.clear();
+        snap.docs.forEach((d) => {
+          const s = d.data() as CloudPartySheetDoc;
+          directSheetMap.set(s.partyId, s);
+        });
+        emitSheets();
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/sheets`);
+      }
+    );
+
+    unsubDeepSheets = onSnapshot(
+      query(
+        collection(db, 'agencies', agencyId, 'sheets'),
+        where('ancestorMasterIds', 'array-contains', masterPartyId)
+      ),
+      (snap) => {
+        deepSheetMap.clear();
+        snap.docs.forEach((d) => {
+          const s = d.data() as CloudPartySheetDoc;
+          deepSheetMap.set(s.partyId, s);
+        });
+        emitSheets();
+      },
+      () => {
+        // Fallback silently; direct sheet listener remains active.
+      }
+    );
+  };
 
   const emitParties = () => {
     const merged = new Map<string, CloudPartyDoc>();
@@ -3013,13 +3136,11 @@ export function subscribeMasterSubChain(
     const direct = allDesc.filter((p) => p.parentMasterId === masterPartyId);
     callbacks.onSubParties(direct);
     callbacks.onAllChainParties?.(allDesc);
-  };
-
-  const emitSheets = () => {
-    const merged = new Map<string, CloudPartySheetDoc>();
-    for (const [id, s] of directSheetMap.entries()) merged.set(id, s);
-    for (const [id, s] of deepSheetMap.entries()) merged.set(id, s);
-    callbacks.onSubSheets(Array.from(merged.values()));
+    if (allDesc.length > 0) {
+      ensureChildListeners();
+    } else {
+      detachChildListeners();
+    }
   };
 
   const unsubDirectParties = onSnapshot(
@@ -3058,94 +3179,10 @@ export function subscribeMasterSubChain(
     }
   );
 
-  const uidPrivMap = new Map<string, CloudPartyPrivateDoc>();
-  const idPrivMap = new Map<string, CloudPartyPrivateDoc>();
-  const emitPrivates = () => {
-    const merged = new Map<string, CloudPartyPrivateDoc>();
-    for (const [id, pr] of uidPrivMap.entries()) merged.set(id, pr);
-    for (const [id, pr] of idPrivMap.entries()) merged.set(id, pr);
-    callbacks.onSubPrivates(Array.from(merged.values()));
-  };
-
-  const unsubPrivatesByUid = onSnapshot(
-    query(
-      collection(db, 'agencies', agencyId, 'partyPrivate'),
-      where('parentMasterUid', '==', queryUid)
-    ),
-    (snap) => {
-      uidPrivMap.clear();
-      snap.docs.forEach((d) => {
-        const pr = d.data() as CloudPartyPrivateDoc;
-        uidPrivMap.set(pr.partyId, pr);
-      });
-      emitPrivates();
-    },
-    (err) => {
-      handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/partyPrivate`);
-    }
-  );
-
-  const unsubPrivatesByMasterId = onSnapshot(
-    query(
-      collection(db, 'agencies', agencyId, 'partyPrivate'),
-      where('parentMasterId', '==', masterPartyId)
-    ),
-    (snap) => {
-      idPrivMap.clear();
-      snap.docs.forEach((d) => {
-        const pr = d.data() as CloudPartyPrivateDoc;
-        idPrivMap.set(pr.partyId, pr);
-      });
-      emitPrivates();
-    },
-    () => {
-      // Fallback silently; UID listener remains active.
-    }
-  );
-
-  const unsubDirectSheets = onSnapshot(
-    query(
-      collection(db, 'agencies', agencyId, 'sheets'),
-      where('parentMasterId', '==', masterPartyId)
-    ),
-    (snap) => {
-      directSheetMap.clear();
-      snap.docs.forEach((d) => {
-        const s = d.data() as CloudPartySheetDoc;
-        directSheetMap.set(s.partyId, s);
-      });
-      emitSheets();
-    },
-    (err) => {
-      handleFirestoreError(err, OperationType.LIST, `agencies/${agencyId}/sheets`);
-    }
-  );
-
-  const unsubDeepSheets = onSnapshot(
-    query(
-      collection(db, 'agencies', agencyId, 'sheets'),
-      where('ancestorMasterIds', 'array-contains', masterPartyId)
-    ),
-    (snap) => {
-      deepSheetMap.clear();
-      snap.docs.forEach((d) => {
-        const s = d.data() as CloudPartySheetDoc;
-        deepSheetMap.set(s.partyId, s);
-      });
-      emitSheets();
-    },
-    () => {
-      // Fallback silently; direct sheet listener remains active.
-    }
-  );
-
   return () => {
     unsubDirectParties();
     unsubDeepParties();
-    unsubPrivatesByUid();
-    unsubPrivatesByMasterId();
-    unsubDirectSheets();
-    unsubDeepSheets();
+    detachChildListeners();
   };
 }
 
@@ -3530,12 +3567,80 @@ export function subscribePartyArchives(
           (b.date || '').localeCompare(a.date || '') ||
           (b.savedAt || '').localeCompare(a.savedAt || '')
       );
-      onSnapshots(list.slice(0, 60));
+      onSnapshots(list.slice(0, 25));
     },
     () => {
       // Keep local cached archives visible if offline or permission refresh pending
     }
   );
+}
+
+/**
+ * Lightweight one-shot fetch of a party's cloud archives via stateless dbLite
+ * (avoids holding a permanent onSnapshot over large archive documents while on non-Archive tabs).
+ */
+export async function fetchPartyArchivesOnce(
+  agencyId: string,
+  partyId: string
+): Promise<DaySnapshot[]> {
+  try {
+    const q = queryLite(
+      collectionLite(dbLite, 'agencies', agencyId, 'partyArchives'),
+      whereLite('partyId', '==', partyId)
+    );
+    const snap = await withNetworkTimeout(getDocsLite(q), 12000);
+    const cutoff = Date.now() - ARCHIVE_RETENTION_MS;
+    const list: DaySnapshot[] = [];
+    for (const d of snap.docs) {
+      const data = d.data() as CloudPartyArchiveDoc;
+      if (!data || !data.payload) continue;
+      const savedTs = Date.parse(data.savedAt || data.payload.savedAt || '');
+      if (Number.isFinite(savedTs) && savedTs < cutoff) continue;
+      list.push({
+        ...data.payload,
+        id: data.snapshotId || d.id,
+        date: data.date || data.payload.date,
+        savedAt: data.savedAt || data.payload.savedAt,
+        trigger: data.trigger || data.payload.trigger || 'manual',
+      });
+    }
+    list.sort(
+      (a, b) =>
+        (b.date || '').localeCompare(a.date || '') ||
+        (b.savedAt || '').localeCompare(a.savedAt || '')
+    );
+    return list.slice(0, 25);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Ultra-cheap 1-doc timestamp peek on /agencies/{agencyId} so Admin reloads with warm
+ * local IndexedDB can verify whether another Admin device wrote newer cloud data
+ * without downloading MBs of adminLedgerChunks & archives on every page load.
+ */
+export async function peekAgencyUpdatedAtMs(agencyId = AGENCY_ID): Promise<number> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  try {
+    const snap = await withNetworkTimeout(
+      getDocLite(docLite(dbLite, 'agencies', cleanAgencyId)),
+      8000
+    );
+    if (!snap.exists()) return 0;
+    const raw = snap.data() as Record<string, unknown>;
+    const val = raw.updatedAt;
+    if (!val) return 0;
+    if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+    if (typeof val === 'object' && val !== null) {
+      const obj = val as { toMillis?: () => number; seconds?: number };
+      if (typeof obj.toMillis === 'function') return obj.toMillis();
+      if (typeof obj.seconds === 'number') return obj.seconds * 1000;
+    }
+    return 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -4445,7 +4550,23 @@ export async function syncAdminArchivesBatchToPartiesCloud(
   }
   if (uniqueSnaps.length === 0) return 0;
 
-  const allDocs = await fetchAllAgencyPartyArchives(agencyId, ownerUid, actorUid, activeParties);
+  // Ultra-Low-Read query strategy: when reconciling 1-3 dates, query ONLY those exact dates
+  // instead of downloading all 30+ days of historical partyArchives!
+  let allDocs: Array<{ docId: string; data: CloudPartyArchiveDoc }> = [];
+  if (uniqueSnaps.length <= 3) {
+    const perDateArrays = await Promise.all(
+      uniqueSnaps.map((snap) =>
+        fetchAllAgencyPartyArchives(agencyId, ownerUid, actorUid, activeParties, snap.date)
+      )
+    );
+    const dedupMap = new Map<string, CloudPartyArchiveDoc>();
+    for (const arr of perDateArrays) {
+      for (const item of arr) dedupMap.set(item.docId, item.data);
+    }
+    allDocs = Array.from(dedupMap.entries()).map(([docId, data]) => ({ docId, data }));
+  } else {
+    allDocs = await fetchAllAgencyPartyArchives(agencyId, ownerUid, actorUid, activeParties);
+  }
 
   const counts = await Promise.all(
     uniqueSnaps.map((snap) =>
@@ -4507,10 +4628,20 @@ export async function carryForwardSubSellerBalancesCloud(
 }
 
 const PUBLIC_ANNOUNCEMENT_CACHE_PREFIX = 'kk-public-announcement-cache:v1:';
+const MAX_ANNOUNCEMENT_IMAGE_CHARS = 160000;
+const ANNOUNCEMENT_IMAGE_DATA_URL_RE = /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 
 function sanitizeAnnouncementKind(raw: unknown): CloudAnnouncementKind {
   if (raw === 'urgent' || raw === 'notice' || raw === 'offer') return raw;
   return 'offer';
+}
+
+export function sanitizeAnnouncementImageDataUrl(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > MAX_ANNOUNCEMENT_IMAGE_CHARS) return '';
+  if (!ANNOUNCEMENT_IMAGE_DATA_URL_RE.test(trimmed)) return '';
+  return trimmed;
 }
 
 export function readCachedPublicAnnouncement(
@@ -4528,6 +4659,7 @@ export function readCachedPublicAnnouncement(
       kind: sanitizeAnnouncementKind(parsed.kind),
       title: typeof parsed.title === 'string' ? parsed.title.slice(0, 120) : '',
       message: typeof parsed.message === 'string' ? parsed.message.slice(0, 1000) : '',
+      imageDataUrl: sanitizeAnnouncementImageDataUrl(parsed.imageDataUrl),
       ownerUid: typeof parsed.ownerUid === 'string' ? parsed.ownerUid : '',
       updatedByUid: typeof parsed.updatedByUid === 'string' ? parsed.updatedByUid : '',
       updatedAtMs: typeof parsed.updatedAtMs === 'number' ? parsed.updatedAtMs : 0,
@@ -4593,6 +4725,7 @@ export function subscribePublicAnnouncement(
         kind: sanitizeAnnouncementKind(data.kind),
         title: typeof data.title === 'string' ? data.title.slice(0, 120) : '',
         message: typeof data.message === 'string' ? data.message.slice(0, 1000) : '',
+        imageDataUrl: sanitizeAnnouncementImageDataUrl(data.imageDataUrl),
         ownerUid: typeof data.ownerUid === 'string' ? data.ownerUid : '',
         updatedByUid: typeof data.updatedByUid === 'string' ? data.updatedByUid : '',
         updatedAtMs: parseTimestampMs(data.updatedAt) || Date.now(),
@@ -4615,45 +4748,71 @@ export async function savePublicAnnouncementCloud(
     kind: CloudAnnouncementKind;
     title: string;
     message: string;
+    imageDataUrl?: string;
   }
 ): Promise<CloudPublicAnnouncement> {
   const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
   const cleanTitle = input.title.trim().slice(0, 120);
   const cleanMessage = input.message.trim().slice(0, 1000);
+  const cleanImageDataUrl = sanitizeAnnouncementImageDataUrl(input.imageDataUrl);
   const cleanKind = sanitizeAnnouncementKind(input.kind);
-  const cleanActive = Boolean(input.active && (cleanTitle || cleanMessage));
+  const cleanActive = Boolean(input.active && (cleanTitle || cleanMessage || cleanImageDataUrl));
 
-  const ref = doc(db, 'publicAnnouncements', cleanAgencyId);
+  const ref = docLite(dbLite, 'publicAnnouncements', cleanAgencyId);
   let existsNow = false;
   try {
-    const snap = await getDoc(ref);
+    const snap = await withNetworkTimeout(
+      getDocLite(ref),
+      15000,
+      'NETWORK_TIMEOUT: Advertisement server se connect nahi ho paya.'
+    );
     existsNow = snap.exists();
-  } catch {
+  } catch (err) {
+    // Re-throw quota/permission errors immediately rather than masking them as non-existent doc
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      msg.includes('resource-exhausted') ||
+      msg.includes('Quota exceeded') ||
+      msg.includes('permission-denied') ||
+      msg.includes('NETWORK_TIMEOUT')
+    ) {
+      handleFirestoreError(err, OperationType.GET, ref.path);
+    }
     existsNow = false;
   }
 
   try {
     if (existsNow) {
-      await updateDoc(ref, {
-        active: cleanActive,
-        kind: cleanKind,
-        title: cleanTitle,
-        message: cleanMessage,
-        updatedByUid: adminUid,
-        updatedAt: serverTimestamp(),
-      });
+      await withNetworkTimeout(
+        updateDocLite(ref, {
+          active: cleanActive,
+          kind: cleanKind,
+          title: cleanTitle,
+          message: cleanMessage,
+          imageDataUrl: cleanImageDataUrl,
+          updatedByUid: adminUid,
+          updatedAt: serverTimestampLite(),
+        }),
+        18000,
+        'NETWORK_TIMEOUT: Advertisement save hone me samay lag raha hai. Dobara try karein.'
+      );
     } else {
-      await setDoc(ref, {
-        agencyId: cleanAgencyId,
-        active: cleanActive,
-        kind: cleanKind,
-        title: cleanTitle,
-        message: cleanMessage,
-        ownerUid,
-        updatedByUid: adminUid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await withNetworkTimeout(
+        setDocLite(ref, {
+          agencyId: cleanAgencyId,
+          active: cleanActive,
+          kind: cleanKind,
+          title: cleanTitle,
+          message: cleanMessage,
+          imageDataUrl: cleanImageDataUrl,
+          ownerUid,
+          updatedByUid: adminUid,
+          createdAt: serverTimestampLite(),
+          updatedAt: serverTimestampLite(),
+        }),
+        18000,
+        'NETWORK_TIMEOUT: Advertisement publish hone me samay lag raha hai. Dobara try karein.'
+      );
     }
     const result: CloudPublicAnnouncement = {
       agencyId: cleanAgencyId,
@@ -4661,6 +4820,7 @@ export async function savePublicAnnouncementCloud(
       kind: cleanKind,
       title: cleanTitle,
       message: cleanMessage,
+      imageDataUrl: cleanImageDataUrl,
       ownerUid,
       updatedByUid: adminUid,
       updatedAtMs: Date.now(),

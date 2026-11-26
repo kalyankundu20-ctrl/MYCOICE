@@ -581,7 +581,7 @@ export const SellerBillView = memo(function SellerBillView({
             <table className="w-max min-w-full sm:min-w-[860px] border-collapse text-[13px] sm:text-[14px]">
               <thead>
                 <tr className="kk-table-head text-slate-100 text-[11px] sm:text-xs font-bold uppercase tracking-[0.02em] sm:tracking-[0.04em] align-middle">
-                  <th className="bill-col-name sticky left-0 z-20 bg-[var(--kk-brand)] sm:min-w-[124px] px-2 sm:px-3 py-2 sm:py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                  <th className="bill-col-name sticky left-0 z-20 bg-[var(--kk-brand)] sm:min-w-[124px] pl-1.5 pr-1 sm:px-3 py-2 sm:py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                     NAME
                   </th>
                   <th className="bill-col-sess px-1 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">MOR</th>
@@ -628,7 +628,7 @@ export const SellerBillView = memo(function SellerBillView({
                       } hover:bg-indigo-50/40 transition-colors`}
                     >
                       <td
-                        className={`bill-col-name sticky left-0 z-10 sm:min-w-[124px] px-2 sm:px-3 py-2 sm:py-3 border-r border-slate-200/90 font-sans font-extrabold text-[13px] sm:text-[14px] text-slate-900 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)] ${
+                        className={`bill-col-name sticky left-0 z-10 sm:min-w-[124px] pl-1.5 pr-1 sm:px-3 py-2 sm:py-3 border-r border-slate-200/90 font-sans font-extrabold text-[12.5px] sm:text-[14px] text-slate-900 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)] ${
                           idx % 2 === 1 ? 'bg-slate-50' : 'bg-white'
                         }`}
                       >
@@ -776,7 +776,7 @@ export const SellerBillView = memo(function SellerBillView({
               {visibleBills.length > 0 && (
                 <tfoot>
                   <tr className="kk-table-head text-white text-[13px] sm:text-[14px] font-extrabold font-mono-tabular align-middle">
-                    <td className="bill-col-name sticky left-0 z-10 bg-[var(--kk-brand)] sm:min-w-[124px] px-2 sm:px-3 py-2.5 sm:py-3 font-sans text-[11.5px] sm:text-[13px] uppercase tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                    <td className="bill-col-name sticky left-0 z-10 bg-[var(--kk-brand)] sm:min-w-[124px] pl-1.5 pr-1 sm:px-3 py-2.5 sm:py-3 font-sans text-[11px] sm:text-[13px] uppercase tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                       TOTAL ({visibleBills.length})
                     </td>
                     <td className="bill-col-sess px-1 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">{formatINR(totals.mor)}</td>

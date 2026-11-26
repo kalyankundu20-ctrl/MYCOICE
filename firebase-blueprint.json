@@ -339,6 +339,13 @@
         "kind": { "type": "string", "enum": ["offer", "urgent", "notice"] },
         "title": { "type": "string", "minLength": 0, "maxLength": 120 },
         "message": { "type": "string", "minLength": 0, "maxLength": 1000 },
+        "imageDataUrl": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160000,
+          "pattern": "^(|data:image/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+)$",
+          "description": "Optional compressed JPEG/PNG/WebP data URL for an advertisement photo or poster."
+        },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "createdAt": { "type": "string", "format": "date-time" },

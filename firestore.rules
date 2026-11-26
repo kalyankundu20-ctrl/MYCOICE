@@ -388,7 +388,7 @@ service cloud.firestore {
           'ownerUid', 'updatedByUid', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'agencyId', 'active', 'kind', 'title', 'message',
+          'agencyId', 'active', 'kind', 'title', 'message', 'imageDataUrl',
           'ownerUid', 'updatedByUid', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.agencyId) &&
@@ -396,6 +396,11 @@ service cloud.firestore {
         data.kind is string && (data.kind == 'offer' || data.kind == 'urgent' || data.kind == 'notice') &&
         data.title is string && data.title.size() <= 120 &&
         data.message is string && data.message.size() <= 1000 &&
+        (!('imageDataUrl' in data) || (
+          data.imageDataUrl is string &&
+          data.imageDataUrl.size() <= 160000 &&
+          (data.imageDataUrl == '' || data.imageDataUrl.matches('^data:image/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$'))
+        )) &&
         isValidId(data.ownerUid) &&
         isValidId(data.updatedByUid) &&
         data.updatedByUid == request.auth.uid &&
@@ -561,7 +566,7 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         isAgencyAdmin(agencyId) &&
         incoming().diff(existing()).affectedKeys().hasOnly([
-          'active', 'kind', 'title', 'message', 'updatedByUid', 'updatedAt'
+          'active', 'kind', 'title', 'message', 'imageDataUrl', 'updatedByUid', 'updatedAt'
         ]);
       allow delete: if isVerifiedUser() && isValidId(agencyId) && isAgencyAdmin(agencyId);
     }

@@ -3,17 +3,23 @@ import {
   AlertTriangle,
   CheckCircle2,
   EyeOff,
+  ImagePlus,
   Megaphone,
   RefreshCw,
   Send,
   ShieldCheck,
+  Smile,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useState } from 'react';
-import type { CloudAnnouncementKind, CloudPublicAnnouncement } from '../services/cloudSync';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
+import {
+  sanitizeAnnouncementImageDataUrl,
+  type CloudAnnouncementKind,
+  type CloudPublicAnnouncement,
+} from '../services/cloudSync';
 import { AppSounds } from '../utils/sound';
 import { AnnouncementBanner } from './AnnouncementBanner';
 
@@ -30,8 +36,36 @@ interface AdminAnnouncementModalProps {
     kind: CloudAnnouncementKind;
     title: string;
     message: string;
+    imageDataUrl?: string;
   }) => Promise<void>;
 }
+
+const QUICK_EMOJIS = [
+  '🎉',
+  '🔥',
+  '💰',
+  '🎁',
+  '🚨',
+  '📢',
+  '⏰',
+  '✅',
+  '🏆',
+  '🌟',
+  '🙏',
+  '📞',
+  '💥',
+  '⭐',
+  '🪔',
+  '🎊',
+  '❤️',
+  '👍',
+  '🎯',
+  '📣',
+  '🤑',
+  '⚡',
+  '📅',
+  '🔔',
+];
 
 const QUICK_TEMPLATES: Array<{
   label: string;
@@ -40,24 +74,119 @@ const QUICK_TEMPLATES: Array<{
   message: string;
 }> = [
   {
-    label: 'Special Offer',
+    label: '🎉 Special Offer',
     kind: 'offer',
-    title: 'Special Offer — KK Agency',
-    message: 'Aaj ke special offer ka fayda uthayein! Zyada jankari ke liye Admin se contact karein.',
+    title: '🎉 Special Offer — KK Agency 🔥',
+    message:
+      'Aaj ke special offer ka fayda uthayein! 💰 Zyada jankari ke liye Admin se contact karein. 📞',
   },
   {
-    label: 'Urgent Alert',
+    label: '🚨 Urgent Alert',
     kind: 'urgent',
-    title: 'Urgent Notice — Timing Update',
-    message: 'Sabhi Master & Sub-Master dhyan dein: aaj ki entry samay se pehle submit kar dein.',
+    title: '🚨 Urgent Notice — Timing Update ⏰',
+    message:
+      'Sabhi Master & Sub-Master dhyan dein: aaj ki entry samay se pehle submit kar dein. ✅',
   },
   {
-    label: 'Holiday Notice',
+    label: '📢 Holiday Notice',
     kind: 'notice',
-    title: 'Important Agency Notice',
-    message: 'Aaj ka schedule update ho gaya hai. Kripya apna bill aur sheet regular check karein.',
+    title: '📢 Important Agency Notice 📅',
+    message:
+      'Aaj ka schedule update ho gaya hai. Kripya apna bill aur sheet regular check karein. 🙏',
   },
 ];
+
+// Keep compressed photo small (~40–85 KB base64) so it loads instantly on mobile
+// and stays ultra-cheap on Firebase Spark Free Tier daily read units.
+const TARGET_IMAGE_DATA_URL_CHARS = 92000;
+const HARD_MAX_IMAGE_DATA_URL_CHARS = 152000;
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Photo read nahi ho paya. Koi JPEG ya PNG photo chunein.'));
+    img.src = src;
+  });
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Photo load nahi ho paya.'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Photo read karne me problem aayi.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function compressAnnouncementPhoto(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Kripya sirf Image / Photo file chunein (JPG, PNG, WebP).');
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    throw new Error('Photo bahut bada hai (20 MB limit). Chhota photo chunein.');
+  }
+
+  const rawDataUrl = await readFileAsDataUrl(file);
+  const img = await loadImageElement(rawDataUrl);
+  const srcW = img.naturalWidth || img.width;
+  const srcH = img.naturalHeight || img.height;
+  if (!srcW || !srcH) {
+    throw new Error('Valid photo nahi mil paya. Doosra photo try karein.');
+  }
+
+  const attempts: Array<{ maxSide: number; quality: number }> = [
+    { maxSide: 720, quality: 0.72 },
+    { maxSide: 640, quality: 0.62 },
+    { maxSide: 540, quality: 0.54 },
+    { maxSide: 440, quality: 0.46 },
+    { maxSide: 360, quality: 0.42 },
+  ];
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Browser photo compress support nahi kar raha.');
+  }
+
+  let bestDataUrl = '';
+  for (const step of attempts) {
+    const scale = Math.min(1, step.maxSide / Math.max(srcW, srcH));
+    const targetW = Math.max(1, Math.round(srcW * scale));
+    const targetH = Math.max(1, Math.round(srcH * scale));
+    canvas.width = targetW;
+    canvas.height = targetH;
+    // White background so transparent PNGs convert cleanly to JPEG
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, targetW, targetH);
+    ctx.drawImage(img, 0, 0, targetW, targetH);
+
+    const encoded = canvas.toDataURL('image/jpeg', step.quality);
+    bestDataUrl = encoded;
+    if (encoded.length <= TARGET_IMAGE_DATA_URL_CHARS) {
+      break;
+    }
+  }
+
+  const sanitized = sanitizeAnnouncementImageDataUrl(bestDataUrl);
+  if (!sanitized || sanitized.length > HARD_MAX_IMAGE_DATA_URL_CHARS) {
+    throw new Error('Photo size zyada bada hai. Kripya koi chhota ya crop kiya hua photo chunein.');
+  }
+  return sanitized;
+}
+
+function estimateDataUrlKB(dataUrl: string): number {
+  if (!dataUrl) return 0;
+  const commaIdx = dataUrl.indexOf(',');
+  const b64Len = commaIdx >= 0 ? dataUrl.length - commaIdx - 1 : dataUrl.length;
+  return Math.max(1, Math.round((b64Len * 0.75) / 1024));
+}
 
 export function AdminAnnouncementModal({
   isOpen,
@@ -72,7 +201,14 @@ export function AdminAnnouncementModal({
   const [kind, setKind] = useState<CloudAnnouncementKind>('offer');
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
+  const [imageDataUrl, setImageDataUrl] = useState('');
+  const [imageBusy, setImageBusy] = useState(false);
+  const [activeField, setActiveField] = useState<'title' | 'message'>('message');
   const [localError, setLocalError] = useState('');
+
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -81,21 +217,71 @@ export function AdminAnnouncementModal({
       setKind(announcement.kind || 'offer');
       setTitle(announcement.title || '');
       setMessage(announcement.message || '');
+      setImageDataUrl(sanitizeAnnouncementImageDataUrl(announcement.imageDataUrl));
     } else {
       setKind('offer');
       setTitle('');
       setMessage('');
+      setImageDataUrl('');
     }
   }, [isOpen, announcement]);
 
   const isCurrentlyLive = Boolean(
-    announcement?.active && (announcement.title.trim() || announcement.message.trim())
+    announcement?.active &&
+      (announcement.title.trim() || announcement.message.trim() || Boolean(announcement.imageDataUrl))
   );
-  const hasContent = Boolean(title.trim() || message.trim());
+  const hasContent = Boolean(title.trim() || message.trim() || imageDataUrl);
+
+  const handleInsertEmoji = (emoji: string) => {
+    AppSounds.tap();
+    setLocalError('');
+    if (activeField === 'title') {
+      const el = titleInputRef.current;
+      const start = el?.selectionStart ?? title.length;
+      const end = el?.selectionEnd ?? title.length;
+      const next = (title.slice(0, start) + emoji + title.slice(end)).slice(0, 120);
+      setTitle(next);
+      requestAnimationFrame(() => {
+        if (!el) return;
+        const pos = Math.min(next.length, start + emoji.length);
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      });
+    } else {
+      const el = messageInputRef.current;
+      const start = el?.selectionStart ?? message.length;
+      const end = el?.selectionEnd ?? message.length;
+      const next = (message.slice(0, start) + emoji + message.slice(end)).slice(0, 1000);
+      setMessage(next);
+      requestAnimationFrame(() => {
+        if (!el) return;
+        const pos = Math.min(next.length, start + emoji.length);
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      });
+    }
+  };
+
+  const handlePhotoSelect = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setLocalError('');
+    setImageBusy(true);
+    try {
+      const compressed = await compressAnnouncementPhoto(file);
+      setImageDataUrl(compressed);
+      AppSounds.success();
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Photo add karne me problem aayi.');
+    } finally {
+      setImageBusy(false);
+    }
+  };
 
   const handlePublish = async () => {
     if (!hasContent) {
-      setLocalError('Kripya Headline ya Message me kuch likhein.');
+      setLocalError('Kripya Headline, Message ya Photo me se kam se kam ek add karein.');
       return;
     }
     setLocalError('');
@@ -105,6 +291,7 @@ export function AdminAnnouncementModal({
       kind,
       title: title.trim(),
       message: message.trim(),
+      imageDataUrl,
     });
   };
 
@@ -116,6 +303,7 @@ export function AdminAnnouncementModal({
       kind,
       title: title.trim(),
       message: message.trim(),
+      imageDataUrl,
     });
   };
 
@@ -124,15 +312,18 @@ export function AdminAnnouncementModal({
     AppSounds.remove();
     setTitle('');
     setMessage('');
+    setImageDataUrl('');
     await onSaveAnnouncement({
       active: false,
       kind: 'offer',
       title: '',
       message: '',
+      imageDataUrl: '',
     });
   };
 
   const displayError = localError || error;
+  const imageKB = estimateDataUrlKB(imageDataUrl);
 
   return (
     <AnimatePresence>
@@ -172,7 +363,7 @@ export function AdminAnnouncementModal({
                     Advertisement &amp; Urgent Message
                   </h2>
                   <p className="text-[11px] font-medium text-indigo-100 truncate">
-                    App, Login Link, Master &amp; Sub-Master sabhi ko live dikhega
+                    Photo, Emoji &amp; Offer — Sabhi Master &amp; Sub-Master ko live dikhega
                   </p>
                 </div>
               </div>
@@ -219,7 +410,7 @@ export function AdminAnnouncementModal({
               {!isAdminSignedIn ? (
                 <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 space-y-3">
                   <div className="text-xs font-bold text-amber-950 leading-relaxed">
-                    Sabhi Master, Sub-Master aur App Link par live Offer / Urgent Message bhejne ke liye pehle Admin Google Sign-In karein.
+                    Sabhi Master, Sub-Master aur App Link par live Offer / Photo / Urgent Message bhejne ke liye pehle Admin Google Sign-In karein.
                   </div>
                   <button
                     type="button"
@@ -341,14 +532,16 @@ export function AdminAnnouncementModal({
                       </span>
                     </div>
                     <input
+                      ref={titleInputRef}
                       type="text"
                       maxLength={120}
                       value={title}
+                      onFocus={() => setActiveField('title')}
                       onChange={(e) => {
                         setTitle(e.target.value);
                         if (localError) setLocalError('');
                       }}
-                      placeholder="e.g. Special Diwali Offer! / Urgent 1PM Cutoff Notice"
+                      placeholder="e.g. 🎉 Special Diwali Offer! / 🚨 Urgent 1PM Cutoff"
                       className="w-full px-3.5 py-2.5 text-sm font-bold text-slate-950 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:border-[var(--kk-brand)] focus:outline-none placeholder:font-medium placeholder:text-slate-400"
                     />
                   </label>
@@ -362,9 +555,11 @@ export function AdminAnnouncementModal({
                       </span>
                     </div>
                     <textarea
-                      rows={4}
+                      ref={messageInputRef}
+                      rows={3}
                       maxLength={1000}
                       value={message}
+                      onFocus={() => setActiveField('message')}
                       onChange={(e) => {
                         setMessage(e.target.value);
                         if (localError) setLocalError('');
@@ -373,6 +568,137 @@ export function AdminAnnouncementModal({
                       className="w-full px-3.5 py-2.5 text-sm font-medium text-slate-950 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:border-[var(--kk-brand)] focus:outline-none resize-none placeholder:text-slate-400 leading-relaxed"
                     />
                   </label>
+
+                  {/* Quick Emoji Picker */}
+                  <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-slate-800">
+                        <Smile className="w-4 h-4 text-amber-500" />
+                        <span>Quick Emoji Add Karein</span>
+                      </span>
+                      <div className="inline-flex items-center rounded-lg bg-white border border-slate-200 p-0.5 text-[10px] font-bold">
+                        <button
+                          type="button"
+                          onClick={() => setActiveField('title')}
+                          className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
+                            activeField === 'title'
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Title
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveField('message')}
+                          className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
+                            activeField === 'message'
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Message
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-8 sm:grid-cols-12 gap-1">
+                      {QUICK_EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => handleInsertEmoji(emoji)}
+                          title={`Add ${emoji} to ${activeField === 'title' ? 'Headline' : 'Message'}`}
+                          className="h-8 rounded-lg bg-white hover:bg-amber-50 active:scale-95 border border-slate-200 hover:border-amber-300 text-base flex items-center justify-center transition-all cursor-pointer"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Photo / Poster Upload */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-slate-800">
+                        Photo / Poster (Optional)
+                      </span>
+                      {imageDataUrl && (
+                        <span className="text-[11px] font-bold text-emerald-700">
+                          Ready ({imageKB} KB — Fast Load)
+                        </span>
+                      )}
+                    </div>
+
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => void handlePhotoSelect(e)}
+                      className="hidden"
+                    />
+
+                    {!imageDataUrl ? (
+                      <button
+                        type="button"
+                        disabled={busy || imageBusy}
+                        onClick={() => {
+                          AppSounds.tap();
+                          fileInputRef.current?.click();
+                        }}
+                        className="w-full py-3.5 px-4 rounded-2xl border-2 border-dashed border-slate-300 hover:border-[var(--kk-brand)] bg-slate-50 hover:bg-indigo-50/40 text-slate-700 transition-colors flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-55"
+                      >
+                        {imageBusy ? (
+                          <RefreshCw className="w-5 h-5 animate-spin text-[var(--kk-brand)]" />
+                        ) : (
+                          <ImagePlus className="w-5 h-5 text-[var(--kk-brand)]" />
+                        )}
+                        <div className="text-left">
+                          <div className="text-xs font-extrabold text-slate-900">
+                            {imageBusy ? 'Photo Compress Ho Raha Hai...' : 'Gallery se Photo / Poster Chunein'}
+                          </div>
+                          <div className="text-[10.5px] font-semibold text-slate-500">
+                            Auto-compress hoga — Master &amp; Sub-Master sabhi ko fast dikhega
+                          </div>
+                        </div>
+                      </button>
+                    ) : (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2.5 space-y-2">
+                        <div className="relative rounded-xl overflow-hidden bg-slate-900/5 border border-slate-200">
+                          <img
+                            src={imageDataUrl}
+                            alt="Selected advertisement preview"
+                            className="w-full max-h-44 object-contain mx-auto block"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={busy || imageBusy}
+                            onClick={() => {
+                              AppSounds.tap();
+                              fileInputRef.current?.click();
+                            }}
+                            className="flex-1 py-2 px-3 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-xs font-extrabold text-slate-800 inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
+                          >
+                            <ImagePlus className="w-3.5 h-3.5" />
+                            <span>Photo Badlein</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || imageBusy}
+                            onClick={() => {
+                              AppSounds.remove();
+                              setImageDataUrl('');
+                            }}
+                            className="py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-xs font-extrabold text-rose-700 inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Hatayein</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
                   {/* Live Preview */}
                   {hasContent && (
@@ -386,6 +712,7 @@ export function AdminAnnouncementModal({
                           kind,
                           title: title.trim(),
                           message: message.trim(),
+                          imageDataUrl,
                           updatedAtMs: 0,
                         }}
                         variant="login"
@@ -405,7 +732,7 @@ export function AdminAnnouncementModal({
                   <div className="pt-1 flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      disabled={busy || !hasContent}
+                      disabled={busy || imageBusy || !hasContent}
                       onClick={() => void handlePublish()}
                       className="flex-1 min-w-[170px] py-3 px-4 rounded-xl kk-brand-gradient text-white text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 shadow-md hover:opacity-95 disabled:opacity-50 transition-opacity cursor-pointer"
                     >
@@ -420,7 +747,7 @@ export function AdminAnnouncementModal({
                     {isCurrentlyLive && (
                       <button
                         type="button"
-                        disabled={busy}
+                        disabled={busy || imageBusy}
                         onClick={() => void handlePause()}
                         className="py-3 px-3.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 text-xs font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
                       >
@@ -432,7 +759,7 @@ export function AdminAnnouncementModal({
                     {(hasContent || isCurrentlyLive) && (
                       <button
                         type="button"
-                        disabled={busy}
+                        disabled={busy || imageBusy}
                         onClick={() => void handleClear()}
                         title="Clear & remove advertisement"
                         className="py-3 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
