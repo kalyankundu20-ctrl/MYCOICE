@@ -9,13 +9,11 @@ import {
   ClipboardPaste,
   Copy,
   Eraser,
-  LayoutGrid,
   Pencil,
   Plus,
   Redo2,
   Scissors,
   Search,
-  Table2,
   Trash2,
   Undo2,
   Users,
@@ -708,14 +706,13 @@ export function SessionSheetView({
   readOnly = false,
   lockNotice,
 }: SessionSheetViewProps) {
-  // Default to fit-to-screen table so ALL columns are visible on ONE screen with zero horizontal scroll!
-  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+  // Fit-to-screen table view so ALL columns stay visible cleanly
+  const viewMode = 'table' as 'table' | 'cards';
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIdx, setActiveMatchIdx] = useState(0);
   const [searchShowContext, setSearchShowContext] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'overlimit'>('all');
-  const [confirmClear, setConfirmClear] = useState(false);
   const [inspectedOverLimitRow, setInspectedOverLimitRow] =
     useState<ComputedTicketRow | null>(null);
   const [pendingDeleteConfirm, setPendingDeleteConfirm] = useState<{
@@ -2855,37 +2852,6 @@ export function SessionSheetView({
               Limit ({overLimitRowCount})
             </button>
           </div>
-
-          <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setViewMode('table');
-              }}
-              className={`h-7 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
-                viewMode === 'table' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
-              }`}
-              title="All columns grid"
-            >
-              <Table2 className="w-3 h-3" />
-              <span className="hidden sm:inline">All Cols</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setViewMode('cards');
-              }}
-              className={`h-7 inline-flex items-center gap-1 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
-                viewMode === 'cards' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
-              }`}
-              title="Card view"
-            >
-              <LayoutGrid className="w-3 h-3" />
-              <span className="hidden sm:inline">Cards</span>
-            </button>
-          </div>
         </div>
 
         {/* Row 2: Undo/Redo + Paste/Copy + Row Operations (Single Compact Row) */}
@@ -2954,56 +2920,6 @@ export function SessionSheetView({
             {copiedBanner ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
             <span>{copiedBanner ? 'Copied' : selectedRowIds.size > 0 ? `Copy (${selectedRowIds.size})` : 'Copy'}</span>
           </button>
-
-          {!readOnly && (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  AppSounds.tap();
-                  onAddRows(5);
-                }}
-                className="shrink-0 h-7.5 px-2 text-[11px] font-bold text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl cursor-pointer transition-colors"
-              >
-                +5
-              </button>
-
-              {!confirmClear ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    AppSounds.tap();
-                    setConfirmClear(true);
-                  }}
-                  className="shrink-0 h-7.5 px-2 text-[11px] font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl cursor-pointer transition-colors"
-                >
-                  Clear
-                </button>
-              ) : (
-                <div className="shrink-0 h-7.5 flex items-center gap-1 bg-red-50 border border-red-200 px-1.5 rounded-xl">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      AppSounds.remove();
-                      onClearSession();
-                      clearSelection();
-                      setConfirmClear(false);
-                    }}
-                    className="px-1.5 py-0.5 text-[11px] font-bold text-white bg-red-700 rounded-lg cursor-pointer"
-                  >
-                    Confirm
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmClear(false)}
-                    className="px-1 py-0.5 text-[11px] font-bold text-slate-800 cursor-pointer"
-                  >
-                    No
-                  </button>
-                </div>
-              )}
-            </>
-          )}
         </div>
       </div>
 
