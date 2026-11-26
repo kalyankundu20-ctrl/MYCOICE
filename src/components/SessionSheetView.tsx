@@ -2668,34 +2668,95 @@ export const SessionSheetView = memo(function SessionSheetView({
             <span>Add Entry</span>
           </button>
 
-          {/* One-tap Session Item Code Bar (M5..M20 / D5..D20 / E5..E20) */}
-          <div className="col-span-2 sm:col-span-5 flex items-center gap-1.5 pt-0.5 overflow-x-auto no-scrollbar">
-            <span className="text-[10.5px] font-semibold text-slate-500 shrink-0 mr-0.5">
-              Quick Item:
-            </span>
-            {sessionItemOptions.slice(0, 6).map((opt) => {
-              const active = qItem.trim().toUpperCase() === opt;
-              return (
-                <button
-                  key={opt}
-                  type="button"
-                  onClick={() => {
-                    AppSounds.tap();
-                    setQItem(opt);
-                    quickStartRef.current?.focus();
-                  }}
-                  className={`shrink-0 px-2.5 py-0.5 text-[11px] font-bold font-mono-tabular rounded-lg border transition-colors cursor-pointer ${
-                    active
-                      ? 'bg-[var(--kk-brand)] text-white border-[var(--kk-brand)] shadow-xs'
-                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-[var(--kk-tint)] hover:text-[var(--kk-brand)] hover:border-[var(--kk-tint-border)]'
-                  }`}
-                >
-                  {opt}
-                </button>
-              );
-            })}
+          {/* One-tap Session Item Code Bar + All / Limit Filter */}
+          <div className="col-span-2 sm:col-span-5 flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-slate-100">
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0">
+              <span className="text-[10.5px] font-semibold text-slate-500 shrink-0 mr-0.5 hidden min-[410px]:inline">
+                Quick Item:
+              </span>
+              {sessionItemOptions.slice(0, 6).map((opt) => {
+                const active = qItem.trim().toUpperCase() === opt;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => {
+                      AppSounds.tap();
+                      setQItem(opt);
+                      quickStartRef.current?.focus();
+                    }}
+                    className={`shrink-0 px-2 py-1 text-[11px] font-bold font-mono-tabular rounded-lg border transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-[var(--kk-brand)] text-white border-[var(--kk-brand)] shadow-xs'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-[var(--kk-tint)] hover:text-[var(--kk-brand)] hover:border-[var(--kk-tint-border)]'
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  AppSounds.tap();
+                  setStatusFilter('all');
+                }}
+                className={`h-7 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+                  statusFilter === 'all' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  AppSounds.tap();
+                  setStatusFilter('overlimit');
+                }}
+                className={`h-7 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+                  statusFilter === 'overlimit' ? 'bg-white text-red-700 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                Limit ({overLimitRowCount})
+              </button>
+            </div>
           </div>
         </div>
+        )}
+
+        {readOnly && (
+          <div className="px-3 py-2 border-t border-slate-100 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-slate-500">Filter Rows:</span>
+            <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  AppSounds.tap();
+                  setStatusFilter('all');
+                }}
+                className={`h-7 px-2.5 text-[11px] font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+                  statusFilter === 'all' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  AppSounds.tap();
+                  setStatusFilter('overlimit');
+                }}
+                className={`h-7 px-2.5 text-[11px] font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+                  statusFilter === 'overlimit' ? 'bg-white text-red-700 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                Limit ({overLimitRowCount})
+              </button>
+            </div>
+          </div>
         )}
       </form>
 
@@ -2842,32 +2903,18 @@ export const SessionSheetView = memo(function SessionSheetView({
             )}
           </div>
 
-          <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setStatusFilter('all');
-              }}
-              className={`h-7 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
-                statusFilter === 'all' ? 'bg-white text-[var(--kk-brand)] shadow-xs' : 'text-slate-600'
-              }`}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                AppSounds.tap();
-                setStatusFilter('overlimit');
-              }}
-              className={`h-7 px-2 text-[11px] font-bold rounded-lg cursor-pointer transition-colors ${
-                statusFilter === 'overlimit' ? 'bg-white text-red-700 shadow-xs' : 'text-slate-600'
-              }`}
-            >
-              Limit ({overLimitRowCount})
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              AppSounds.tap();
+              scrollSheetToEdge('top');
+            }}
+            title="Scroll to Top"
+            className="h-8 px-3 inline-flex items-center justify-center gap-1 text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] rounded-xl transition-colors cursor-pointer shrink-0 shadow-xs whitespace-nowrap"
+          >
+            <ChevronUp className="w-3.5 h-3.5 shrink-0" />
+            <span>Top</span>
+          </button>
         </div>
 
         {isNumberSearch && (
