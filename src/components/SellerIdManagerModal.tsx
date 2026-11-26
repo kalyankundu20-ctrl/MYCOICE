@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronRight,
   Cloud,
-  CloudOff,
   Copy,
   ExternalLink,
   Eye,
@@ -13,9 +12,7 @@ import {
   Lock,
   LogIn,
   LogOut,
-  PauseCircle,
   Pencil,
-  PlayCircle,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -29,7 +26,10 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useState } from 'react';
 import {
   FIREBASE_AUTHORIZED_DOMAINS_URL,
+  FIREBASE_FIRESTORE_UPGRADE_URL,
+  FIREBASE_PRICING_URL,
   getAuthEnvironmentInfo,
+  isFirestoreQuotaExceededError,
   isUnauthorizedDomainError,
 } from '../firebase';
 import {
@@ -55,9 +55,8 @@ interface SellerIdManagerModalProps {
   subSellersCountByMasterId: Record<string, number>;
   onAdminSignIn: () => Promise<void>;
   onSignOut: () => Promise<void>;
-  onSyncAllSellersNow: () => Promise<void>;
+  onSyncAllSellersNow: () => Promise<boolean | void>;
   onEnableChainAll: () => Promise<void>;
-  onTogglePartyActive: (party: CloudPartyDoc, nextActive: boolean) => Promise<void>;
   onTogglePartyChainRole: (party: CloudPartyDoc, nextRole: 'master' | 'client') => Promise<void>;
   onResetPartyKey: (party: CloudPartyDoc) => Promise<void>;
   onUpdatePartyCredentials: (
@@ -91,7 +90,6 @@ export function SellerIdManagerModal({
   onSignOut,
   onSyncAllSellersNow,
   onEnableChainAll,
-  onTogglePartyActive,
   onTogglePartyChainRole,
   onResetPartyKey,
   onUpdatePartyCredentials,
@@ -129,9 +127,11 @@ export function SellerIdManagerModal({
     setJustSynced(false);
     await new Promise((r) => window.setTimeout(r, 0));
     try {
-      await onSyncAllSellersNow();
-      setJustSynced(true);
-      window.setTimeout(() => setJustSynced(false), 2600);
+      const ok = await onSyncAllSellersNow();
+      if (ok !== false) {
+        setJustSynced(true);
+        window.setTimeout(() => setJustSynced(false), 2600);
+      }
     } finally {
       setSyncingNow(false);
     }
@@ -162,7 +162,8 @@ export function SellerIdManagerModal({
   };
 
   const authEnv = getAuthEnvironmentInfo();
-  const isDomainErr = isUnauthorizedDomainError(cloudError);
+  const isQuotaErr = isFirestoreQuotaExceededError(cloudError);
+  const isDomainErr = !isQuotaErr && isUnauthorizedDomainError(cloudError);
   const showDirectBrowserGuide =
     !isDomainErr &&
     (authEnv.isEmbeddedIframe || authEnv.isInAppBrowser || authEnv.isIOS || Boolean(cloudError));
@@ -324,6 +325,35 @@ export function SellerIdManagerModal({
               {cloudError && (
                 <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-xs font-bold text-rose-900 space-y-2.5">
                   <div>{cloudError}</div>
+                  {isQuotaErr && (
+                    <div className="pt-2.5 border-t border-rose-200/90 space-y-2">
+                      <div className="text-[11px] font-semibold text-rose-950 leading-relaxed">
+                        Firebase Free Daily Read/Write limit aaj ke liye full ho gaya hai. Kal apne aap reset hoga, ya abhi chalu karne ke liye database upgrade karein:
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <a
+                          href={FIREBASE_FIRESTORE_UPGRADE_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() => AppSounds.tap()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-700 text-white text-xs font-extrabold hover:bg-rose-800 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Upgrade Firestore</span>
+                        </a>
+                        <a
+                          href={FIREBASE_PRICING_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() => AppSounds.tap()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-rose-300 text-rose-950 text-xs font-extrabold hover:bg-rose-100 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Quota Details</span>
+                        </a>
+                      </div>
+                    </div>
+                  )}
                   {isDomainErr && authEnv.hostname && (
                     <div className="pt-2.5 border-t border-rose-200/90 space-y-2">
                       <div className="text-[11px] font-semibold text-rose-950 leading-relaxed">
@@ -703,11 +733,7 @@ export function SellerIdManagerModal({
                         return (
                           <div
                             key={seller.id}
-                            className={`bg-white border rounded-2xl p-3.5 space-y-3 shadow-xs transition-colors ${
-                              party.active
-                                ? 'border-slate-200/90'
-                                : 'border-rose-200 bg-rose-50/35'
-                            }`}
+                            className="bg-white border border-slate-200/90 rounded-2xl p-3.5 space-y-3 shadow-xs transition-colors"
                           >
                             <div className="flex flex-wrap items-start justify-between gap-2">
                               <div className="min-w-0">
@@ -718,12 +744,7 @@ export function SellerIdManagerModal({
                                   <span className="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-[11px] font-bold font-mono-tabular text-slate-800">
                                     Rate ₹{party.rate}
                                   </span>
-                                  {!party.active ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10.5px] font-extrabold">
-                                      <CloudOff className="w-3 h-3" />
-                                      Paused
-                                    </span>
-                                  ) : isClaimed ? (
+                                  {isClaimed ? (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10.5px] font-extrabold">
                                       <Smartphone className="w-3 h-3" />
                                       Phone Connected
@@ -777,38 +798,6 @@ export function SellerIdManagerModal({
                                 >
                                   <Users className="w-3.5 h-3.5" />
                                   <span>{party.role === 'master' ? 'Chain ON' : 'Chain OFF'}</span>
-                                </button>
-
-                                <button
-                                  type="button"
-                                  disabled={isBusy}
-                                  onClick={async () => {
-                                    AppSounds.tap();
-                                    setBusyPartyId(party.partyId);
-                                    try {
-                                      await onTogglePartyActive(party, !party.active);
-                                    } finally {
-                                      setBusyPartyId('');
-                                    }
-                                  }}
-                                  title={party.active ? 'Pause Seller Access' : 'Activate Seller Access'}
-                                  className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold rounded-xl border cursor-pointer transition-colors disabled:opacity-50 ${
-                                    party.active
-                                      ? 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200'
-                                      : 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
-                                  }`}
-                                >
-                                  {party.active ? (
-                                    <>
-                                      <PauseCircle className="w-3.5 h-3.5" />
-                                      <span>Pause</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <PlayCircle className="w-3.5 h-3.5" />
-                                      <span>Resume</span>
-                                    </>
-                                  )}
                                 </button>
 
                                 <button
@@ -1012,11 +1001,7 @@ export function SellerIdManagerModal({
                                     return (
                                       <div
                                         key={sub.partyId}
-                                        className={`rounded-xl border p-2.5 space-y-2 ${
-                                          sub.active
-                                            ? 'bg-indigo-50/45 border-indigo-200/80'
-                                            : 'bg-rose-50/40 border-rose-200'
-                                        }`}
+                                        className="rounded-xl border p-2.5 space-y-2 bg-indigo-50/45 border-indigo-200/80"
                                       >
                                         <div className="flex flex-wrap items-center justify-between gap-2">
                                           <div className="flex items-center gap-1.5 flex-wrap min-w-0">
@@ -1029,11 +1014,7 @@ export function SellerIdManagerModal({
                                             <span className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[10px] font-bold font-mono-tabular text-slate-800">
                                               ₹{sub.rate}
                                             </span>
-                                            {!sub.active ? (
-                                              <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-extrabold">
-                                                Paused
-                                              </span>
-                                            ) : sub.assignedUid ? (
+                                            {sub.assignedUid ? (
                                               <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-extrabold">
                                                 Phone Live
                                               </span>
@@ -1084,23 +1065,6 @@ export function SellerIdManagerModal({
                                                 <span>L{level + 1} ID</span>
                                               </button>
                                             )}
-
-                                            <button
-                                              type="button"
-                                              disabled={subBusy}
-                                              onClick={async () => {
-                                                AppSounds.tap();
-                                                setBusyPartyId(sub.partyId);
-                                                try {
-                                                  await onTogglePartyActive(sub, !sub.active);
-                                                } finally {
-                                                  setBusyPartyId('');
-                                                }
-                                              }}
-                                              className="px-2 py-1 text-[10px] font-bold rounded-lg bg-white border border-slate-200 text-slate-700 cursor-pointer"
-                                            >
-                                              {sub.active ? 'Pause' : 'Resume'}
-                                            </button>
 
                                             <button
                                               type="button"

@@ -281,11 +281,9 @@ export function SellerPortalApp({
     }
   }, [archiveStorageKey, recycleBinStorageKey]);
 
-  // Lazy-subscribe to cloud partyArchives ONLY when Archive tab or a Restored date is active
-  // (avoids burning Firestore read units on every routine 1PM/6PM/8PM entry open).
-  const needsCloudArchives = activeTab === 'Archive' || Boolean(restoredSnapshot);
+  // Subscribe immediately to cloud partyArchives on portal mount so any Admin-synced archives
+  // (pushed while logged in OR logged out) appear instantly without waiting for tab click.
   useEffect(() => {
-    if (!needsCloudArchives) return;
     const unsubArchives = subscribePartyArchives(agencyId, partyId, (cloudSnaps) => {
       setPartyArchives(cloudSnaps);
       setRestoredSnapshot((curr) => {
@@ -307,7 +305,7 @@ export function SellerPortalApp({
     return () => {
       unsubArchives();
     };
-  }, [agencyId, partyId, archiveStorageKey, needsCloudArchives]);
+  }, [agencyId, partyId, archiveStorageKey]);
 
   useEffect(() => {
     setLoading(true);

@@ -13,7 +13,14 @@ import {
   writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  auth,
+  db,
+  handleFirestoreError,
+  OperationType,
+  recoverFirestoreNetwork,
+  withNetworkTimeout,
+} from '../firebase';
 import {
   computeSellerBills,
   generatePrizeAndLimitData,
@@ -710,17 +717,21 @@ export async function bootstrapAdminAgency(
 export async function syncAdminAgencyState(state: AppState): Promise<void> {
   const path = `agencies/${AGENCY_ID}`;
   try {
-    await updateDoc(doc(db, 'agencies', AGENCY_ID), {
-      date: sanitizeIsoDate(state.date),
-      limitThreshold: sanitizeNumber(state.config.limitThreshold, 1, 1000, 10),
-      sellerLimitThreshold: sanitizeNumber(state.config.sellerLimitThreshold ?? 20, 1, 1000, 20),
-      excludedPrizeNames: sanitizeStringList(state.config.excludedPrizeNames, 50),
-      itemOptions: sanitizeItemOptions(state.config.itemOptions),
-      winning1PM: String(state.winningRaw['1PM'] || '').slice(0, 20000),
-      winning6PM: String(state.winningRaw['6PM'] || '').slice(0, 20000),
-      winning8PM: String(state.winningRaw['8PM'] || '').slice(0, 20000),
-      updatedAt: serverTimestamp(),
-    });
+    await withNetworkTimeout(
+      updateDoc(doc(db, 'agencies', AGENCY_ID), {
+        date: sanitizeIsoDate(state.date),
+        limitThreshold: sanitizeNumber(state.config.limitThreshold, 1, 1000, 10),
+        sellerLimitThreshold: sanitizeNumber(state.config.sellerLimitThreshold ?? 20, 1, 1000, 20),
+        excludedPrizeNames: sanitizeStringList(state.config.excludedPrizeNames, 50),
+        itemOptions: sanitizeItemOptions(state.config.itemOptions),
+        winning1PM: String(state.winningRaw['1PM'] || '').slice(0, 20000),
+        winning6PM: String(state.winningRaw['6PM'] || '').slice(0, 20000),
+        winning8PM: String(state.winningRaw['8PM'] || '').slice(0, 20000),
+        updatedAt: serverTimestamp(),
+      }),
+      12000,
+      'NETWORK_TIMEOUT: Agency sync timeout ho gaya. Internet check karke dubara Sync IDs dabayein.'
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
   }
@@ -1074,7 +1085,8 @@ export async function syncAllSellerPartiesBatch(
       existingParty.name !== cleanName ||
       existingParty.rate !== cleanRate ||
       existingParty.due !== cleanDue ||
-      existingParty.joma !== cleanJoma;
+      existingParty.joma !== cleanJoma ||
+      existingParty.active === false;
     const mobileChanged = (existingPriv?.mobile || '') !== cleanMobile;
     const needsCredBackfill =
       !existingPriv?.loginId ||
@@ -1234,7 +1246,7 @@ export async function syncAllSellerPartiesBatch(
             parentMasterUid: t.existingParty.parentMasterUid || '',
             ownerUid: t.existingParty.ownerUid,
             createdByUid: adminUid,
-            active: t.existingParty.active,
+            active: true,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
@@ -1243,6 +1255,7 @@ export async function syncAllSellerPartiesBatch(
             rate: t.cleanRate,
             due: t.cleanDue,
             joma: t.cleanJoma,
+            active: true,
             accessKey: t.accessKey,
             updatedAt: serverTimestamp(),
           });
@@ -1276,11 +1289,16 @@ export async function syncAllSellerPartiesBatch(
               rate: t.cleanRate,
               due: t.cleanDue,
               joma: t.cleanJoma,
+              active: true,
               updatedAt: serverTimestamp(),
             });
-            if (t.existingParty.name !== t.cleanName && t.existingParty.accessKey) {
+            if (
+              (t.existingParty.name !== t.cleanName || t.existingParty.active === false) &&
+              t.existingParty.accessKey
+            ) {
               batch.update(doc(db, 'partyInvites', t.existingParty.accessKey), {
                 partyName: t.cleanName,
+                active: true,
                 updatedAt: serverTimestamp(),
               });
             }
@@ -1309,8 +1327,16 @@ export async function syncAllSellerPartiesBatch(
       }
 
       try {
-        await batch.commit();
-      } catch {
+        await withNetworkTimeout(
+          batch.commit(),
+          12000,
+          'NETWORK_TIMEOUT: Seller IDs sync timeout ho gaya. Internet check karke dubara Sync IDs dabayein.'
+        );
+      } catch (batchErr) {
+        const msg = batchErr instanceof Error ? batchErr.message : String(batchErr);
+        if (msg.includes('NETWORK_TIMEOUT') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('resource-exhausted')) {
+          throw batchErr;
+        }
         // Fallback to parallel per-party commit if any single doc failed rules
         await Promise.all(
           chunk.map((t) =>
@@ -1665,11 +1691,30 @@ export async function claimSellerAccessKey(
   }
 
   const invitePath = `partyInvites/${accessKey}`;
+  const inviteDocRef = doc(db, 'partyInvites', accessKey);
   let inviteSnap;
   try {
-    inviteSnap = await getDoc(doc(db, 'partyInvites', accessKey));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, invitePath);
+    inviteSnap = await withNetworkTimeout(
+      getDoc(inviteDocRef),
+      10000,
+      'NETWORK_TIMEOUT: Login verify karne me network slow hai. Dubara try karein.'
+    );
+  } catch (firstErr) {
+    const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    if (firstMsg.includes('NETWORK_TIMEOUT') || firstMsg.toLowerCase().includes('offline')) {
+      await recoverFirestoreNetwork();
+      try {
+        inviteSnap = await withNetworkTimeout(
+          getDoc(inviteDocRef),
+          10000,
+          'NETWORK_TIMEOUT: Server se connection nahi ban pa raha. Internet check karke dubara Login dabayein.'
+        );
+      } catch (retryErr) {
+        handleFirestoreError(retryErr, OperationType.GET, invitePath);
+      }
+    } else {
+      handleFirestoreError(firstErr, OperationType.GET, invitePath);
+    }
   }
 
   if (!inviteSnap.exists()) {
@@ -1690,7 +1735,11 @@ export async function claimSellerAccessKey(
   let memberExists = false;
   let profileExists = false;
   try {
-    const [mSnap, pSnap] = await Promise.all([getDoc(memberRef), getDoc(profileRef)]);
+    const [mSnap, pSnap] = await withNetworkTimeout(
+      Promise.all([getDoc(memberRef), getDoc(profileRef)]),
+      10000,
+      'NETWORK_TIMEOUT: Profile load hone me samay lag raha hai. Dubara Login dabayein.'
+    );
     memberExists = mSnap.exists();
     profileExists = pSnap.exists();
   } catch (err) {
@@ -1745,7 +1794,11 @@ export async function claimSellerAccessKey(
   }
 
   try {
-    await batch.commit();
+    await withNetworkTimeout(
+      batch.commit(),
+      12000,
+      'NETWORK_TIMEOUT: Login save hone me timeout ho gaya. Internet check karke dubara Login dabayein.'
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('permission') || msg.includes('PERMISSION_DENIED')) {

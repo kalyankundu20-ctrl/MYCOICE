@@ -14,12 +14,13 @@ import {
   type User,
 } from 'firebase/auth';
 import {
+  disableNetwork,
   doc,
+  enableNetwork,
   getDocFromServer,
   getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
   type Firestore,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
@@ -30,34 +31,73 @@ const FIRESTORE_DATABASE_ID =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-kkagencyledger-4009c142-a714-4d4b-9dd5-d98e312a9f6e';
 
+// Use memoryLocalCache + experimentalForceLongPolling:
+// 1. Eliminates IndexedDB multi-tab owner-lease deadlocks on iOS Safari / Android PWA
+// 2. Eliminates silent WebChannel stream hangs on Indian 5G+ mobile CGNAT/IPv6 networks
+// 3. Prevents batch.commit() / updateDoc() from hanging forever in an offline queue
+// (App-level IndexedDB in src/utils/storage.ts already handles 100% of offline local ledger caching.)
 let firestoreInstance: Firestore;
 try {
   firestoreInstance = initializeFirestore(
     app,
     {
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager(),
-      }),
-      experimentalAutoDetectLongPolling: true,
+      localCache: memoryLocalCache(),
+      experimentalForceLongPolling: true,
     },
     FIRESTORE_DATABASE_ID
   );
 } catch {
-  try {
-    firestoreInstance = initializeFirestore(
-      app,
-      {
-        localCache: persistentLocalCache(),
-        experimentalForceLongPolling: true,
-      },
-      FIRESTORE_DATABASE_ID
-    );
-  } catch {
-    firestoreInstance = getFirestore(app, FIRESTORE_DATABASE_ID);
-  }
+  firestoreInstance = getFirestore(app, FIRESTORE_DATABASE_ID);
 }
 
 export const db = firestoreInstance;
+
+export async function withNetworkTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = 12000,
+  timeoutMessage = 'NETWORK_TIMEOUT: Server se response nahi mila. Internet check karke 1 baar dubara try karein.'
+): Promise<T> {
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => {
+          reject(new Error(timeoutMessage));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+    }
+  }
+}
+
+let networkRecoveryPromise: Promise<void> | null = null;
+
+/**
+ * Cleanly resets Firestore's underlying transport socket (helpful after 5G tower handoff
+ * or iOS Safari background sleep without reloading the page).
+ */
+export async function recoverFirestoreNetwork(): Promise<void> {
+  if (networkRecoveryPromise) return networkRecoveryPromise;
+  networkRecoveryPromise = (async () => {
+    try {
+      await disableNetwork(db);
+    } catch {
+      // Ignore disable errors
+    }
+    try {
+      await enableNetwork(db);
+    } catch {
+      // Ignore enable errors
+    }
+  })().finally(() => {
+    networkRecoveryPromise = null;
+  });
+  return networkRecoveryPromise;
+}
 
 // Explicitly prefer durable IndexedDB + LocalStorage persistence so Admin & Seller
 // logins stay permanently signed in across reloads, tab closes, and phone restarts.
@@ -298,9 +338,17 @@ export async function ensureAnonymousSellerAuth(): Promise<User> {
     return auth.currentUser;
   }
   if (auth.currentUser) {
-    await signOut(auth);
+    await withNetworkTimeout(
+      signOut(auth),
+      8000,
+      'NETWORK_TIMEOUT: Purana session clear hone me samay lag raha hai. Dubara try karein.'
+    );
   }
-  const cred = await signInAnonymously(auth);
+  const cred = await withNetworkTimeout(
+    signInAnonymously(auth),
+    12000,
+    'NETWORK_TIMEOUT: Login server se connection slow hai. Internet check karke dubara tap karein.'
+  );
   return cred.user;
 }
 
@@ -429,7 +477,10 @@ export function formatFirebaseAuthError(err: unknown): string {
   if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
     return 'Google Login window band ho gayi. Agar "The requested action is invalid" dikha, to neeche "Open Direct in Safari / Chrome" button se direct Safari/Chrome me khol kar login karein.';
   }
-  if (code === 'auth/network-request-failed') {
+  if (raw.includes('NETWORK_TIMEOUT')) {
+    return raw.replace(/^NETWORK_TIMEOUT:\s*/, '');
+  }
+  if (code === 'auth/network-request-failed' || raw.toLowerCase().includes('client is offline')) {
     return 'Internet connection slow ya offline hai. Network check karke dubara try karein.';
   }
   if (code === 'auth/operation-not-supported-in-this-environment' || code === 'auth/internal-error') {

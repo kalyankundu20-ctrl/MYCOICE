@@ -3,7 +3,6 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  CloudOff,
   Copy,
   ExternalLink,
   Eye,
@@ -14,9 +13,7 @@ import {
   Link2,
   Loader2,
   Lock,
-  PauseCircle,
   Pencil,
-  PlayCircle,
   Plus,
   Radio,
   RefreshCw,
@@ -41,7 +38,6 @@ import {
   deleteSubSellerParty,
   resetSubSellerAccessKey,
   toggleSellerChainRole,
-  toggleSubSellerActive,
   updatePartyLoginCredentials,
   updateSubSellerParty,
 } from '../services/cloudSync';
@@ -1337,20 +1333,13 @@ export function MasterChainTab({
             return (
               <div
                 key={`chain-id-${sub.partyId}`}
-                className={`bg-white border rounded-2xl p-4 shadow-xs space-y-3 ${
-                  sub.active ? 'border-slate-200/90' : 'border-rose-200 bg-rose-50/35'
-                }`}
+                className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs space-y-3"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-base font-black text-slate-950">{sub.name}</span>
-                      {!sub.active ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10.5px] font-extrabold">
-                          <CloudOff className="w-3 h-3" />
-                          Paused
-                        </span>
-                      ) : isClaimed ? (
+                      {isClaimed ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10.5px] font-extrabold">
                           <Smartphone className="w-3 h-3" />
                           Phone Live
@@ -1402,39 +1391,6 @@ export function MasterChainTab({
                       >
                         <Users className="w-3.5 h-3.5" />
                         <span>{sub.role === 'master' ? 'Chain ON' : 'Chain OFF'}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={async () => {
-                          AppSounds.tap();
-                          setBusyAction(`toggle-${sub.partyId}`);
-                          try {
-                            await toggleSubSellerActive(sub, !sub.active);
-                          } catch (err) {
-                            setErrorMsg(formatCleanError(err, 'Status update nahi ho saka'));
-                          } finally {
-                            setBusyAction('');
-                          }
-                        }}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold rounded-xl border cursor-pointer disabled:opacity-50 ${
-                          sub.active
-                            ? 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200'
-                            : 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
-                        }`}
-                      >
-                        {sub.active ? (
-                          <>
-                            <PauseCircle className="w-3.5 h-3.5" />
-                            <span>Pause</span>
-                          </>
-                        ) : (
-                          <>
-                            <PlayCircle className="w-3.5 h-3.5" />
-                            <span>Resume</span>
-                          </>
-                        )}
                       </button>
 
                       <button

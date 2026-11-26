@@ -28,9 +28,11 @@ import {
   googleProvider,
   isGoogleSheetsTokenExpiringSoon,
   popupRedirectResolver,
+  recoverFirestoreNetwork,
   signInForGoogleSheets,
   subscribeGoogleSheetsTokenState,
   trySilentGoogleSheetsTokenRefresh,
+  withNetworkTimeout,
 } from './firebase';
 import {
   autoDetectSessionTabs,
@@ -2186,7 +2188,7 @@ export default function App() {
       void syncAdminAgencyState(latestStateRef.current).catch((err) => {
         setCloudError(err instanceof Error ? err.message : 'Agency sync error');
       });
-    }, 350);
+    }, 120);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -2446,10 +2448,13 @@ export default function App() {
           )
         );
 
-        // 2. Parallel credential backfill for any Sub-Sellers missing easy Login ID + Password
+        // 2. Parallel credential backfill + auto-reactivate for any Sub-Sellers
         const existingSheetIds = new Set(cloudSheetsRef.current.map((s) => s.partyId));
         for (const subParty of cloudPartiesRef.current) {
           if (!subParty.parentMasterId) continue;
+          if (subParty.active === false) {
+            parallelTasks.push(toggleSellerPartyActive(subParty, true).catch(() => {}));
+          }
           const subPriv = privByPartyId.get(subParty.partyId);
           if (
             subPriv?.loginId &&
@@ -2475,33 +2480,31 @@ export default function App() {
           );
         }
 
-        // 3. On manual "Sync IDs" tap: also immediately push Agency Date/Winning/Config + dirty Live Sheets + Sub-Seller Lineage in parallel!
+        // 3. On manual "Sync IDs" tap: FORCE-PUSH Agency Date/Winning/Config + ALL Live Sheets + Sub-Seller Lineage
+        // regardless of whether each Master/Sub-Master is currently logged in or logged out!
         if (isManual) {
           parallelTasks.push(syncAdminAgencyState(currState));
 
           for (const party of directParties) {
-            const sliced = manualSheetGrouped[party.partyId];
-            if (!sliced) continue;
+            const sliced = manualSheetGrouped[party.partyId] || { '1PM': [], '6PM': [], '8PM': [] };
             const clean1 = sanitizeSheetEntriesForCloud(sliced['1PM'], party.name);
             const clean6 = sanitizeSheetEntriesForCloud(sliced['6PM'], party.name);
             const clean8 = sanitizeSheetEntriesForCloud(sliced['8PM'], party.name);
             const sig = serializeSheetEntries(clean1, clean6, clean8);
             const sheetExists = existingSheetIds.has(party.partyId);
-            if (!sheetExists || sig !== lastCloudSheetSigRef.current[party.partyId]) {
-              lastCloudSheetSigRef.current[party.partyId] = sig;
-              lastAdminPushSigRef.current[party.partyId] = sig;
-              parallelTasks.push(
-                pushAdminSheetRowsForParty(
-                  authUser.uid,
-                  party,
-                  currState.date,
-                  clean1,
-                  clean6,
-                  clean8,
-                  sheetExists
-                )
-              );
-            }
+            lastCloudSheetSigRef.current[party.partyId] = sig;
+            lastAdminPushSigRef.current[party.partyId] = sig;
+            parallelTasks.push(
+              pushAdminSheetRowsForParty(
+                authUser.uid,
+                party,
+                currState.date,
+                clean1,
+                clean6,
+                clean8,
+                sheetExists
+              )
+            );
           }
 
           const privateIds = new Set(cloudPrivatesRef.current.map((pr) => pr.partyId));
@@ -2541,9 +2544,32 @@ export default function App() {
           }
         }
 
-        await Promise.all(parallelTasks);
+        const results = await withNetworkTimeout(
+          Promise.allSettled(parallelTasks),
+          14000,
+          'NETWORK_TIMEOUT: Sync IDs me network timeout ho gaya. 1 baar dubara Sync IDs dabayein.'
+        );
+        const firstRejected = results.find(
+          (r): r is PromiseRejectedResult => r.status === 'rejected'
+        );
+        if (firstRejected) {
+          throw firstRejected.reason;
+        }
 
         if (isManual) {
+          // Also reconcile recent Admin Archives in background so logged-out & logged-in Master/Sub-Masters see every archive date
+          const recentSnaps = (currState.history || []).slice(0, 14);
+          if (recentSnaps.length > 0 && cloudPartiesRef.current.length > 0) {
+            void syncAdminArchivesBatchToPartiesCloud(
+              cloudSession.agencyId,
+              agencyDoc.ownerUid || cloudSession.ownerUid,
+              authUser.uid,
+              recentSnaps,
+              cloudPartiesRef.current,
+              currState.config,
+              true
+            ).catch(() => {});
+          }
           const totalSyncedIds = Math.max(
             currState.sellers.length,
             cloudPartiesRef.current.filter((p) => p.role !== 'admin').length
@@ -2553,8 +2579,14 @@ export default function App() {
             `All ${totalSyncedIds} Master & Seller IDs synced instantly ✓`
           );
         }
+        return true;
       } catch (err) {
-        setCloudError(err instanceof Error ? err.message : 'Could not sync sellers to cloud.');
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('NETWORK_TIMEOUT') || msg.toLowerCase().includes('offline')) {
+          void recoverFirestoreNetwork();
+        }
+        setCloudError(formatFirebaseAuthError(err));
+        return false;
       } finally {
         if (isManual) {
           setCloudBusy(false);
@@ -2662,7 +2694,7 @@ export default function App() {
     const timer = window.setTimeout(() => {
       if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
       void syncAllSellersToCloud(false);
-    }, 250);
+    }, 120);
     return () => window.clearTimeout(timer);
   }, [
     cloudSession,
@@ -2694,12 +2726,12 @@ export default function App() {
       (state.entries['1PM']?.length || 0) +
       (state.entries['6PM']?.length || 0) +
       (state.entries['8PM']?.length || 0);
-    const debounceMs = totalRows > 3000 ? 1100 : 450;
+    const debounceMs = totalRows > 3000 ? 550 : 200;
 
     const timer = window.setTimeout(() => {
       if (isAdminRestoredViewRef.current) return;
       const currState = latestStateRef.current;
-      const existingSheetIds = new Set(cloudSheetsRef.current.map((s) => s.partyId));
+      const cloudSheetsByPartyId = new Map(cloudSheetsRef.current.map((s) => [s.partyId, s]));
       const directParties = cloudPartiesRef.current.filter((p) => !p.parentMasterId);
       if (directParties.length === 0) return;
 
@@ -2751,7 +2783,9 @@ export default function App() {
         const clean6 = sanitizeSheetEntriesForCloud(sliced['6PM'], party.name);
         const clean8 = sanitizeSheetEntriesForCloud(sliced['8PM'], party.name);
         const sig = serializeSheetEntries(clean1, clean6, clean8);
-        if (sig !== lastCloudSheetSigRef.current[party.partyId]) {
+        const remoteSheet = cloudSheetsByPartyId.get(party.partyId);
+        const dateChanged = Boolean(remoteSheet && remoteSheet.date !== currState.date);
+        if (!remoteSheet || dateChanged || sig !== lastCloudSheetSigRef.current[party.partyId]) {
           lastCloudSheetSigRef.current[party.partyId] = sig;
           lastAdminPushSigRef.current[party.partyId] = sig;
           void pushAdminSheetRowsForParty(
@@ -2761,7 +2795,7 @@ export default function App() {
             clean1,
             clean6,
             clean8,
-            existingSheetIds.has(party.partyId)
+            Boolean(remoteSheet)
           ).catch(() => {});
         }
       }
@@ -2953,8 +2987,15 @@ export default function App() {
     setCloudError('');
     try {
       // Direct ID + Password Login using Firebase Anonymous Auth (zero email, zero Google popup)
-      const anonUser = await ensureAnonymousSellerAuth();
-      const claimed = await loginSellerWithIdPassword(anonUser.uid, loginId, password);
+      const { anonUser, claimed } = await withNetworkTimeout(
+        (async () => {
+          const user = await ensureAnonymousSellerAuth();
+          const claimResult = await loginSellerWithIdPassword(user.uid, loginId, password);
+          return { anonUser: user, claimed: claimResult };
+        })(),
+        22000,
+        'NETWORK_TIMEOUT: Login server se response nahi aaya. Internet check karke dubara Login dabayein.'
+      );
       clearLoginQueryParams();
       writeDevicePortalMode('seller');
       setDevicePortalMode('seller');
@@ -2973,23 +3014,13 @@ export default function App() {
       setSellerLoginMode(false);
       AppSounds.success();
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('NETWORK_TIMEOUT') || msg.toLowerCase().includes('offline')) {
+        void recoverFirestoreNetwork();
+      }
       setCloudError(formatFirebaseAuthError(err));
     } finally {
       setCloudBusy(false);
-    }
-  };
-
-  const handleTogglePartyActive = async (party: CloudPartyDoc, nextActive: boolean) => {
-    setCloudError('');
-    try {
-      await toggleSellerPartyActive(party, nextActive);
-      showToast(
-        nextActive
-          ? `${party.name} Seller ID Activated`
-          : `${party.name} Seller ID Paused`
-      );
-    } catch (err) {
-      setCloudError(err instanceof Error ? err.message : 'Failed to toggle seller status.');
     }
   };
 
@@ -5845,7 +5876,6 @@ export default function App() {
         onSignOut={handleCloudSignOut}
         onSyncAllSellersNow={() => syncAllSellersToCloud(true)}
         onEnableChainAll={handleEnableChainAll}
-        onTogglePartyActive={handleTogglePartyActive}
         onTogglePartyChainRole={handleTogglePartyChainRole}
         onResetPartyKey={handleResetPartyKey}
         onUpdatePartyCredentials={handleUpdatePartyCredentials}
