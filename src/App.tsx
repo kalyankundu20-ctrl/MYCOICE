@@ -60,11 +60,13 @@ import {
   computeFullAncestorChainFromParties,
   createOrSyncSellerParty,
   createSubSellerForMasterByAdmin,
+  deleteAdminArchivesByIdCloud,
   deleteSellerPartyCloud,
   deleteSubSellerParty,
   fetchAdminPartiesAndSheetsOnce,
   generateEasyLoginId,
   generateEasyPassword,
+  isArchiveSnapshotExpired,
   loadAdminCloudVault,
   loadUserCloudSession,
   loginSellerWithIdPassword,
@@ -73,6 +75,7 @@ import {
   makeUniquePartyArchiveId,
   normalizeLoginId,
   peekAgencyUpdatedAtMs,
+  purgeExpiredPartyArchivesCloud,
   pushAdminSheetRowsForParty,
   readCachedPublicAnnouncement,
   resetSellerAccessKey,
@@ -289,7 +292,8 @@ function preserveInheritedNamesAndCompact(
 
 function preserveSavedSnapshots(history: DaySnapshot[]): DaySnapshot[] {
   if (!Array.isArray(history) || history.length === 0) return [];
-  return history;
+  const nowMs = Date.now();
+  return history.filter((snap) => !isArchiveSnapshotExpired(snap, nowMs));
 }
 
 function normalizeLoadedState(parsed: Partial<AppState> | null | undefined): AppState {
@@ -1923,7 +1927,11 @@ export default function App() {
 
         // Fast-path: if this phone already has warm local IndexedDB data + cached vault signatures
         // and no other Admin device wrote newer cloud data, skip downloading MBs of chunks & archives!
-        if (!isFreshLocalDevice && vaultRetryNonce === 0) {
+        // SAFETY: Never fast-path skip if localStorage had truncated history OR local device is
+        // missing any cloud archive listed in meta.archiveDocIds.
+        const localEnvMeta = readLocalStorageEnvelope();
+        const localSnapshotCount = local.history.length + (local.recycleBin?.length || 0);
+        if (!isFreshLocalDevice && !localEnvMeta?.historyTruncated && vaultRetryNonce === 0) {
           try {
             const rawMeta = window.localStorage.getItem(`kk-admin-vault-meta:v1:${agencyId}`);
             if (rawMeta) {
@@ -1935,11 +1943,15 @@ export default function App() {
                 archiveSigs?: Record<string, string>;
                 archiveDocIds?: string[];
               };
+              const metaArchiveCount = Array.isArray(meta?.archiveDocIds)
+                ? meta.archiveDocIds.length
+                : 0;
               if (
                 meta &&
                 meta.ownerUid === ownerUid &&
                 typeof meta.syncedAtMs === 'number' &&
-                meta.syncedAtMs > 0
+                meta.syncedAtMs > 0 &&
+                localSnapshotCount >= metaArchiveCount
               ) {
                 const remoteAgencyUpdatedAtMs = await peekAgencyUpdatedAtMs(agencyId);
                 if (cancelled) return;
@@ -2411,6 +2423,64 @@ export default function App() {
     state.recycleBin,
     persistAdminVaultMetaLocal,
   ]);
+
+  // Automatic 7-day Archive & Recycle Bin expiration (runs on boot & hourly while open)
+  useEffect(() => {
+    if (!localIdbReady) return;
+
+    const pruneExpiredArchives = () => {
+      if (isAdminRestoredViewRef.current) return;
+      const nowMs = Date.now();
+      const curr = latestStateRef.current;
+      const expiredIds: string[] = [];
+      for (const s of curr.history) {
+        if (isArchiveSnapshotExpired(s, nowMs)) expiredIds.push(s.id);
+      }
+      for (const b of curr.recycleBin || []) {
+        if (isArchiveSnapshotExpired(b, nowMs)) expiredIds.push(b.id);
+      }
+      if (expiredIds.length > 0) {
+        setState((prev) => ({
+          ...prev,
+          history: prev.history.filter((s) => !isArchiveSnapshotExpired(s, nowMs)),
+          recycleBin: (prev.recycleBin || []).filter((b) => !isArchiveSnapshotExpired(b, nowMs)),
+        }));
+        if (cloudSession.kind === 'admin' && adminVaultHydratedRef.current) {
+          const agencyId = cloudSession.agencyId;
+          const ownerUid = cloudSession.ownerUid;
+          void deleteAdminArchivesByIdCloud(
+            expiredIds,
+            adminArchiveSigsRef.current,
+            adminArchiveDocIdsRef.current,
+            agencyId
+          )
+            .then(() => {
+              persistAdminVaultMetaLocal(agencyId, ownerUid);
+            })
+            .catch(() => {});
+        }
+      }
+
+      // Once per day, Admin also cleans up >7-day expired partyArchives in Firestore
+      if (cloudSession.kind === 'admin' && adminVaultHydratedRef.current) {
+        const agencyId = cloudSession.agencyId;
+        const todayKey = getTodayIsoDate();
+        const purgeStampKey = `kk-party-archive-7d-purge:v1:${agencyId}`;
+        try {
+          if (window.localStorage.getItem(purgeStampKey) !== todayKey) {
+            window.localStorage.setItem(purgeStampKey, todayKey);
+            void purgeExpiredPartyArchivesCloud(agencyId);
+          }
+        } catch {
+          // Ignore storage error
+        }
+      }
+    };
+
+    pruneExpiredArchives();
+    const interval = window.setInterval(pruneExpiredArchives, 60 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [localIdbReady, adminVaultHydrated, cloudSession, persistAdminVaultMetaLocal, setState]);
 
   // Admin -> Cloud Sync: Instant parallel batch sync for ALL Master, Direct Seller & Sub-Seller IDs
   const syncAllSellersToCloud = useCallback(
@@ -3323,8 +3393,30 @@ export default function App() {
       const idbVault = await readPermanentSellersIdb();
       if (cancelled) return;
 
+      const unionSnapsById = (
+        primary: DaySnapshot[] | undefined,
+        secondary: DaySnapshot[] | undefined
+      ): DaySnapshot[] => {
+        const byId = new Map<string, DaySnapshot>();
+        for (const s of primary || []) {
+          if (s && s.id) byId.set(s.id, s);
+        }
+        for (const s of secondary || []) {
+          if (s && s.id && !byId.has(s.id)) byId.set(s.id, s);
+        }
+        return Array.from(byId.values()).sort((a, b) =>
+          String(b.savedAt || '').localeCompare(String(a.savedAt || ''))
+        );
+      };
+
       let winner = lsEnv;
-      if (idbEnv && (!winner || idbEnv.updatedAt > winner.updatedAt)) {
+      // Prefer IndexedDB when newer OR when localStorage had to truncate archives due to size/quota
+      if (
+        idbEnv &&
+        (!winner ||
+          idbEnv.updatedAt > winner.updatedAt ||
+          (Boolean(lsEnv?.historyTruncated) && idbEnv.updatedAt >= winner.updatedAt))
+      ) {
         winner = idbEnv;
       }
 
@@ -3333,39 +3425,84 @@ export default function App() {
         newestVault = idbVault;
       }
 
-      if (winner && winner.updatedAt > lastSavedAtRef.current) {
+      if (winner && (winner.updatedAt > lastSavedAtRef.current || (winner === idbEnv && Boolean(lsEnv?.historyTruncated)))) {
         const normalized = normalizeLoadedState(winner.state);
         const restoredSellers =
           newestVault && newestVault.sellers.length > 0
             ? mergeWithPermanentSellers(normalized.sellers, newestVault.sellers)
             : normalized.sellers;
-        const nextNormalized = { ...normalized, sellers: restoredSellers };
+        const mergedHistory = idbEnv
+          ? unionSnapsById(normalized.history, idbEnv.state.history)
+          : normalized.history;
+        const mergedRecycleBin = idbEnv
+          ? unionSnapsById(normalized.recycleBin, idbEnv.state.recycleBin)
+          : normalized.recycleBin;
+        const nextNormalized: AppState = {
+          ...normalized,
+          sellers: restoredSellers,
+          history: mergedHistory,
+          recycleBin: mergedRecycleBin,
+        };
         latestStateRef.current = nextNormalized;
-        lastSavedAtRef.current = winner.updatedAt;
-        writeLocalStorageSafe(nextNormalized, winner.updatedAt);
+        lastSavedAtRef.current = Math.max(winner.updatedAt, lastSavedAtRef.current);
+        writeLocalStorageSafe(nextNormalized, lastSavedAtRef.current);
         if (restoredSellers.length > 0) {
-          writePermanentSellers(restoredSellers, winner.updatedAt);
+          writePermanentSellers(restoredSellers, lastSavedAtRef.current);
         }
         setRawState(nextNormalized);
-      } else if (newestVault && newestVault.sellers.length > 0) {
-        const merged = mergeWithPermanentSellers(
-          latestStateRef.current.sellers,
-          newestVault.sellers
+      } else {
+        // Even if localStorage matched IndexedDB's timestamp, always recover any full archives
+        // or recycleBin records stored in IndexedDB that localStorage trimmed for size/quota!
+        const curr = latestStateRef.current;
+        const idbHistory = Array.isArray(idbEnv?.state?.history) ? idbEnv.state.history : [];
+        const idbBin = Array.isArray(idbEnv?.state?.recycleBin) ? idbEnv.state.recycleBin : [];
+        const missingHistory = idbHistory.filter(
+          (ih) =>
+            ih &&
+            ih.id &&
+            !curr.history.some((ch) => ch.id === ih.id) &&
+            !(curr.recycleBin || []).some((cb) => cb.id === ih.id)
         );
-        if (merged.length > latestStateRef.current.sellers.length) {
-          const ts = Math.max(Date.now(), newestVault.updatedAt);
+        const missingBin = idbBin.filter(
+          (ib) =>
+            ib &&
+            ib.id &&
+            !(curr.recycleBin || []).some((cb) => cb.id === ib.id) &&
+            !curr.history.some((ch) => ch.id === ib.id)
+        );
+        const mergedSellers =
+          newestVault && newestVault.sellers.length > 0
+            ? mergeWithPermanentSellers(curr.sellers, newestVault.sellers)
+            : curr.sellers;
+        const sellersAdded = mergedSellers.length > curr.sellers.length;
+
+        if (missingHistory.length > 0 || missingBin.length > 0 || sellersAdded) {
+          const ts = Math.max(
+            Date.now(),
+            lastSavedAtRef.current,
+            newestVault?.updatedAt || 0,
+            idbEnv?.updatedAt || 0
+          );
           const recovered: AppState = {
-            ...latestStateRef.current,
-            sellers: merged,
+            ...curr,
+            sellers: mergedSellers,
+            history:
+              missingHistory.length > 0
+                ? unionSnapsById(curr.history, missingHistory)
+                : curr.history,
+            recycleBin:
+              missingBin.length > 0
+                ? unionSnapsById(curr.recycleBin, missingBin)
+                : curr.recycleBin,
           };
           latestStateRef.current = recovered;
           lastSavedAtRef.current = ts;
           writeLocalStorageSafe(recovered, ts);
           void writeIndexedDbEnvelope(recovered, ts);
           setRawState(recovered);
+        } else if (!lsEnv && lastSavedAtRef.current > 0) {
+          writeLocalStorageSafe(curr, lastSavedAtRef.current);
         }
-      } else if (!lsEnv && lastSavedAtRef.current > 0) {
-        writeLocalStorageSafe(latestStateRef.current, lastSavedAtRef.current);
       }
 
       if (!cancelled) {
@@ -3506,6 +3643,18 @@ export default function App() {
     [prizeList]
   );
 
+  // While an archived date is currently restored/open on screen, hide that date from
+  // the Archive list display (it remains 100% safely stored in state.history & Cloud
+  // and immediately reappears when Back to Live is tapped).
+  const visibleArchiveSnapshots = useMemo(() => {
+    if (!adminRestoredMode) return state.history;
+    return state.history.filter(
+      (h) =>
+        h.id !== adminRestoredMode.restoredSnapId &&
+        h.date !== adminRestoredMode.restoredDate
+    );
+  }, [state.history, adminRestoredMode]);
+
   const shellCounts = useMemo(
     () => ({
       sellers: sellerBills.length,
@@ -3514,14 +3663,14 @@ export default function App() {
       overLimit8PM: sessionComputations['8PM'].overLimitTotal,
       prizes: prizeList.length,
       limitPrizes: limitPrizeCount,
-      archives: state.history.length,
+      archives: visibleArchiveSnapshots.length,
     }),
     [
       sellerBills.length,
       sessionComputations,
       prizeList.length,
       limitPrizeCount,
-      state.history.length,
+      visibleArchiveSnapshots.length,
     ]
   );
 
@@ -5125,20 +5274,9 @@ export default function App() {
     const today = getTodayIsoDate();
     skipAutoRolloverDateRef.current = snap.date < today ? snap.date : null;
 
-    const switchingDates = state.date !== snap.date;
-    const hasWorkingDayData =
-      (['1PM', '6PM', '8PM'] as SessionId[]).some((sid) =>
-        state.entries[sid].some((r) => !isRowBlank(r))
-      ) ||
-      (['1PM', '6PM', '8PM'] as SessionId[]).some(
-        (sid) => state.winningRaw[sid].trim() !== ''
-      ) ||
-      state.sellers.some((s) => s.due !== 0 || s.joma !== 0);
-
-    const currentDayBackup =
-      !adminRestoredMode && switchingDates && hasWorkingDayData
-        ? buildExactSnapshotFromState(latestStateRef.current, 'manual')
-        : null;
+    // IMPORTANT: Restoring an archived date must NEVER add the active Live date into Archive history.
+    // The active Live day is kept safely in adminRestoredMode.liveBackup and returned cleanly
+    // on "Back to Live" without creating any archive entry — only "Close Day" adds a date to Archive.
 
     // Build baseline totals for the target archive date so edits cascade idempotently
     const buildTotalsMap = (targetSnap: DaySnapshot): Record<string, number> => {
@@ -5219,15 +5357,6 @@ export default function App() {
     }
 
     setState((prev) => {
-      let nextHistory = [...prev.history];
-      if (currentDayBackup) {
-        const existingIdx = nextHistory.findIndex((h) => h.date === currentDayBackup.date);
-        if (existingIdx !== -1) {
-          nextHistory[existingIdx] = currentDayBackup;
-        } else {
-          nextHistory = [currentDayBackup, ...nextHistory];
-        }
-      }
       // Keep all permanently created sellers even when restoring an older archive date
       const preservedCurrentSellers = prev.sellers.map((s) => ({
         ...s,
@@ -5253,7 +5382,7 @@ export default function App() {
           '8PM': normalizeRowsKeepOneTrailing(snap.entries['8PM'] || []),
         },
         winningRaw: snap.winningRaw,
-        history: preserveSavedSnapshots(nextHistory).slice(0, 180),
+        history: preserveSavedSnapshots(prev.history).slice(0, 180),
       };
     });
 
@@ -5932,9 +6061,8 @@ export default function App() {
         <ArchiveView
           billingDate={state.date}
           onChangeBillingDate={handleChangeDate}
-          snapshots={state.history}
+          snapshots={visibleArchiveSnapshots}
           recycleBin={state.recycleBin || []}
-          onArchiveNow={() => performArchiveAndRollover('manual')}
           onRestoreSnapshot={handleRestoreSnapshot}
           onSyncSnapshotToParties={handleSyncSingleArchiveToParties}
           onUpdateSnapshotDate={(snapshotId, newDate) => {
@@ -5988,13 +6116,44 @@ export default function App() {
               ...prev,
               recycleBin: (prev.recycleBin || []).filter((b) => b.id !== snapshotId),
             }));
+            if (cloudSession.kind === 'admin') {
+              const agencyId = cloudSession.agencyId;
+              const ownerUid = cloudSession.ownerUid;
+              void deleteAdminArchivesByIdCloud(
+                [snapshotId],
+                adminArchiveSigsRef.current,
+                adminArchiveDocIdsRef.current,
+                agencyId
+              )
+                .then(() => {
+                  persistAdminVaultMetaLocal(agencyId, ownerUid);
+                })
+                .catch(() => {});
+            }
             showToast('Archive Recycle Bin se permanently delete ho gaya');
           }}
           onEmptyRecycleBin={() => {
+            const binIds = (latestStateRef.current.recycleBin || [])
+              .map((b) => b.id)
+              .filter(Boolean);
             setState((prev) => ({
               ...prev,
               recycleBin: [],
             }));
+            if (cloudSession.kind === 'admin' && binIds.length > 0) {
+              const agencyId = cloudSession.agencyId;
+              const ownerUid = cloudSession.ownerUid;
+              void deleteAdminArchivesByIdCloud(
+                binIds,
+                adminArchiveSigsRef.current,
+                adminArchiveDocIdsRef.current,
+                agencyId
+              )
+                .then(() => {
+                  persistAdminVaultMetaLocal(agencyId, ownerUid);
+                })
+                .catch(() => {});
+            }
             showToast('Recycle Bin khali ho gaya');
           }}
         />

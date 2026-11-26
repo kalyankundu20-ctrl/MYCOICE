@@ -69,7 +69,7 @@ export function ArchiveView({
           </h2>
           <p className="text-xs font-medium text-slate-600 mt-0.5">
             {subtitle ||
-              "Close Day saves today's snapshot, carries +Total → Due & -Total → Joma to the new date, and auto-deletes records after 30 days."}
+              "Only Close Day saves today's snapshot, carries +Total → Due & -Total → Joma to the new date, and auto-deletes records after 7 days."}
           </p>
         </div>
 

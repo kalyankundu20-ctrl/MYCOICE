@@ -41,6 +41,7 @@ import {
   CloudPublicAnnouncement,
   deletePartyArchiveCloud,
   fetchPartyArchivesOnce,
+  isArchiveSnapshotExpired,
   sanitizeSheetEntriesForCloud,
   savePartyArchiveCloud,
   saveSellerOwnSheet,
@@ -314,7 +315,8 @@ export function SellerPortalApp({
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          setPartyArchives(parsed);
+          const valid = parsed.filter((item: DaySnapshot) => !isArchiveSnapshotExpired(item));
+          setPartyArchives(valid);
         }
       } else {
         setPartyArchives([]);
@@ -328,12 +330,8 @@ export function SellerPortalApp({
       if (rawBin) {
         const parsedBin = JSON.parse(rawBin);
         if (Array.isArray(parsedBin)) {
-          const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-          const valid = parsedBin.filter((item: DaySnapshot) => {
-            const ts = Date.parse(item.deletedAt || item.savedAt || '');
-            return !Number.isFinite(ts) || ts >= cutoff;
-          });
-          setPartyRecycleBin(valid);
+          const validBin = parsedBin.filter((item: DaySnapshot) => !isArchiveSnapshotExpired(item));
+          setPartyRecycleBin(validBin);
         }
       } else {
         setPartyRecycleBin([]);
@@ -2684,7 +2682,13 @@ export function SellerPortalApp({
                 )}
                 <ArchiveView
                   billingDate={billingDate}
-                  snapshots={partyArchives}
+                  snapshots={
+                    restoredSnapshot
+                      ? partyArchives.filter(
+                          (s) => s.id !== restoredSnapshot.id && s.date !== restoredSnapshot.date
+                        )
+                      : partyArchives
+                  }
                   recycleBin={partyRecycleBin}
                   onArchiveNow={() => void handleSavePartyArchive()}
                   onRestoreSnapshot={handleRestorePartySnapshot}
@@ -2693,12 +2697,18 @@ export function SellerPortalApp({
                   onRecoverFromBin={(id) => void handleRecoverPartyArchiveFromBin(id)}
                   onPermanentDeleteFromBin={handlePermanentDeletePartyFromBin}
                   onEmptyRecycleBin={handleEmptyPartyRecycleBin}
-                  title={`${party.name} — Daily Archive (${partyArchives.length})`}
+                  title={`${party.name} — Daily Archive (${
+                    restoredSnapshot
+                      ? partyArchives.filter(
+                          (s) => s.id !== restoredSnapshot.id && s.date !== restoredSnapshot.date
+                        ).length
+                      : partyArchives.length
+                  })`}
                   partyOwnerName={party.name}
                   subtitle={
                     isMasterSeller && subParties.length > 0
-                      ? 'Har din ka Bill, 1PM/6PM/8PM Sheet, Sub-Sellers aur Prize snapshot safe rehta hai (30 days history). Restore dabakar kisi bhi purane din ka poora details dekh sakte hain.'
-                      : 'Aapka roz ka Bill, 1PM/6PM/8PM Sheet aur Prize record yahan 30 din tak safe rehta hai. Restore dabakar kisi bhi din ka poora details dekh sakte hain.'
+                      ? 'Close Day par har din ka Bill, 1PM/6PM/8PM Sheet, Sub-Sellers aur Prize snapshot 7 din tak safe rehta hai (7 days baad auto-delete). Restore dabakar purane din ka details dekh sakte hain.'
+                      : 'Close Day par aapka roz ka Bill, 1PM/6PM/8PM Sheet aur Prize record 7 din tak safe rehta hai (7 days baad auto-delete). Restore dabakar purane din ka details dekh sakte hain.'
                   }
                   archiveButtonLabel={archiveBusy ? 'Saving...' : 'Save Archive'}
                   secondaryActionLabel={

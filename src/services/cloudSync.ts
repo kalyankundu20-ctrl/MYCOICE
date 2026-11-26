@@ -3202,7 +3202,75 @@ export interface CloudPartyArchiveDoc {
   payload: DaySnapshot;
 }
 
-const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const ARCHIVE_RETENTION_DAYS = 7;
+export const ARCHIVE_RETENTION_MS = ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * Returns true strictly when an archive snapshot is at least 7 full days old
+ * (measured from savedAt/deletedAt, or end of snapshot date if timestamp missing).
+ */
+export function isArchiveSnapshotExpired(
+  snap: Pick<DaySnapshot, 'date' | 'savedAt' | 'deletedAt'> | null | undefined,
+  nowMs = Date.now()
+): boolean {
+  if (!snap) return true;
+  const rawTs = snap.deletedAt || snap.savedAt || '';
+  const parsedTs = Date.parse(rawTs);
+  if (Number.isFinite(parsedTs)) {
+    return nowMs - parsedTs >= ARCHIVE_RETENTION_MS;
+  }
+  const dateStr = String(snap.date || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const endOfDayTs = Date.parse(`${dateStr}T23:59:59Z`);
+    if (Number.isFinite(endOfDayTs)) {
+      return nowMs - endOfDayTs >= ARCHIVE_RETENTION_MS;
+    }
+  }
+  return false;
+}
+
+/**
+ * Admin-only background cleanup: permanently deletes partyArchives older than 7 days
+ * from Firestore so Seller/Master/Sub-Seller archive storage stays lean and fast.
+ */
+export async function purgeExpiredPartyArchivesCloud(agencyId = AGENCY_ID): Promise<void> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  try {
+    const snap = await withNetworkTimeout(
+      getDocsLite(collectionLite(dbLite, 'agencies', cleanAgencyId, 'partyArchives')),
+      12000
+    );
+    const nowMs = Date.now();
+    const expiredIds: string[] = [];
+    for (const d of snap.docs) {
+      const data = d.data() as CloudPartyArchiveDoc;
+      if (!data) continue;
+      const expired = isArchiveSnapshotExpired(
+        {
+          date: data.date || data.payload?.date || '',
+          savedAt: data.savedAt || data.payload?.savedAt || '',
+        },
+        nowMs
+      );
+      if (expired) expiredIds.push(d.id);
+    }
+    const CONCURRENCY = 4;
+    for (let i = 0; i < expiredIds.length; i += CONCURRENCY) {
+      const slice = expiredIds.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        slice.map(async (id) => {
+          try {
+            await deleteDoc(doc(db, 'agencies', cleanAgencyId, 'partyArchives', id));
+          } catch {
+            // Non-fatal cleanup error
+          }
+        })
+      );
+    }
+  } catch {
+    // Ignore transient network errors during background cleanup
+  }
+}
 
 function sanitizePartyArchiveEntryRows(
   rows: TicketEntryRow[] | undefined,
@@ -3547,27 +3615,27 @@ export function subscribePartyArchives(
   return onSnapshot(
     q,
     (snap) => {
-      const cutoff = Date.now() - ARCHIVE_RETENTION_MS;
+      const nowMs = Date.now();
       const list: DaySnapshot[] = [];
       for (const d of snap.docs) {
         const data = d.data() as CloudPartyArchiveDoc;
         if (!data || !data.payload) continue;
-        const savedTs = Date.parse(data.savedAt || data.payload.savedAt || '');
-        if (Number.isFinite(savedTs) && savedTs < cutoff) continue;
-        list.push({
+        const hydrated: DaySnapshot = {
           ...data.payload,
           id: data.snapshotId || d.id,
           date: data.date || data.payload.date,
           savedAt: data.savedAt || data.payload.savedAt,
           trigger: data.trigger || data.payload.trigger || 'manual',
-        });
+        };
+        if (isArchiveSnapshotExpired(hydrated, nowMs)) continue;
+        list.push(hydrated);
       }
       list.sort(
         (a, b) =>
           (b.date || '').localeCompare(a.date || '') ||
           (b.savedAt || '').localeCompare(a.savedAt || '')
       );
-      onSnapshots(list.slice(0, 25));
+      onSnapshots(list.slice(0, 30));
     },
     () => {
       // Keep local cached archives visible if offline or permission refresh pending
@@ -3589,27 +3657,27 @@ export async function fetchPartyArchivesOnce(
       whereLite('partyId', '==', partyId)
     );
     const snap = await withNetworkTimeout(getDocsLite(q), 12000);
-    const cutoff = Date.now() - ARCHIVE_RETENTION_MS;
+    const nowMs = Date.now();
     const list: DaySnapshot[] = [];
     for (const d of snap.docs) {
       const data = d.data() as CloudPartyArchiveDoc;
       if (!data || !data.payload) continue;
-      const savedTs = Date.parse(data.savedAt || data.payload.savedAt || '');
-      if (Number.isFinite(savedTs) && savedTs < cutoff) continue;
-      list.push({
+      const hydrated: DaySnapshot = {
         ...data.payload,
         id: data.snapshotId || d.id,
         date: data.date || data.payload.date,
         savedAt: data.savedAt || data.payload.savedAt,
         trigger: data.trigger || data.payload.trigger || 'manual',
-      });
+      };
+      if (isArchiveSnapshotExpired(hydrated, nowMs)) continue;
+      list.push(hydrated);
     }
     list.sort(
       (a, b) =>
         (b.date || '').localeCompare(a.date || '') ||
         (b.savedAt || '').localeCompare(a.savedAt || '')
     );
-    return list.slice(0, 25);
+    return list.slice(0, 30);
   } catch {
     return [];
   }
@@ -5225,11 +5293,17 @@ export async function loadAdminCloudVault(
   const recycleBin: DaySnapshot[] = [];
   const archiveSigs: Record<string, string> = {};
   const archiveDocIds: string[] = [];
+  const expiredCloudArchiveDocIds: string[] = [];
+  const nowMs = Date.now();
 
   if (archivesSnap) {
     archivesSnap.forEach((docSnap) => {
       const parsed = parseArchiveSnapshotFromDoc(docSnap.id, docSnap.data() as Record<string, unknown>);
       if (!parsed) return;
+      if (isArchiveSnapshotExpired(parsed.snapshot, nowMs)) {
+        expiredCloudArchiveDocIds.push(docSnap.id);
+        return;
+      }
       archiveDocIds.push(docSnap.id);
       archiveSigs[docSnap.id] = computeArchiveSignature(parsed.snapshot, parsed.inRecycleBin);
       if (parsed.inRecycleBin) {
@@ -5238,6 +5312,19 @@ export async function loadAdminCloudVault(
         history.push(parsed.snapshot);
       }
     });
+  }
+
+  // Automatically remove Admin archives older than 7 days from Firestore in the background
+  if (expiredCloudArchiveDocIds.length > 0) {
+    void Promise.all(
+      expiredCloudArchiveDocIds.map(async (expiredId) => {
+        try {
+          await deleteDoc(doc(db, 'agencies', cleanAgencyId, 'archives', expiredId));
+        } catch {
+          // Non-fatal background cleanup
+        }
+      })
+    );
   }
 
   const sortNewest = (a: DaySnapshot, b: DaySnapshot) =>
@@ -5441,7 +5528,8 @@ export async function syncAdminArchivesCloud(
   recycleBin: DaySnapshot[],
   knownArchiveSigs: Record<string, string>,
   knownArchiveDocIds: Set<string>,
-  agencyId = AGENCY_ID
+  agencyId = AGENCY_ID,
+  allowDeletions = false
 ): Promise<void> {
   const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
   const safeAdminUids = adminUids.length > 0 ? adminUids.slice(0, 10) : [ownerUid];
@@ -5451,9 +5539,16 @@ export async function syncAdminArchivesCloud(
     { docId: string; snap: DaySnapshot; inRecycleBin: boolean; sig: string }
   >();
 
+  const nowMs = Date.now();
+  const expiredExplicitIds = new Set<string>();
+
   for (const snap of history) {
     if (!snap || !snap.id) continue;
     const docId = makeAdminArchiveDocId(snap.id);
+    if (isArchiveSnapshotExpired(snap, nowMs)) {
+      if (knownArchiveDocIds.has(docId)) expiredExplicitIds.add(docId);
+      continue;
+    }
     desiredMap.set(docId, {
       docId,
       snap,
@@ -5464,6 +5559,10 @@ export async function syncAdminArchivesCloud(
   for (const snap of recycleBin) {
     if (!snap || !snap.id) continue;
     const docId = makeAdminArchiveDocId(snap.id);
+    if (isArchiveSnapshotExpired(snap, nowMs)) {
+      if (knownArchiveDocIds.has(docId)) expiredExplicitIds.add(docId);
+      continue;
+    }
     if (desiredMap.has(docId)) continue;
     desiredMap.set(docId, {
       docId,
@@ -5476,7 +5575,12 @@ export async function syncAdminArchivesCloud(
   const toWrite = Array.from(desiredMap.values()).filter(
     (item) => !knownArchiveDocIds.has(item.docId) || knownArchiveSigs[item.docId] !== item.sig
   );
-  const toDelete = Array.from(knownArchiveDocIds).filter((id) => !desiredMap.has(id));
+  // SAFETY: Never auto-delete non-expired cloud archives during routine background sync (prevents
+  // truncated localStorage or stale sessions from wiping saved Close Day records in Firestore).
+  // Expired (>7 days) archives are always auto-deleted cleanly.
+  const toDelete = allowDeletions
+    ? Array.from(knownArchiveDocIds).filter((id) => !desiredMap.has(id))
+    : Array.from(expiredExplicitIds);
 
   if (toWrite.length === 0 && toDelete.length === 0) return;
 
@@ -5557,6 +5661,39 @@ export async function syncAdminArchivesCloud(
           await deleteDoc(ref);
           knownArchiveDocIds.delete(staleId);
           delete knownArchiveSigs[staleId];
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, ref.path);
+        }
+      })
+    );
+  }
+}
+
+/**
+ * Explicitly deletes specific Admin archive documents from Firestore ONLY when the Admin
+ * confirms Permanent Delete or Empty Recycle Bin in the Archive UI.
+ */
+export async function deleteAdminArchivesByIdCloud(
+  snapshotIds: string[],
+  knownArchiveSigs: Record<string, string>,
+  knownArchiveDocIds: Set<string>,
+  agencyId = AGENCY_ID
+): Promise<void> {
+  if (!Array.isArray(snapshotIds) || snapshotIds.length === 0) return;
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  const docIds = Array.from(
+    new Set(snapshotIds.filter(Boolean).map((id) => makeAdminArchiveDocId(id)))
+  );
+  const CONCURRENCY = 4;
+  for (let i = 0; i < docIds.length; i += CONCURRENCY) {
+    const slice = docIds.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      slice.map(async (docId) => {
+        const ref = doc(db, 'agencies', cleanAgencyId, 'archives', docId);
+        try {
+          await deleteDoc(ref);
+          knownArchiveDocIds.delete(docId);
+          delete knownArchiveSigs[docId];
         } catch (err) {
           handleFirestoreError(err, OperationType.DELETE, ref.path);
         }

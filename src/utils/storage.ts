@@ -10,6 +10,7 @@ const IDB_SELLERS_KEY = 'permanent_sellers';
 export interface PersistedEnvelope {
   state: AppState;
   updatedAt: number;
+  historyTruncated?: boolean;
 }
 
 export interface PermanentSellersEnvelope {
@@ -117,18 +118,20 @@ export function writeLocalStorageSafe(state: AppState, updatedAt: number): void 
   // (IndexedDB stores 100% of full history & recycleBin asynchronously without blocking UI!).
   const historyRows = countSnapshotRows(state.history);
   const recycleRows = countSnapshotRows(state.recycleBin);
-  const compactForLocal: AppState =
-    historyRows + recycleRows > 1200
-      ? {
-          ...state,
-          history: (state.history || []).slice(0, 2),
-          recycleBin: [],
-        }
-      : state;
+  const shouldCompactHistory = historyRows + recycleRows > 1200;
+  const compactForLocal: AppState = shouldCompactHistory
+    ? {
+        ...state,
+        history: (state.history || []).slice(0, 2),
+        recycleBin: [],
+      }
+    : state;
 
-  const tryWrite = (candidateState: AppState): boolean => {
+  const tryWrite = (candidateState: AppState, historyTruncated: boolean): boolean => {
     try {
-      const payload: PersistedEnvelope = { state: candidateState, updatedAt };
+      const payload: PersistedEnvelope = historyTruncated
+        ? { state: candidateState, updatedAt, historyTruncated: true }
+        : { state: candidateState, updatedAt };
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
       return true;
     } catch {
@@ -136,15 +139,19 @@ export function writeLocalStorageSafe(state: AppState, updatedAt: number): void 
     }
   };
 
-  if (tryWrite(compactForLocal)) return;
+  if (tryWrite(compactForLocal, shouldCompactHistory)) return;
 
   // Fallback on QuotaExceededError: keep live sheets/sellers/winning numbers intact, trim history
+  // and mark historyTruncated so boot recovery always restores full history from IndexedDB/Cloud.
   if (
-    tryWrite({
-      ...state,
-      history: [],
-      recycleBin: [],
-    })
+    tryWrite(
+      {
+        ...state,
+        history: [],
+        recycleBin: [],
+      },
+      true
+    )
   ) {
     return;
   }
@@ -158,7 +165,11 @@ export function readLocalStorageEnvelope(): PersistedEnvelope | null {
     const parsed = JSON.parse(raw) as Partial<PersistedEnvelope> & Partial<AppState>;
     // Support new envelope format { state, updatedAt } as well as legacy raw AppState
     if (parsed && parsed.state && typeof parsed.updatedAt === 'number') {
-      return { state: parsed.state, updatedAt: parsed.updatedAt };
+      return {
+        state: parsed.state,
+        updatedAt: parsed.updatedAt,
+        historyTruncated: Boolean(parsed.historyTruncated),
+      };
     }
     if (parsed && parsed.sellers && parsed.entries) {
       return { state: parsed as AppState, updatedAt: 0 };
