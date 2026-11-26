@@ -49,7 +49,11 @@ const STORAGE_KEY = 'kk_agency_gsheet_sync_cfg_v1';
 export const GSHEET_ROW_ID_PREFIX = 'gsheet::';
 
 export function isGoogleSheetRowId(rowId: string): boolean {
-  return typeof rowId === 'string' && rowId.startsWith(GSHEET_ROW_ID_PREFIX);
+  if (typeof rowId !== 'string') return false;
+  return (
+    rowId.startsWith(GSHEET_ROW_ID_PREFIX) ||
+    rowId.startsWith(`admin::${GSHEET_ROW_ID_PREFIX}`)
+  );
 }
 
 export function createDefaultGoogleSheetConfig(): GoogleSheetSyncConfig {
@@ -425,6 +429,9 @@ async function fetchTabValuesViaGviz(spreadsheetId: string, tabTitle: string): P
     if (reason === 'access_denied' || reason === 'not_logged_in' || reason === 'user_not_authenticated') {
       throw new SheetPrivateAuthRequiredError();
     }
+    if (reason === 'no_data' || reason === 'empty_table') {
+      return [];
+    }
     throw new Error(firstErr?.detailed_message || firstErr?.message || 'Google Sheet tab load nahi ho paya.');
   }
 
@@ -548,6 +555,7 @@ export async function fetchSessionRowsFromGoogleSheet(
   )}/values:batchGet?${params.toString()}`;
 
   const res = await fetch(url, {
+    cache: 'no-store',
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },

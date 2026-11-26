@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronUp, Radio, Users } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import { formatINR, processSessionRows } from '../engine/calculations';
+import { memo, useEffect, useMemo, useState } from 'react';
+import { computeRowQtyAndRange, formatINR } from '../engine/calculations';
 import { CloudPartyDoc, CloudPartySheetDoc } from '../services/cloudSync';
 import { AgencyConfig, SessionId, TicketEntryRow } from '../types/ledger';
 import { AppSounds } from '../utils/sound';
@@ -29,17 +29,21 @@ interface ChainRowDisplay {
   qty: number;
 }
 
-export function LiveChainEntriesPanel({
+export const LiveChainEntriesPanel = memo(function LiveChainEntriesPanel({
   sessionId,
   chainSheets,
   chainParties,
-  config,
   rootMasterPartyId,
   mode = 'master',
   defaultExpanded = true,
 }: LiveChainEntriesPanelProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [selectedPartyId, setSelectedPartyId] = useState<string>('ALL');
+  const [visibleLimit, setVisibleLimit] = useState(100);
+
+  useEffect(() => {
+    setVisibleLimit(100);
+  }, [sessionId, selectedPartyId, expanded]);
 
   const partyById = useMemo(() => {
     const map = new Map<string, CloudPartyDoc>();
@@ -88,37 +92,29 @@ export function LiveChainEntriesPanel({
       const partyName = (selfParty?.name || sh.partyName || 'SUB').trim();
       const lineageLabel = buildLineageLabel(sh);
 
-      const normalized = rawList.map((r, idx) => ({
-        ...r,
-        id: r.id || `${sh.partyId}-${idx}`,
-        name: partyName,
-      }));
-      const comp = processSessionRows(normalized, sessionId, config);
-
       let sellerQty = 0;
       let sellerRows = 0;
-      for (const proc of comp.rows) {
-        if (
-          proc.statusType === 'empty' &&
-          !proc.item.trim() &&
-          !proc.start.trim() &&
-          !proc.end.trim()
-        ) {
-          continue;
-        }
+      for (let idx = 0; idx < rawList.length; idx++) {
+        const r = rawList[idx];
+        const itemTrim = String(r.item || '').trim();
+        const startTrim = String(r.start || '').trim();
+        const endTrim = String(r.end || '').trim();
+        if (!itemTrim && !startTrim && !endTrim) continue;
+
+        const metrics = computeRowQtyAndRange(r);
         sellerRows += 1;
-        sellerQty += proc.qty;
-        grandQty += proc.qty;
+        sellerQty += metrics.qty;
+        grandQty += metrics.qty;
         rows.push({
-          key: `${sh.partyId}::${proc.id}`,
+          key: `${sh.partyId}::${r.id || idx}`,
           partyId: sh.partyId,
           partyName,
           lineageLabel,
-          item: proc.item || '—',
-          start: proc.start || '—',
-          end: proc.end || '—',
-          range: proc.range > 0 ? String(proc.range) : proc.rangeOverride.trim() || '—',
-          qty: proc.qty,
+          item: itemTrim || '—',
+          start: startTrim || '—',
+          end: endTrim || '—',
+          range: metrics.range > 0 ? String(metrics.range) : String(r.rangeOverride || '').trim() || '—',
+          qty: metrics.qty,
         });
       }
 
@@ -138,7 +134,7 @@ export function LiveChainEntriesPanel({
       sellerSummaries: Array.from(summaryMap.values()),
       totalQty: grandQty,
     };
-  }, [chainSheets, partyById, sessionId, config, rootMasterPartyId]);
+  }, [chainSheets, partyById, sessionId, rootMasterPartyId]);
 
   if (allRows.length === 0) {
     if (mode === 'admin') return null;
@@ -262,7 +258,7 @@ export function LiveChainEntriesPanel({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-mono-tabular">
-                {visibleRows.map((row) => (
+                {visibleRows.slice(0, visibleLimit).map((row) => (
                   <tr key={row.key} className="hover:bg-emerald-50/35">
                     <td className="py-2 px-2.5 font-sans font-extrabold text-slate-900 whitespace-nowrap">
                       {row.lineageLabel}
@@ -287,8 +283,26 @@ export function LiveChainEntriesPanel({
               </tbody>
             </table>
           </div>
+          {visibleRows.length > visibleLimit && (
+            <div className="flex items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setVisibleLimit((cur) => cur + 200)}
+                className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold cursor-pointer"
+              >
+                Show +200 more ({visibleRows.length - visibleLimit} left)
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleLimit(visibleRows.length)}
+                className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold cursor-pointer"
+              >
+                Show All ({visibleRows.length})
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
-}
+});

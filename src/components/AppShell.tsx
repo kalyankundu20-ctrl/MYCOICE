@@ -4,6 +4,7 @@ import {
   Calendar,
   Clock,
   FileSpreadsheet,
+  Megaphone,
   SlidersHorizontal,
   Smartphone,
   Trophy,
@@ -15,7 +16,6 @@ import { ReactNode, useEffect, useRef } from 'react';
 import { formatDateDDMMYYYY } from '../engine/calculations';
 import { SheetTab } from '../types/ledger';
 import { AppSounds } from '../utils/sound';
-import { PWAInstallButton } from './PWAInstallButton';
 
 interface AppShellProps {
   activeTab: SheetTab;
@@ -25,6 +25,8 @@ interface AppShellProps {
   onOpenSettings: () => void;
   onOpenSellerIds: () => void;
   onOpenGoogleSheets?: () => void;
+  onOpenAnnouncement?: () => void;
+  announcementActive?: boolean;
   googleSheetsActive?: boolean;
   cloudConnected: boolean;
   soundEnabled: boolean;
@@ -66,6 +68,8 @@ export function AppShell({
   onOpenSettings,
   onOpenSellerIds,
   onOpenGoogleSheets,
+  onOpenAnnouncement,
+  announcementActive = false,
   googleSheetsActive = false,
   cloudConnected,
   soundEnabled,
@@ -202,6 +206,26 @@ export function AppShell({
             )}
           </motion.button>
 
+          {onOpenAnnouncement && (
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              onClick={() => {
+                AppSounds.tap();
+                onOpenAnnouncement();
+              }}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-sm font-semibold text-white bg-amber-400/18 hover:bg-amber-400/28 border border-amber-300/30 rounded-xl transition-colors cursor-pointer"
+            >
+              <span className="flex items-center gap-2.5 min-w-0">
+                <Megaphone className="w-4 h-4 shrink-0 text-amber-300" aria-hidden="true" />
+                <span className="truncate">Ad / Offer</span>
+              </span>
+              {announcementActive && (
+                <span className="w-2 h-2 rounded-full bg-amber-300 shrink-0 animate-pulse" />
+              )}
+            </motion.button>
+          )}
+
           {onOpenGoogleSheets && (
             <motion.button
               type="button"
@@ -234,7 +258,6 @@ export function AppShell({
             <SlidersHorizontal className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>Agency Settings</span>
           </motion.button>
-          <PWAInstallButton variant="sidebar" />
         </div>
       </aside>
 
@@ -242,13 +265,13 @@ export function AppShell({
       <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
         {/* Executive Full-App Top Bar (Solid Navy, Zero Blur, Safe-Area Full-Screen) */}
         <header className="shrink-0 z-30 kk-brand-gradient text-white border-b border-black/15 pt-[env(safe-area-inset-top)] transition-colors duration-200">
-          <div className="min-h-16 sm:min-h-[68px] py-2 px-2.5 sm:px-6 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 sm:gap-3.5 min-w-0 flex-1">
+          <div className="min-h-16 sm:min-h-[68px] py-2 px-3 sm:px-6 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
             <motion.button
               type="button"
               whileTap={{ scale: 0.96 }}
               onClick={() => handleNavClick('Seller Bill')}
-              className="lg:hidden w-10 h-10 rounded-xl overflow-hidden shrink-0 shadow-md ring-1 ring-white/30 cursor-pointer"
+              className="lg:hidden w-10 h-10 rounded-xl overflow-hidden shrink-0 shadow-md ring-1 ring-white/25 cursor-pointer"
               aria-label="KK Agency Home"
             >
               <img
@@ -259,26 +282,34 @@ export function AppShell({
               />
             </motion.button>
 
-            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3.5 min-w-0">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-3 min-w-0">
               <button
                 type="button"
                 onClick={() => handleNavClick('Seller Bill')}
-                className="lg:hidden text-left text-[15px] sm:text-2xl font-black tracking-tight text-white leading-none whitespace-nowrap cursor-pointer"
+                className="lg:hidden text-left text-[17px] sm:text-xl font-extrabold tracking-[-0.015em] text-white leading-tight whitespace-nowrap cursor-pointer"
               >
                 KK Agency
               </button>
 
-              <h1 className="hidden lg:block text-xl font-black tracking-tight text-white truncate min-w-0">
+              <h1 className="hidden lg:block text-xl font-extrabold tracking-[-0.015em] text-white truncate min-w-0">
                 {activeTab === 'Prize List' || activeTab === 'Limit Prize'
                   ? 'Prize List & Limit Prize'
                   : activeTab}
               </h1>
 
+              <span
+                aria-hidden="true"
+                className="hidden sm:inline-block h-4 w-px bg-white/25 shrink-0"
+              />
+
               <label
-                title="Customize billing date"
-                className="relative self-start sm:self-auto inline-flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3.5 py-0.5 sm:py-2 text-[11.5px] sm:text-base font-extrabold font-mono-tabular text-white bg-white/18 hover:bg-white/25 border border-white/25 rounded-lg sm:rounded-xl cursor-pointer whitespace-nowrap shrink-0 shadow-xs transition-colors"
+                title="Change billing date"
+                className="group relative self-start sm:self-auto inline-flex items-center gap-1.5 -ml-1 sm:ml-0 px-1 sm:px-2 py-0.5 sm:py-1 text-[12px] sm:text-[13.5px] font-semibold font-mono-tabular tracking-[0.02em] text-white/90 hover:text-white hover:bg-white/10 rounded-md cursor-pointer whitespace-nowrap shrink-0 transition-colors"
               >
-                <Calendar className="w-3 h-3 sm:w-4 sm:h-4 shrink-0 text-white/95" aria-hidden="true" />
+                <Calendar
+                  className="w-3.5 h-3.5 shrink-0 text-amber-300/95"
+                  aria-hidden="true"
+                />
                 <span>{formatDateDDMMYYYY(billingDate)}</span>
                 <input
                   type="date"
@@ -297,7 +328,29 @@ export function AppShell({
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <PWAInstallButton variant="header" />
+            {onOpenAnnouncement && (
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.94 }}
+                onClick={() => {
+                  AppSounds.tap();
+                  onOpenAnnouncement();
+                }}
+                aria-label="Advertisement & Urgent Message"
+                title="Advertisement, Offer & Urgent Message"
+                className="relative inline-flex items-center justify-center gap-1 h-9.5 sm:h-10 px-2 sm:px-3 text-xs font-extrabold text-amber-100 bg-amber-500/25 hover:bg-amber-500/38 border border-amber-300/45 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+              >
+                <Megaphone className="w-4 h-4 shrink-0 text-amber-300" aria-hidden="true" />
+                <span className="hidden sm:inline">Ad</span>
+                {announcementActive && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-300 ring-2 ring-[var(--kk-brand)] animate-pulse"
+                  />
+                )}
+              </motion.button>
+            )}
+
             {onOpenGoogleSheets && (
               <motion.button
                 type="button"
@@ -391,17 +444,7 @@ export function AppShell({
                 : 'pb-28 lg:pb-8'
             }`}
           >
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
-              >
-                {children}
-              </motion.div>
-            </AnimatePresence>
+            <div key={activeTab}>{children}</div>
           </div>
         </main>
 

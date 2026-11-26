@@ -11,7 +11,8 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.png', 'apple-touch-icon.png', 'kk-logo.png'],
+        useCredentials: true,
+        includeAssets: [],
         manifest: {
           id: '/',
           name: 'KK Agency — Billing & Limit Ledger',
@@ -26,13 +27,19 @@ export default defineConfig(() => {
           scope: '/',
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: '/kk-icon-180.png',
+              sizes: '180x180',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/kk-icon-192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: '/kk-icon-512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
@@ -49,7 +56,10 @@ export default defineConfig(() => {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           globIgnores: ['assets/aistudio/**'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-          navigateFallbackDenylist: [/^\/__/],
+          navigateFallbackDenylist: [
+            /^\/__/,
+            /\.(?:png|jpg|jpeg|gif|svg|ico|webp|webmanifest|json)$/i,
+          ],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
@@ -82,7 +92,8 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
+          // Only enable dev SW when HMR is active; registerDevSW relies on Vite HMR send()
+          enabled: process.env.DISABLE_HMR !== 'true',
           type: 'module',
         },
       }),

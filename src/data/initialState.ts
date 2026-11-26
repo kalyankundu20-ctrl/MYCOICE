@@ -73,6 +73,7 @@ export function createEmptyAppState(): AppState {
       '8PM': '',
     },
     history: [],
+    recycleBin: [],
   };
 }
 

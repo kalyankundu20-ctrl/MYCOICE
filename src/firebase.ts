@@ -13,7 +13,13 @@ import {
   type Auth,
   type User,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import {
+  doc,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+  type Firestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -22,7 +28,20 @@ const FIRESTORE_DATABASE_ID =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-kkagencyledger-4009c142-a714-4d4b-9dd5-d98e312a9f6e';
 
-export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
+let firestoreInstance: Firestore;
+try {
+  firestoreInstance = initializeFirestore(
+    app,
+    {
+      experimentalForceLongPolling: true,
+    },
+    FIRESTORE_DATABASE_ID
+  );
+} catch {
+  firestoreInstance = getFirestore(app, FIRESTORE_DATABASE_ID);
+}
+
+export const db = firestoreInstance;
 
 // Explicitly prefer durable IndexedDB + LocalStorage persistence so Admin & Seller
 // logins stay permanently signed in across reloads, tab closes, and phone restarts.
@@ -436,11 +455,20 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-async function testConnection() {
+async function testConnection(attempt = 0) {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
+      if (attempt < 1) {
+        window.setTimeout(() => {
+          void testConnection(attempt + 1);
+        }, 2500);
+        return;
+      }
       console.error('Please check your Firebase configuration.');
     }
   }

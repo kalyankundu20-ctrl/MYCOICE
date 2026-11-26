@@ -27,15 +27,20 @@ export function pad5(num: number): string {
   return ('00000' + num).slice(-5);
 }
 
+const INR_FORMATTER = new Intl.NumberFormat('en-IN', {
+  maximumFractionDigits: 2,
+});
+const INR_WHOLE_FORMATTER = new Intl.NumberFormat('en-IN', {
+  maximumFractionDigits: 0,
+});
+
 export function formatINR(num: number): string {
   const rounded = Math.round(num * 100) / 100;
-  return rounded.toLocaleString('en-IN', {
-    maximumFractionDigits: 2,
-  });
+  return INR_FORMATTER.format(rounded);
 }
 
 export function formatINRWhole(num: number): string {
-  return Math.round(num).toLocaleString('en-IN');
+  return INR_WHOLE_FORMATTER.format(Math.round(num));
 }
 
 export function formatDateDDMMYYYY(isoDate: string): string {
@@ -278,14 +283,29 @@ export function processSessionRows(
   const prefix = config.sheetPrefixMap[sessionId] || 'M';
   const thresholdLimit = config.limitThreshold + 0.001;
   const excludedUpper = (config.excludedPrizeNames || [])
-    .map((n) => n.trim().toUpperCase())
+    .map((n) => n.trim().toUpperCase().replace(/\s+/g, ' '))
     .filter(Boolean);
+  const excludedSet = new Set<string>(excludedUpper);
+  const excludeMyChoice = excludedUpper.some((ex) => isMyChoiceName(ex));
+  const excludedCache = new Map<string, boolean>();
+  const isFastExcluded = (resolved: string): boolean => {
+    if (!resolved || excludedUpper.length === 0) return false;
+    const cached = excludedCache.get(resolved);
+    if (cached !== undefined) return cached;
+    const clean = resolved.trim().toUpperCase().replace(/\s+/g, ' ');
+    const res = excludedSet.has(clean) || (excludeMyChoice && isMyChoiceName(clean));
+    excludedCache.set(resolved, res);
+    return res;
+  };
   const numberTotals = new Float64Array(100000);
   const lastRowForNumber = new Int32Array(100000);
   lastRowForNumber.fill(-1);
+  const sellerQtyByUpperName: Record<string, number> = Object.create(null);
 
   let lastValidName = '';
   let totalQty = 0;
+  let minTouchedNum = 100000;
+  let maxTouchedNum = -1;
 
   interface ParsedMeta {
     isInvalid: boolean;
@@ -304,11 +324,15 @@ export function processSessionRows(
       lastValidName = currName;
     }
     const resolvedName = currName !== '' ? currName : hasRealData ? lastValidName : '';
-    const isExcluded = isExcludedEntryName(resolvedName, excludedUpper);
+    const isExcluded = isFastExcluded(resolvedName);
 
     const metrics = computeRowQtyAndRange(row);
     if (!isExcluded) {
       totalQty += metrics.qty;
+      if (metrics.qty !== 0 && resolvedName !== '') {
+        const upperKey = resolvedName.toUpperCase();
+        sellerQtyByUpperName[upperKey] = (sellerQtyByUpperName[upperKey] || 0) + metrics.qty;
+      }
     }
 
     let parsedMeta: ParsedMeta | null = null;
@@ -325,6 +349,9 @@ export function processSessionRows(
       } else {
         const totalNumbersInRow = Math.max(1, metrics.rangeEndInt - metrics.startNumInt + 1);
         const qtyPerNumber = metrics.qty / totalNumbersInRow;
+
+        if (metrics.startNumInt < minTouchedNum) minTouchedNum = metrics.startNumInt;
+        if (metrics.rangeEndInt > maxTouchedNum) maxTouchedNum = metrics.rangeEndInt;
 
         for (let n = metrics.startNumInt; n <= metrics.rangeEndInt; n++) {
           numberTotals[n] += qtyPerNumber;
@@ -529,16 +556,20 @@ export function processSessionRows(
   };
 
   // Build per-seller Over-Limit Breakdown Groups ("Kis kis sath limit over hua")
+  // Scan ONLY the touched [minTouchedNum..maxTouchedNum] window (0 iterations on empty sheets!)
   const overLimitNums: number[] = [];
   const over10Nums: number[] = [];
   const watch10Limit = 10 + 0.001;
-  for (let n = 0; n < 100000; n++) {
-    const val = numberTotals[n];
-    if (val > thresholdLimit) {
-      overLimitNums.push(n);
-    }
-    if (val > watch10Limit) {
-      over10Nums.push(n);
+  if (maxTouchedNum >= minTouchedNum) {
+    const checkOver10 = !config.disableOver10Watch && config.limitThreshold > 10;
+    for (let n = minTouchedNum; n <= maxTouchedNum; n++) {
+      const val = numberTotals[n];
+      if (val > thresholdLimit) {
+        overLimitNums.push(n);
+      }
+      if (checkOver10 && val > watch10Limit) {
+        over10Nums.push(n);
+      }
     }
   }
 
@@ -549,21 +580,46 @@ export function processSessionRows(
       ? overLimitGroups
       : buildBreakdownGroups(over10Nums, 10, 'over10');
 
+  // Pre-index breakdown groups by lastRowIndex in O(G) so attachment is O(1) per row even at 15,000+ rows
+  const indexGroupsByLastRow = (groups: OverLimitBreakdownGroup[]) => {
+    const map = new Map<number, OverLimitBreakdownGroup[]>();
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      if (g.lastRowIndex === undefined || g.lastRowIndex < 0) continue;
+      let list = map.get(g.lastRowIndex);
+      if (!list) {
+        list = [];
+        map.set(g.lastRowIndex, list);
+      }
+      list.push(g);
+    }
+    return map;
+  };
+
+  const overLimitByRow = overLimitGroups.length > 0 ? indexGroupsByLastRow(overLimitGroups) : null;
+  const watchOver10ByRow =
+    watchOver10Groups.length > 0
+      ? watchOver10Groups === overLimitGroups
+        ? overLimitByRow
+        : indexGroupsByLastRow(watchOver10Groups)
+      : null;
+
   // Attach matching overLimitBreakdowns ONLY to the last row where each number finishes
   const finalComputedRows: ComputedTicketRow[] =
-    watchOver10Groups.length === 0 && overLimitGroups.length === 0
+    !overLimitByRow && !watchOver10ByRow
       ? computedRows
       : computedRows.map((row) => {
-          if (row.startNumInt === null || row.rangeEndInt === null || row.statusType === 'invalid') {
+          if (
+            row.startNumInt === null ||
+            row.rangeEndInt === null ||
+            row.statusType === 'invalid' ||
+            row.statusType === 'warning'
+          ) {
             return row;
           }
-          if (row.statusType === 'warning') {
-            return row;
-          }
-          const sourceGroups =
-            row.statusType === 'overlimit' ? overLimitGroups : watchOver10Groups;
-          const matching = sourceGroups.filter((g) => g.lastRowIndex === row.rowIndex);
-          return matching.length > 0 ? { ...row, overLimitBreakdowns: matching } : row;
+          const sourceMap = row.statusType === 'overlimit' ? overLimitByRow : watchOver10ByRow;
+          const matching = sourceMap?.get(row.rowIndex);
+          return matching && matching.length > 0 ? { ...row, overLimitBreakdowns: matching } : row;
         });
 
   overLimitTotal = round2(overLimitTotal);
@@ -583,6 +639,7 @@ export function processSessionRows(
     prefix,
     rows: finalComputedRows,
     numberTotals,
+    sellerQtyByUpperName,
     totalQty: round2(totalQty),
     overLimitTotal,
     overLimitLines,
@@ -717,7 +774,8 @@ export function getSellerPrizeRates(rankStr: string, sellerName: string): {
 export function computeSellerSvc(
   rankStr: string,
   sellerName: string,
-  itemMultiplier: number
+  itemMultiplier: number,
+  alreadyUsedForNumber = 0
 ): number {
   const rates = getSellerPrizeRates(rankStr, sellerName);
   if (rates.svc === 0 || itemMultiplier <= 0) return 0;
@@ -727,8 +785,13 @@ export function computeSellerSvc(
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '');
 
-  const svcQty = compactName === 'TAPAN' ? Math.min(10, itemMultiplier) : itemMultiplier;
-  return round2(rates.svc * svcQty);
+  if (compactName === 'TAPAN') {
+    const remainingCap = Math.max(0, 10 - Math.max(0, alreadyUsedForNumber));
+    const svcQty = Math.min(itemMultiplier, remainingCap);
+    return svcQty > 0 ? round2(rates.svc * svcQty) : 0;
+  }
+
+  return round2(rates.svc * itemMultiplier);
 }
 
 export function getLimitPrizeRates(rankStr: string): { prize: number; vc: number } {
@@ -764,11 +827,50 @@ export function generatePrizeAndLimitData(
   for (const sessionId of SESSIONS) {
     const comp = sessionComputations[sessionId];
     const sessionWins = winningMap[sessionId] || [];
+    if (sessionWins.length === 0) continue;
     const sheetPrefix = comp.prefix;
+
+    // Pre-index winning numbers for O(1) lookup per ticket number on narrow ranges
+    const firstSecWins: ParsedWinningNumber[] = [];
+    const last4Wins: ParsedWinningNumber[] = [];
+    const last4WinMap = new Map<number, ParsedWinningNumber[]>();
+    for (let w = 0; w < sessionWins.length; w++) {
+      const winObj = sessionWins[w];
+      if (winObj.isFirstOrSecond) {
+        firstSecWins.push(winObj);
+      } else {
+        last4Wins.push(winObj);
+        let bucket = last4WinMap.get(winObj.win4DigitsInt);
+        if (!bucket) {
+          bucket = [];
+          last4WinMap.set(winObj.win4DigitsInt, bucket);
+        }
+        bucket.push(winObj);
+      }
+    }
 
     // 1. Prize List (per row in 1PM / 6PM / 8PM, grouped by Seller inside each session like Apps Script)
     const sessionSellerOrder: string[] = [];
     const sessionSellerMap = new Map<string, PrizeListRow[]>();
+    const excludedNameCache = new Map<string, boolean>();
+    // Track TAPAN's cumulative SVC-eligible items per same winning number within this session (capped at 10)
+    const tapanSvcUsedByNumber = new Map<string, number>();
+
+    const computeRowSvc = (
+      rankStr: string,
+      sellerName: string,
+      isTapan: boolean,
+      numStr: string,
+      itemVal: number
+    ): number => {
+      if (!isTapan) {
+        return computeSellerSvc(rankStr, sellerName, itemVal);
+      }
+      const alreadyUsed = tapanSvcUsedByNumber.get(numStr) || 0;
+      const svc = computeSellerSvc(rankStr, sellerName, itemVal, alreadyUsed);
+      tapanSvcUsedByNumber.set(numStr, alreadyUsed + itemVal);
+      return svc;
+    };
 
     const pushSessionPrizeRow = (prizeRow: PrizeListRow) => {
       const sellerKey = prizeRow.name.trim().toUpperCase() || 'UNKNOWN';
@@ -781,63 +883,76 @@ export function generatePrizeAndLimitData(
       bucket.push(prizeRow);
     };
 
-    for (const row of comp.rows) {
+    const rows = comp.rows;
+    for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+      const row = rows[rIdx];
       if (row.startNumInt === null || row.rangeEndInt === null || row.statusType === 'invalid') {
         continue;
       }
 
-      const cleanNameUpper = row.resolvedName.trim().toUpperCase();
-      if (
-        !cleanNameUpper ||
-        isMyChoiceName(cleanNameUpper) ||
-        isExcludedEntryName(cleanNameUpper, excludedUpper)
-      ) {
-        continue;
+      const rawResolved = row.resolvedName;
+      if (!rawResolved) continue;
+      let skipName = excludedNameCache.get(rawResolved);
+      if (skipName === undefined) {
+        const cleanNameUpper = rawResolved.trim().toUpperCase();
+        skipName =
+          !cleanNameUpper ||
+          isMyChoiceName(cleanNameUpper) ||
+          isExcludedEntryName(cleanNameUpper, excludedUpper);
+        excludedNameCache.set(rawResolved, skipName);
       }
+      if (skipName) continue;
 
+      const isTapan =
+        rawResolved
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, '') === 'TAPAN';
       const itemUpper = row.item.trim().toUpperCase();
       const itemVal = row.itemMultiplier;
-      const startFirstDigit = Math.floor(row.startNumInt / 10000);
-      const endFirstDigit = Math.floor(row.rangeEndInt / 10000);
+      const startInt = row.startNumInt;
+      const endInt = row.rangeEndInt;
 
-      for (const winObj of sessionWins) {
-        if (winObj.isFirstOrSecond) {
-          if (
-            winObj.fullInt !== null &&
-            winObj.fullInt >= row.startNumInt &&
-            winObj.fullInt <= row.rangeEndInt
-          ) {
-            const numStr = pad5(winObj.fullInt);
-            const rates = getSellerPrizeRates(winObj.rank, row.resolvedName);
-            const prize = round2(rates.prize * itemVal);
-            const vc = round2(rates.vc * itemVal);
-            const svc = computeSellerSvc(winObj.rank, row.resolvedName, itemVal);
-            pushSessionPrizeRow({
-              id: `${sessionId}-${row.id}-${numStr}-${winObj.rank}`,
-              time: sessionId,
-              name: row.resolvedName,
-              number: numStr,
-              rank: winObj.rank,
-              item: itemUpper,
-              prize,
-              vc,
-              svc,
-              total: round2(prize + vc + svc),
-            });
-          }
-        } else {
-          for (let dPrefix = startFirstDigit; dPrefix <= endFirstDigit; dPrefix++) {
-            const constructedNum = dPrefix * 10000 + winObj.win4DigitsInt;
-            if (constructedNum >= row.startNumInt && constructedNum <= row.rangeEndInt) {
-              const numStr = pad5(constructedNum);
-              const rates = getSellerPrizeRates(winObj.rank, row.resolvedName);
+      for (let w = 0; w < firstSecWins.length; w++) {
+        const winObj = firstSecWins[w];
+        if (winObj.fullInt !== null && winObj.fullInt >= startInt && winObj.fullInt <= endInt) {
+          const numStr = pad5(winObj.fullInt);
+          const rates = getSellerPrizeRates(winObj.rank, rawResolved);
+          const prize = round2(rates.prize * itemVal);
+          const vc = round2(rates.vc * itemVal);
+          const svc = computeRowSvc(winObj.rank, rawResolved, isTapan, numStr, itemVal);
+          pushSessionPrizeRow({
+            id: `${sessionId}-${row.id}-${numStr}-${winObj.rank}`,
+            time: sessionId,
+            name: rawResolved,
+            number: numStr,
+            rank: winObj.rank,
+            item: itemUpper,
+            prize,
+            vc,
+            svc,
+            total: round2(prize + vc + svc),
+          });
+        }
+      }
+
+      if (last4Wins.length > 0) {
+        const rangeLen = endInt - startInt + 1;
+        if (rangeLen <= last4Wins.length) {
+          for (let num = startInt; num <= endInt; num++) {
+            const matchedWins = last4WinMap.get(num % 10000);
+            if (!matchedWins) continue;
+            const numStr = pad5(num);
+            for (let m = 0; m < matchedWins.length; m++) {
+              const winObj = matchedWins[m];
+              const rates = getSellerPrizeRates(winObj.rank, rawResolved);
               const prize = round2(rates.prize * itemVal);
               const vc = round2(rates.vc * itemVal);
-              const svc = computeSellerSvc(winObj.rank, row.resolvedName, itemVal);
+              const svc = computeRowSvc(winObj.rank, rawResolved, isTapan, numStr, itemVal);
               pushSessionPrizeRow({
                 id: `${sessionId}-${row.id}-${numStr}-${winObj.rank}`,
                 time: sessionId,
-                name: row.resolvedName,
+                name: rawResolved,
                 number: numStr,
                 rank: winObj.rank,
                 item: itemUpper,
@@ -846,6 +961,34 @@ export function generatePrizeAndLimitData(
                 svc,
                 total: round2(prize + vc + svc),
               });
+            }
+          }
+        } else {
+          const startFirstDigit = Math.floor(startInt / 10000);
+          const endFirstDigit = Math.floor(endInt / 10000);
+          for (let w = 0; w < last4Wins.length; w++) {
+            const winObj = last4Wins[w];
+            for (let dPrefix = startFirstDigit; dPrefix <= endFirstDigit; dPrefix++) {
+              const constructedNum = dPrefix * 10000 + winObj.win4DigitsInt;
+              if (constructedNum >= startInt && constructedNum <= endInt) {
+                const numStr = pad5(constructedNum);
+                const rates = getSellerPrizeRates(winObj.rank, rawResolved);
+                const prize = round2(rates.prize * itemVal);
+                const vc = round2(rates.vc * itemVal);
+                const svc = computeRowSvc(winObj.rank, rawResolved, isTapan, numStr, itemVal);
+                pushSessionPrizeRow({
+                  id: `${sessionId}-${row.id}-${numStr}-${winObj.rank}`,
+                  time: sessionId,
+                  name: rawResolved,
+                  number: numStr,
+                  rank: winObj.rank,
+                  item: itemUpper,
+                  prize,
+                  vc,
+                  svc,
+                  total: round2(prize + vc + svc),
+                });
+              }
             }
           }
         }
@@ -861,53 +1004,88 @@ export function generatePrizeAndLimitData(
       }
     }
 
-    // 2. Limit Prize (excess over LIMIT_THRESHOLD across all numbers 0..99999)
+    // 2. Limit Prize (excess over LIMIT_THRESHOLD — iterate only over over-limit groups for instant O(G) speed)
     const sessionLimitRows: LimitPrizeRow[] = [];
     let sessionTotal = 0;
     const sessionMsgLines: string[] = [];
 
-    if (sessionWins.length > 0) {
+    const checkOverLimitNumber = (numInt: number, sellers?: OverLimitSellerShare[]) => {
+      const totalQty = comp.numberTotals[numInt];
+      if (totalQty <= thresholdLimit) return;
+      const excessQty = round2(totalQty - config.limitThreshold);
+      const numLast4Int = numInt % 10000;
+
+      for (let w = 0; w < firstSecWins.length; w++) {
+        const winObj = firstSecWins[w];
+        if (winObj.fullInt === numInt) {
+          const rates = getLimitPrizeRates(winObj.rank);
+          const prizeAmt = round2(rates.prize * excessQty);
+          const vcAmt = round2(rates.vc * excessQty);
+          const totalAmt = round2(prizeAmt + vcAmt);
+          const numFormatted = pad5(numInt);
+
+          sessionTotal += totalAmt;
+          sessionLimitRows.push({
+            id: `lim-${sessionId}-${numFormatted}-${winObj.rank}`,
+            time: sessionId,
+            number: numFormatted,
+            rank: winObj.rank,
+            item: `${sheetPrefix}${excessQty}`,
+            excessQty,
+            prize: prizeAmt,
+            vc: vcAmt,
+            total: totalAmt,
+            sellers,
+          });
+
+          sessionMsgLines.push(
+            `${sessionId} ${numFormatted} ${winObj.rank} ${sheetPrefix}${excessQty} = ${totalAmt}`
+          );
+        }
+      }
+
+      const matchedLast4 = last4WinMap.get(numLast4Int);
+      if (matchedLast4) {
+        for (let m = 0; m < matchedLast4.length; m++) {
+          const winObj = matchedLast4[m];
+          const rates = getLimitPrizeRates(winObj.rank);
+          const prizeAmt = round2(rates.prize * excessQty);
+          const vcAmt = round2(rates.vc * excessQty);
+          const totalAmt = round2(prizeAmt + vcAmt);
+          const numFormatted = pad5(numInt);
+
+          sessionTotal += totalAmt;
+          sessionLimitRows.push({
+            id: `lim-${sessionId}-${numFormatted}-${winObj.rank}`,
+            time: sessionId,
+            number: numFormatted,
+            rank: winObj.rank,
+            item: `${sheetPrefix}${excessQty}`,
+            excessQty,
+            prize: prizeAmt,
+            vc: vcAmt,
+            total: totalAmt,
+            sellers,
+          });
+
+          sessionMsgLines.push(
+            `${sessionId} ${numFormatted} ${winObj.rank} ${sheetPrefix}${excessQty} = ${totalAmt}`
+          );
+        }
+      }
+    };
+
+    if (comp.overLimitGroups && comp.overLimitGroups.length > 0) {
+      for (let gIdx = 0; gIdx < comp.overLimitGroups.length; gIdx++) {
+        const grp = comp.overLimitGroups[gIdx];
+        for (let numInt = grp.startInt; numInt <= grp.endInt; numInt++) {
+          checkOverLimitNumber(numInt, grp.sellers);
+        }
+      }
+    } else if (comp.overLimitTotal > 0) {
       for (let numInt = 0; numInt < 100000; numInt++) {
-        const totalQty = comp.numberTotals[numInt];
-        if (totalQty > thresholdLimit) {
-          const excessQty = round2(totalQty - config.limitThreshold);
-          const numLast4Int = numInt % 10000;
-
-          for (const winObj of sessionWins) {
-            const isMatched = winObj.isFirstOrSecond
-              ? winObj.fullInt === numInt
-              : winObj.win4DigitsInt === numLast4Int;
-
-            if (isMatched) {
-              const rates = getLimitPrizeRates(winObj.rank);
-              const prizeAmt = round2(rates.prize * excessQty);
-              const vcAmt = round2(rates.vc * excessQty);
-              const totalAmt = round2(prizeAmt + vcAmt);
-              const numFormatted = pad5(numInt);
-
-              const matchingGroup = comp.overLimitGroups?.find(
-                (g) => numInt >= g.startInt && numInt <= g.endInt
-              );
-
-              sessionTotal += totalAmt;
-              sessionLimitRows.push({
-                id: `lim-${sessionId}-${numFormatted}-${winObj.rank}`,
-                time: sessionId,
-                number: numFormatted,
-                rank: winObj.rank,
-                item: `${sheetPrefix}${excessQty}`,
-                excessQty,
-                prize: prizeAmt,
-                vc: vcAmt,
-                total: totalAmt,
-                sellers: matchingGroup?.sellers,
-              });
-
-              sessionMsgLines.push(
-                `${sessionId} ${numFormatted} ${winObj.rank} ${sheetPrefix}${excessQty} = ${totalAmt}`
-              );
-            }
-          }
+        if (comp.numberTotals[numInt] > thresholdLimit) {
+          checkOverLimitNumber(numInt, undefined);
         }
       }
     }
@@ -955,42 +1133,65 @@ export function computeSellerBills(
 ): SellerBillRow[] {
   const formattedDate = formatDateDDMMYYYY(isoDate);
 
+  const buildFallbackQtyMap = (comp: SessionComputation): Record<string, number> => {
+    if (comp.sellerQtyByUpperName) return comp.sellerQtyByUpperName;
+    const map: Record<string, number> = Object.create(null);
+    const rows = comp.rows;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row.isExcludedFromCount && row.qty !== 0) {
+        const key = row.resolvedName.trim().toUpperCase();
+        if (key) map[key] = (map[key] || 0) + row.qty;
+      }
+    }
+    return map;
+  };
+
+  const qtyMap1PM = buildFallbackQtyMap(sessionComputations['1PM']);
+  const qtyMap6PM = buildFallbackQtyMap(sessionComputations['6PM']);
+  const qtyMap8PM = buildFallbackQtyMap(sessionComputations['8PM']);
+
+  // Pre-group prizes by uppercase seller name in O(P) instead of O(S * P)
+  const prizesBySeller = new Map<string, PrizeListRow[]>();
+  for (let i = 0; i < prizeList.length; i++) {
+    const p = prizeList[i];
+    const key = p.name.trim().toUpperCase();
+    let bucket = prizesBySeller.get(key);
+    if (!bucket) {
+      bucket = [];
+      prizesBySeller.set(key, bucket);
+    }
+    bucket.push(p);
+  }
+
   return sellers.map((seller) => {
     const sellerKey = seller.name.trim().toUpperCase();
 
-    const sumSessionQty = (sessionId: SessionId) =>
-      sessionComputations[sessionId].rows.reduce((acc, row) => {
-        if (
-          !row.isExcludedFromCount &&
-          row.resolvedName.trim().toUpperCase() === sellerKey
-        ) {
-          return acc + row.qty;
-        }
-        return acc;
-      }, 0);
-
-    const mor = round2(sumSessionQty('1PM'));
-    const day = round2(sumSessionQty('6PM'));
-    const eve = round2(sumSessionQty('8PM'));
+    const mor = round2(qtyMap1PM[sellerKey] || 0);
+    const day = round2(qtyMap6PM[sellerKey] || 0);
+    const eve = round2(qtyMap8PM[sellerKey] || 0);
     const sold = round2(mor + day + eve);
 
     const bill = round2(
       round2(mor * seller.rate) + round2(day * seller.rate) + round2(eve * seller.rate)
     );
 
-    const sellerPrizes = prizeList.filter(
-      (p) => p.name.trim().toUpperCase() === sellerKey
-    );
-    const sumSessionPrize = (sessionId: SessionId) =>
-      round2(
-        sellerPrizes
-          .filter((p) => p.time === sessionId)
-          .reduce((acc, p) => acc + p.total, 0)
-      );
-    const amt1pm = sumSessionPrize('1PM');
-    const amt6pm = sumSessionPrize('6PM');
-    const amt8pm = sumSessionPrize('8PM');
-    const prizeTotal = round2(sellerPrizes.reduce((acc, p) => acc + p.total, 0));
+    const sellerPrizes = prizesBySeller.get(sellerKey) || [];
+    let raw1pm = 0;
+    let raw6pm = 0;
+    let raw8pm = 0;
+    let rawPrizeTotal = 0;
+    for (let i = 0; i < sellerPrizes.length; i++) {
+      const p = sellerPrizes[i];
+      rawPrizeTotal += p.total;
+      if (p.time === '1PM') raw1pm += p.total;
+      else if (p.time === '6PM') raw6pm += p.total;
+      else if (p.time === '8PM') raw8pm += p.total;
+    }
+    const amt1pm = round2(raw1pm);
+    const amt6pm = round2(raw6pm);
+    const amt8pm = round2(raw8pm);
+    const prizeTotal = round2(rawPrizeTotal);
 
     const fresh = round2(bill - prizeTotal);
     const total = round2(fresh - seller.joma + seller.due);
