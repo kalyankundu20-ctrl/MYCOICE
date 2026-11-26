@@ -3260,7 +3260,10 @@ export async function purgeExpiredPartyArchivesCloud(agencyId = AGENCY_ID): Prom
       await Promise.all(
         slice.map(async (id) => {
           try {
-            await deleteDoc(doc(db, 'agencies', cleanAgencyId, 'partyArchives', id));
+            await withNetworkTimeout(
+              deleteDocLite(docLite(dbLite, 'agencies', cleanAgencyId, 'partyArchives', id)),
+              10000
+            );
           } catch {
             // Non-fatal cleanup error
           }
@@ -3299,7 +3302,17 @@ function sanitizePartyArchiveEntryRows(
   return out;
 }
 
-const MAX_PARTY_ARCHIVE_PAYLOAD_BYTES = 740_000;
+// Safe JSON byte cap so Firestore's protobuf serialization (~1.6x-2.1x JSON for arrays of maps)
+// NEVER exceeds Firestore's hard 1,048,576 byte (1 MiB) document limit on heavy Masters (e.g. 8,000+ tickets).
+const MAX_PARTY_ARCHIVE_PAYLOAD_BYTES = 420_000;
+
+function buildCompactPartyArchivePayload(payload: DaySnapshot): DaySnapshot {
+  return {
+    ...payload,
+    prizeList: (payload.prizeList || []).slice(0, 120),
+    entries: { '1PM': [], '6PM': [], '8PM': [] },
+  };
+}
 
 function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cleanDate: string): DaySnapshot {
   const summaries = (snapshot.sellerSummaries || []).slice(0, 120).map((s) => ({
@@ -3398,12 +3411,12 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
   };
   const totalRowCount =
     e1Full.length + e6Full.length + e8Full.length + allPrizes.length + summaries.length + sellers.length;
-  if (totalRowCount <= 400 || JSON.stringify(fullCandidate).length <= MAX_PARTY_ARCHIVE_PAYLOAD_BYTES) {
+  if (totalRowCount <= 150 || JSON.stringify(fullCandidate).length <= MAX_PARTY_ARCHIVE_PAYLOAD_BYTES) {
     return fullCandidate;
   }
 
-  // Heavy Master fallback (6,000+ tickets): shrink entries progressively so payload never exceeds 1 MiB
-  const shrinkCaps = [350, 150, 50, 0];
+  // Heavy Master fallback (6,000+ tickets): shrink entries progressively so protobuf never exceeds 1 MiB
+  const shrinkCaps = [260, 140, 60, 20, 0];
   for (const cap of shrinkCaps) {
     const candidate: DaySnapshot = {
       ...basePayload,
@@ -3493,8 +3506,8 @@ function buildPartyArchiveDocBody(
       savedAt: cleanSavedAt,
       trigger: cleanTrigger,
       payload: targetPayload,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      createdAt: serverTimestampLite(),
+      updatedAt: serverTimestampLite(),
     },
   };
 }
@@ -3523,30 +3536,39 @@ export async function savePartyArchiveCloud(
     isAdminActor
   );
 
-  const ref = doc(db, 'agencies', cleanAgencyId, 'partyArchives', snapshotId);
-  try {
-    await setDoc(ref, body);
-    return payload;
-  } catch (firstErr) {
-    // Idempotency & collision recovery: if a doc with `snapshotId` already exists in Firestore,
-    // `setDoc` hits `allow update` (which forbids modifying `createdAt` or `partyId`).
+  // Use stateless dbLite HTTPS REST so every save is 100% server-acknowledged on Firestore
+  // before resolving (eliminates memoryLocalCache illusions that disappear on app restart).
+  const ref = docLite(dbLite, 'agencies', cleanAgencyId, 'partyArchives', snapshotId);
+  const commitSetOrUpdate = async (targetPayload: DaySnapshot): Promise<DaySnapshot> => {
+    const built =
+      targetPayload === payload
+        ? { cleanAgencyId, body }
+        : buildPartyArchiveDocBody(actorUid, party, snapshotId, cleanDate, targetPayload, isAdminActor);
     try {
-      const existingSnap = await getDoc(ref);
-      if (existingSnap.exists()) {
+      await withNetworkTimeout(setDocLite(ref, built.body), 15000);
+      return targetPayload;
+    } catch (firstErr) {
+      // Idempotency & collision recovery: if a doc with `snapshotId` already exists in Firestore,
+      // `setDocLite` hits `allow update` (which forbids modifying `createdAt` or `partyId`).
+      const existingSnap = await withNetworkTimeout(getDocLite(ref), 10000).catch(() => null);
+      if (existingSnap && existingSnap.exists()) {
         const existingData = existingSnap.data() as Partial<CloudPartyArchiveDoc>;
         if (existingData?.partyId === party.partyId) {
-          await updateDoc(ref, {
-            ...(isAdminActor
-              ? {
-                  adminUids: body.adminUids,
-                  assignedUid: party.assignedUid || '',
-                }
-              : {}),
-            date: cleanDate,
-            payload,
-            updatedAt: serverTimestamp(),
-          });
-          return payload;
+          await withNetworkTimeout(
+            updateDocLite(ref, {
+              ...(isAdminActor
+                ? {
+                    adminUids: built.body.adminUids,
+                    assignedUid: party.assignedUid || '',
+                  }
+                : {}),
+              date: cleanDate,
+              payload: targetPayload,
+              updatedAt: serverTimestampLite(),
+            }),
+            15000
+          );
+          return targetPayload;
         }
         // Different party owned that legacy ID -> mint a fresh unique ID and create cleanly
         const freshId = makeUniquePartyArchiveId(
@@ -3554,7 +3576,7 @@ export async function savePartyArchiveCloud(
           cleanDate,
           Math.random().toString(36).slice(2, 6)
         );
-        const freshPayload = sanitizePartyArchivePayload(snapshot, freshId, cleanDate);
+        const freshPayload = sanitizePartyArchivePayload(targetPayload, freshId, cleanDate);
         const freshBuilt = buildPartyArchiveDocBody(
           actorUid,
           party,
@@ -3563,12 +3585,30 @@ export async function savePartyArchiveCloud(
           freshPayload,
           isAdminActor
         );
-        const freshRef = doc(db, 'agencies', cleanAgencyId, 'partyArchives', freshId);
-        await setDoc(freshRef, freshBuilt.body);
+        const freshRef = docLite(dbLite, 'agencies', cleanAgencyId, 'partyArchives', freshId);
+        await withNetworkTimeout(setDocLite(freshRef, freshBuilt.body), 15000);
         return freshPayload;
       }
-    } catch {
-      // Fall through to report original error below
+      throw firstErr;
+    }
+  };
+
+  try {
+    return await commitSetOrUpdate(payload);
+  } catch (firstErr) {
+    // Guaranteed-under-1MiB compact fallback if a heavy Master snapshot hit Firestore's 1 MiB protobuf cap
+    const hasEntries =
+      (payload.entries?.['1PM']?.length || 0) +
+        (payload.entries?.['6PM']?.length || 0) +
+        (payload.entries?.['8PM']?.length || 0) >
+      0;
+    if (hasEntries) {
+      try {
+        const compactPayload = buildCompactPartyArchivePayload(payload);
+        return await commitSetOrUpdate(compactPayload);
+      } catch {
+        // Fall through to report original error below
+      }
     }
     handleFirestoreError(firstErr, OperationType.CREATE, ref.path);
   }
@@ -3580,18 +3620,21 @@ export async function updatePartyArchiveDateCloud(
   newDate: string
 ): Promise<void> {
   const cleanDate = sanitizeIsoDate(newDate);
-  const ref = doc(db, 'agencies', agencyId, 'partyArchives', snapshot.id);
+  const ref = docLite(dbLite, 'agencies', agencyId, 'partyArchives', snapshot.id);
   const updatedPayload = sanitizePartyArchivePayload(
     { ...snapshot, date: cleanDate },
     snapshot.id,
     cleanDate
   );
   try {
-    await updateDoc(ref, {
-      date: cleanDate,
-      payload: updatedPayload,
-      updatedAt: serverTimestamp(),
-    });
+    await withNetworkTimeout(
+      updateDocLite(ref, {
+        date: cleanDate,
+        payload: updatedPayload,
+        updatedAt: serverTimestampLite(),
+      }),
+      15000
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, ref.path);
   }
@@ -3601,10 +3644,12 @@ export async function deletePartyArchiveCloud(
   agencyId: string,
   snapshotId: string
 ): Promise<void> {
-  const ref = doc(db, 'agencies', agencyId, 'partyArchives', snapshotId);
+  const ref = docLite(dbLite, 'agencies', agencyId, 'partyArchives', snapshotId);
   try {
-    await deleteDoc(ref);
+    await withNetworkTimeout(deleteDocLite(ref), 12000);
   } catch (err) {
+    const code = (err as { code?: string } | null)?.code || '';
+    if (code === 'not-found') return;
     handleFirestoreError(err, OperationType.DELETE, ref.path);
   }
 }
@@ -3718,6 +3763,23 @@ export async function peekAgencyUpdatedAtMs(agencyId = AGENCY_ID): Promise<numbe
 }
 
 /**
+ * Stateless HTTPS REST fetch of /agencies/{agencyId} so Seller/Master portals always see
+ * the true live billing date (e.g. right after Admin Close Day) even if WebSocket reconnects slowly.
+ */
+export async function fetchAgencyDocOnce(agencyId = AGENCY_ID): Promise<CloudAgencyDoc | null> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  try {
+    const snap = await withNetworkTimeout(
+      getDocLite(docLite(dbLite, 'agencies', cleanAgencyId)),
+      10000
+    );
+    return snap.exists() ? (snap.data() as CloudAgencyDoc) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Admin-only lightweight balance update on a party's current-day live document
  * (updates ONLY due, joma, updatedAt so live entries/date/winning remain 100% untouched).
  */
@@ -3761,7 +3823,7 @@ async function fetchAllAgencyPartyArchives(
   targetDate?: string
 ): Promise<Array<{ docId: string; data: CloudPartyArchiveDoc }>> {
   const byDocId = new Map<string, CloudPartyArchiveDoc>();
-  const addSnap = (snap: Awaited<ReturnType<typeof getDocs>>) => {
+  const addSnap = (snap: Awaited<ReturnType<typeof getDocsLite>>) => {
     for (const d of snap.docs) {
       const data = d.data() as CloudPartyArchiveDoc;
       if (data && data.partyId) {
@@ -3772,16 +3834,16 @@ async function fetchAllAgencyPartyArchives(
 
   let fetchedPrimary = false;
 
-  // Ultra-fast single-date query (downloads ONLY the 1 target date instead of 30 days of archive docs!).
-  // Uses a single-field index on `date` (zero composite index required) and passes `isBootstrapAdminEmail()`.
+  // Stateless dbLite HTTPS REST query: always inspects true Firestore server state
+  // (never stale memoryLocalCache!) and downloads ONLY the 1 target date when provided.
   if (targetDate) {
     const cleanDate = sanitizeIsoDate(targetDate);
     try {
-      const qDate = query(
-        collection(db, 'agencies', agencyId, 'partyArchives'),
-        where('date', '==', cleanDate)
+      const qDate = queryLite(
+        collectionLite(dbLite, 'agencies', agencyId, 'partyArchives'),
+        whereLite('date', '==', cleanDate)
       );
-      addSnap(await getDocs(qDate));
+      addSnap(await withNetworkTimeout(getDocsLite(qDate), 14000));
       fetchedPrimary = true;
     } catch {
       // Non-bootstrap co-admin fallback: try ownerUid / adminUids query below
@@ -3790,11 +3852,11 @@ async function fetchAllAgencyPartyArchives(
 
   if (!fetchedPrimary && ownerUid) {
     try {
-      const qOwner = query(
-        collection(db, 'agencies', agencyId, 'partyArchives'),
-        where('ownerUid', '==', ownerUid)
+      const qOwner = queryLite(
+        collectionLite(dbLite, 'agencies', agencyId, 'partyArchives'),
+        whereLite('ownerUid', '==', ownerUid)
       );
-      addSnap(await getDocs(qOwner));
+      addSnap(await withNetworkTimeout(getDocsLite(qOwner), 14000));
       fetchedPrimary = true;
     } catch {
       // Fallback to adminUids / per-party query below
@@ -3803,28 +3865,26 @@ async function fetchAllAgencyPartyArchives(
 
   if (!fetchedPrimary && actorUid) {
     try {
-      const qAdmin = query(
-        collection(db, 'agencies', agencyId, 'partyArchives'),
-        where('adminUids', 'array-contains', actorUid)
+      const qAdmin = queryLite(
+        collectionLite(dbLite, 'agencies', agencyId, 'partyArchives'),
+        whereLite('adminUids', 'array-contains', actorUid)
       );
-      addSnap(await getDocs(qAdmin));
+      addSnap(await withNetworkTimeout(getDocsLite(qAdmin), 14000));
       fetchedPrimary = true;
     } catch {
       // Fallback to per-party query below
     }
   }
 
-  // Only fall back to per-party queries if ALL primary collection queries failed
-  // (avoids firing up to 25 slow N+1 Firestore round-trips when the primary query already returned all docs!).
   if (!fetchedPrimary && activeParties.length > 0) {
     await Promise.all(
       activeParties.slice(0, 40).map(async (p) => {
         try {
-          const qParty = query(
-            collection(db, 'agencies', agencyId, 'partyArchives'),
-            where('partyId', '==', p.partyId)
+          const qParty = queryLite(
+            collectionLite(dbLite, 'agencies', agencyId, 'partyArchives'),
+            whereLite('partyId', '==', p.partyId)
           );
-          addSnap(await getDocs(qParty));
+          addSnap(await withNetworkTimeout(getDocsLite(qParty), 12000));
         } catch {
           // Ignore individual party query failure when no docs exist or restricted
         }
@@ -3843,7 +3903,8 @@ async function syncSingleAdminArchiveAgainstExisting(
   activeParties: CloudPartyDoc[],
   config: AgencyConfig,
   allPartyArchiveDocs: Array<{ docId: string; data: CloudPartyArchiveDoc }>,
-  createMissing = true
+  createMissing = true,
+  onPartialFailure?: (failedNames: string[]) => void
 ): Promise<number> {
   const cleanDate = sanitizeIsoDate(restoredDate);
   if (activeParties.length === 0) return 0;
@@ -4417,10 +4478,10 @@ async function syncSingleAdminArchiveAgainstExisting(
     }
   }
 
-  // Pack writes into Firestore `writeBatch` chunks (max 15 ops or ~2.5 MiB per batch)
-  // and commit all batches in parallel for ~5x-10x faster Sync IDs!
-  const MAX_BATCH_OPS = 15;
-  const MAX_BATCH_BYTES = 2_500_000;
+  // Pack writes into stateless dbLite `writeBatchLite` chunks (max 8 ops or ~1.1 MiB JSON per batch)
+  // so EVERY write is 100% acknowledged by Firestore's real server over HTTPS REST before resolving!
+  const MAX_BATCH_OPS = 8;
+  const MAX_BATCH_BYTES = 1_100_000;
   const batches: PendingArchiveWriteOp[][] = [];
   let currentBatch: PendingArchiveWriteOp[] = [];
   let currentBytes = 0;
@@ -4441,17 +4502,31 @@ async function syncSingleAdminArchiveAgainstExisting(
 
   const runOpIndividually = async (op: PendingArchiveWriteOp): Promise<void> => {
     if (op.kind === 'update') {
-      const ref = doc(db, 'agencies', agencyId, 'partyArchives', op.item.docId);
+      const ref = docLite(dbLite, 'agencies', agencyId, 'partyArchives', op.item.docId);
+      const commitUpdate = async (targetPayload: DaySnapshot) => {
+        await withNetworkTimeout(
+          updateDocLite(ref, {
+            payload: targetPayload,
+            updatedAt: serverTimestampLite(),
+          }),
+          15000
+        );
+        op.item.data = { ...op.item.data, payload: targetPayload };
+      };
       try {
-        await updateDoc(ref, {
-          payload: op.payload,
-          updatedAt: serverTimestamp(),
-        });
-        op.item.data = { ...op.item.data, payload: op.payload };
+        await commitUpdate(op.payload);
         syncedCount++;
       } catch (err) {
-        failedParties.push(op.party.name || op.party.partyId);
-        console.error('[KK Agency] Could not update partyArchive:', op.party.name, err);
+        // Retry once with compact payload (entries stripped, full bills/prizes preserved)
+        // in case a heavy Master doc exceeded Firestore's 1 MiB protobuf limit
+        try {
+          const compactPayload = buildCompactPartyArchivePayload(op.payload);
+          await commitUpdate(compactPayload);
+          syncedCount++;
+        } catch (retryErr) {
+          failedParties.push(op.party.name || op.party.partyId);
+          console.error('[KK Agency] Could not update partyArchive:', op.party.name, retryErr || err);
+        }
       }
     } else {
       try {
@@ -4485,7 +4560,7 @@ async function syncSingleAdminArchiveAgainstExisting(
   await Promise.all(
     batches.map(async (ops) => {
       try {
-        const batch = writeBatch(db);
+        const batch = writeBatchLite(dbLite);
         const createdMeta: Array<{
           docId: string;
           op: Extract<PendingArchiveWriteOp, { kind: 'create' }>;
@@ -4494,10 +4569,10 @@ async function syncSingleAdminArchiveAgainstExisting(
         }> = [];
         for (const op of ops) {
           if (op.kind === 'update') {
-            const ref = doc(db, 'agencies', agencyId, 'partyArchives', op.item.docId);
+            const ref = docLite(dbLite, 'agencies', agencyId, 'partyArchives', op.item.docId);
             batch.update(ref, {
               payload: op.payload,
-              updatedAt: serverTimestamp(),
+              updatedAt: serverTimestampLite(),
             });
           } else {
             const targetId = op.payload.id || makeUniquePartyArchiveId(op.party.partyId, cleanDate);
@@ -4509,7 +4584,7 @@ async function syncSingleAdminArchiveAgainstExisting(
               op.payload,
               true
             );
-            const ref = doc(db, 'agencies', built.cleanAgencyId, 'partyArchives', targetId);
+            const ref = docLite(dbLite, 'agencies', built.cleanAgencyId, 'partyArchives', targetId);
             batch.set(ref, built.body);
             createdMeta.push({
               docId: targetId,
@@ -4519,7 +4594,7 @@ async function syncSingleAdminArchiveAgainstExisting(
             });
           }
         }
-        await batch.commit();
+        await withNetworkTimeout(batch.commit(), 20000);
         for (const op of ops) {
           if (op.kind === 'update') {
             op.item.data = { ...op.item.data, payload: op.payload };
@@ -4547,14 +4622,17 @@ async function syncSingleAdminArchiveAgainstExisting(
           });
         }
       } catch {
-        // If any single doc in the batch collided or failed rules, fall back cleanly per-op
+        // If any single doc in the batch collided, exceeded size, or timed out, fall back cleanly per-op via dbLite
         await Promise.all(ops.map((op) => runOpIndividually(op)));
       }
     })
   );
 
-  if (failedParties.length > 0 && syncedCount === 0) {
-    throw new Error(`Archive sync failed for: ${failedParties.slice(0, 4).join(', ')}`);
+  if (failedParties.length > 0) {
+    onPartialFailure?.(failedParties);
+    if (syncedCount === 0) {
+      throw new Error(`Archive sync failed for: ${failedParties.slice(0, 4).join(', ')}`);
+    }
   }
 
   return syncedCount;
@@ -4571,12 +4649,13 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
   editedAdminSnap: DaySnapshot,
   parties: CloudPartyDoc[],
   config: AgencyConfig,
-  actorUid?: string
+  actorUid?: string,
+  onPartialFailure?: (failedNames: string[]) => void
 ): Promise<number> {
   const activeParties = parties.filter((p) => p.active !== false && p.role !== 'admin');
   if (activeParties.length === 0) return 0;
 
-  // Query ONLY the single target date so Sync IDs finishes in <1s instead of scanning 30 days!
+  // Query ONLY the single target date over stateless dbLite HTTPS REST so Sync IDs sees true server state!
   const allDocs = await fetchAllAgencyPartyArchives(
     agencyId,
     ownerUid,
@@ -4593,7 +4672,8 @@ export async function syncAdminRestoredArchiveToPartiesCloud(
     activeParties,
     config,
     allDocs,
-    true
+    true,
+    onPartialFailure
   );
 }
 
@@ -4608,7 +4688,8 @@ export async function syncAdminArchivesBatchToPartiesCloud(
   snapshots: DaySnapshot[],
   parties: CloudPartyDoc[],
   config: AgencyConfig,
-  createMissing = false
+  createMissing = false,
+  onPartialFailure?: (failedNames: string[]) => void
 ): Promise<number> {
   const activeParties = parties.filter((p) => p.active !== false && p.role !== 'admin');
   if (activeParties.length === 0 || snapshots.length === 0) return 0;
@@ -4625,7 +4706,7 @@ export async function syncAdminArchivesBatchToPartiesCloud(
   if (uniqueSnaps.length === 0) return 0;
 
   // Ultra-Low-Read query strategy: when reconciling 1-3 dates, query ONLY those exact dates
-  // instead of downloading all 30+ days of historical partyArchives!
+  // instead of downloading all historical partyArchives!
   let allDocs: Array<{ docId: string; data: CloudPartyArchiveDoc }> = [];
   if (uniqueSnaps.length <= 3) {
     const perDateArrays = await Promise.all(
@@ -4642,6 +4723,7 @@ export async function syncAdminArchivesBatchToPartiesCloud(
     allDocs = await fetchAllAgencyPartyArchives(agencyId, ownerUid, actorUid, activeParties);
   }
 
+  const allFailed: string[] = [];
   const counts = await Promise.all(
     uniqueSnaps.map((snap) =>
       syncSingleAdminArchiveAgainstExisting(
@@ -4652,10 +4734,14 @@ export async function syncAdminArchivesBatchToPartiesCloud(
         activeParties,
         config,
         allDocs,
-        createMissing
+        createMissing,
+        (names) => allFailed.push(...names)
       )
     )
   );
+  if (allFailed.length > 0) {
+    onPartialFailure?.(Array.from(new Set(allFailed)));
+  }
   return counts.reduce((sum, n) => sum + n, 0);
 }
 
@@ -5687,9 +5773,17 @@ export async function deleteAdminArchivesByIdCloud(
 ): Promise<void> {
   if (!Array.isArray(snapshotIds) || snapshotIds.length === 0) return;
   const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
-  const docIds = Array.from(
-    new Set(snapshotIds.filter(Boolean).map((id) => makeAdminArchiveDocId(id)))
-  );
+  const candidateIds = new Set<string>();
+  for (const raw of snapshotIds) {
+    if (!raw) continue;
+    const prefixed = makeAdminArchiveDocId(raw);
+    if (prefixed) candidateIds.add(prefixed);
+    const cleanedRaw = sanitizeId(raw, '');
+    if (cleanedRaw && cleanedRaw !== prefixed) {
+      candidateIds.add(cleanedRaw);
+    }
+  }
+  const docIds = Array.from(candidateIds);
   const CONCURRENCY = 4;
   for (let i = 0; i < docIds.length; i += CONCURRENCY) {
     const slice = docIds.slice(i, i + CONCURRENCY);
@@ -5701,6 +5795,16 @@ export async function deleteAdminArchivesByIdCloud(
           knownArchiveDocIds.delete(docId);
           delete knownArchiveSigs[docId];
         } catch (err) {
+          // Ignore not-found / already-deleted candidate doc IDs
+          const code =
+            typeof err === 'object' && err !== null && 'code' in err
+              ? String((err as { code?: unknown }).code || '')
+              : '';
+          if (code === 'not-found') {
+            knownArchiveDocIds.delete(docId);
+            delete knownArchiveSigs[docId];
+            return;
+          }
           handleFirestoreError(err, OperationType.DELETE, ref.path);
         }
       })

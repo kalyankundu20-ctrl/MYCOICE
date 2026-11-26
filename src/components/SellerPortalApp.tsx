@@ -40,6 +40,7 @@ import {
   CloudPartySheetDoc,
   CloudPublicAnnouncement,
   deletePartyArchiveCloud,
+  fetchAgencyDocOnce,
   fetchPartyArchivesOnce,
   isArchiveSnapshotExpired,
   sanitizeSheetEntriesForCloud,
@@ -125,6 +126,38 @@ function writeSellerBootCache(
     window.localStorage.setItem(getSellerBootCacheKey(agencyId, partyId), JSON.stringify(payload));
   } catch {
     // Ignore storage quota errors
+  }
+}
+
+function savePartyArchiveCacheSafe(storageKey: string, snapshots: DaySnapshot[]) {
+  if (typeof window === 'undefined') return;
+  const trimmed = snapshots.slice(0, 12);
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(trimmed));
+    return;
+  } catch {
+    // QuotaExceededError on iOS 5 MB limit when heavy Master archives + Admin share origin:
+    // fall back to lightweight summary cache (entries stripped, bills/prizes/totals intact)
+    // so ALL recent archive dates always persist locally instead of leaving stale dates behind.
+  }
+  try {
+    const compact = trimmed.map((s) => ({
+      ...s,
+      entries: { '1PM': [], '6PM': [], '8PM': [] },
+      prizeList: (s.prizeList || []).slice(0, 80),
+    }));
+    window.localStorage.setItem(storageKey, JSON.stringify(compact));
+  } catch {
+    try {
+      const minimal = trimmed.slice(0, 7).map((s) => ({
+        ...s,
+        entries: { '1PM': [], '6PM': [], '8PM': [] },
+        prizeList: [],
+      }));
+      window.localStorage.setItem(storageKey, JSON.stringify(minimal));
+    } catch {
+      // Ignore storage errors if quota is completely full
+    }
   }
 }
 
@@ -362,8 +395,8 @@ export function SellerPortalApp({
         return fresh || curr;
       });
       scheduleIdlePersistence(() => {
+        savePartyArchiveCacheSafe(archiveStorageKey, cloudSnaps);
         try {
-          window.localStorage.setItem(archiveStorageKey, JSON.stringify(cloudSnaps.slice(0, 12)));
           if (liveAgencyDateStr) {
             window.localStorage.setItem(archiveSyncedDateKey, liveAgencyDateStr);
           }
@@ -374,8 +407,22 @@ export function SellerPortalApp({
     };
 
     if (isArchiveViewOpen) {
-      const unsubArchives = subscribePartyArchives(agencyId, partyId, applyCloudArchives);
+      let cancelled = false;
+      // 1. Immediate stateless dbLite HTTPS REST read so true server archives (e.g. just-synced Close Day)
+      //    load in ~200ms right after app restart even if Firestore WebSocket is still reconnecting.
+      void fetchPartyArchivesOnce(agencyId, partyId).then((restSnaps) => {
+        if (cancelled) return;
+        if (restSnaps.length > 0) {
+          applyCloudArchives(restSnaps);
+        }
+      });
+      // 2. Live real-time listener for instant updates while Archive tab stays open.
+      const unsubArchives = subscribePartyArchives(agencyId, partyId, (liveSnaps) => {
+        if (cancelled) return;
+        applyCloudArchives(liveSnaps);
+      });
       return () => {
+        cancelled = true;
         unsubArchives();
       };
     }
@@ -416,8 +463,8 @@ export function SellerPortalApp({
             return fresh || curr;
           });
           scheduleIdlePersistence(() => {
+            savePartyArchiveCacheSafe(archiveStorageKey, cloudSnaps);
             try {
-              window.localStorage.setItem(archiveStorageKey, JSON.stringify(cloudSnaps.slice(0, 12)));
               if (hasFreshClosedArchive || attempt >= 2) {
                 window.localStorage.setItem(archiveSyncedDateKey, liveAgencyDateStr);
               }
@@ -498,35 +545,50 @@ export function SellerPortalApp({
       return;
     }
 
-    const unsub = subscribeSellerPortal(agencyId, partyId, {
-      onAgency: (docData) => {
-        const prevDate = agencyRef.current?.date || '';
-        const nextDate = docData?.date || '';
-        setAgency(docData);
-        // When Admin closes day and rolls to a newer date, immediately discard any pending previous-day edits
-        // and reset local live rows so yesterday's data is NEVER written back onto today's sheet.
-        if (prevDate && nextDate && nextDate > prevDate) {
-          if (pendingSaveTimerRef.current !== null) {
-            window.clearTimeout(pendingSaveTimerRef.current);
-            pendingSaveTimerRef.current = null;
-          }
-          if (autoRetryTimerRef.current !== null) {
-            window.clearTimeout(autoRetryTimerRef.current);
-            autoRetryTimerRef.current = null;
-          }
-          dirtyLocalRef.current = false;
-          pendingDirtySessionsRef.current.clear();
-          const emptySig = serializeSheetEntries([], [], []);
-          lastSerializedRef.current = emptySig;
-          setEntries({
-            '1PM': createBlankRows(1),
-            '6PM': createBlankRows(1),
-            '8PM': createBlankRows(1),
-          });
-          setSyncState('synced');
-          setSyncErrorMsg('');
+    let cancelledAgencyFetch = false;
+    const handleAgencyDoc = (docData: CloudAgencyDoc | null) => {
+      if (!docData) {
+        setAgency(null);
+        return;
+      }
+      const prevDate = agencyRef.current?.date || '';
+      const nextDate = docData.date || '';
+      setAgency(docData);
+      // When Admin closes day and rolls to a newer date, immediately discard any pending previous-day edits
+      // and reset local live rows so yesterday's data is NEVER written back onto today's sheet.
+      if (prevDate && nextDate && nextDate > prevDate) {
+        if (pendingSaveTimerRef.current !== null) {
+          window.clearTimeout(pendingSaveTimerRef.current);
+          pendingSaveTimerRef.current = null;
         }
-      },
+        if (autoRetryTimerRef.current !== null) {
+          window.clearTimeout(autoRetryTimerRef.current);
+          autoRetryTimerRef.current = null;
+        }
+        dirtyLocalRef.current = false;
+        pendingDirtySessionsRef.current.clear();
+        const emptySig = serializeSheetEntries([], [], []);
+        lastSerializedRef.current = emptySig;
+        setEntries({
+          '1PM': createBlankRows(1),
+          '6PM': createBlankRows(1),
+          '8PM': createBlankRows(1),
+        });
+        setSyncState('synced');
+        setSyncErrorMsg('');
+      }
+    };
+
+    // Immediate stateless dbLite read of /agencies/{agencyId} so Master/Seller header date
+    // never stays stuck on stale cached previous-day date if Firestore WebSocket is waking up.
+    void fetchAgencyDocOnce(agencyId).then((freshAgency) => {
+      if (!cancelledAgencyFetch && freshAgency) {
+        handleAgencyDoc(freshAgency);
+      }
+    });
+
+    const unsub = subscribeSellerPortal(agencyId, partyId, {
+      onAgency: handleAgencyDoc,
       onParty: (partyDoc) => {
         setParty(partyDoc);
         setLoading(false);
@@ -593,6 +655,7 @@ export function SellerPortalApp({
       },
     });
     return () => {
+      cancelledAgencyFetch = true;
       if (pendingSaveTimerRef.current !== null) {
         window.clearTimeout(pendingSaveTimerRef.current);
       }
@@ -1774,17 +1837,7 @@ export function SellerPortalApp({
   const persistLocalPartyArchives = (next: DaySnapshot[]) => {
     setPartyArchives(next);
     scheduleIdlePersistence(() => {
-      try {
-        // Keep localStorage light so large 30-day archives never block the main thread; Firestore holds full copy.
-        const lite = next.slice(0, 12);
-        window.localStorage.setItem(archiveStorageKey, JSON.stringify(lite));
-      } catch {
-        try {
-          window.localStorage.setItem(archiveStorageKey, JSON.stringify(next.slice(0, 4)));
-        } catch {
-          // Ignore storage quota errors
-        }
-      }
+      savePartyArchiveCacheSafe(archiveStorageKey, next);
     });
   };
 
@@ -2040,11 +2093,16 @@ export function SellerPortalApp({
 
   const handlePermanentDeletePartyFromBin = (snapshotId: string) => {
     persistPartyRecycleBin(partyRecycleBin.filter((s) => s.id !== snapshotId));
+    void deletePartyArchiveCloud(agencyId, snapshotId).catch(() => {});
     showArchiveNotice('Archive Recycle Bin se permanently delete ho gaya');
   };
 
   const handleEmptyPartyRecycleBin = () => {
+    const ids = partyRecycleBin.map((s) => s.id).filter(Boolean);
     persistPartyRecycleBin([]);
+    for (const id of ids) {
+      void deletePartyArchiveCloud(agencyId, id).catch(() => {});
+    }
     showArchiveNotice('Recycle Bin khali ho gaya');
   };
 

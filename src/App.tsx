@@ -3,6 +3,7 @@ import { Archive, RefreshCw, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminAnnouncementModal } from './components/AdminAnnouncementModal';
+import { AdminSlipScannerModal } from './components/AdminSlipScannerModal';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { AppShell } from './components/AppShell';
 import { ArchiveView } from './components/ArchiveView';
@@ -71,6 +72,7 @@ import {
   loadUserCloudSession,
   loginSellerWithIdPassword,
   lookupPartyInvite,
+  makeAdminArchiveDocId,
   makePartyIdFromSeller,
   makeUniquePartyArchiveId,
   normalizeLoginId,
@@ -290,10 +292,148 @@ function preserveInheritedNamesAndCompact(
   return normalizeRowsKeepOneTrailing(adjusted);
 }
 
+const DELETED_ARCHIVE_TOMBSTONES_KEY = `kk-deleted-archive-ids:v1:${AGENCY_ID}`;
+const BINNED_ARCHIVE_IDS_KEY = `kk-binned-archive-ids:v1:${AGENCY_ID}`;
+const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+interface DeletedArchiveTombstone {
+  id: string;
+  docId: string;
+  deletedAtMs: number;
+}
+
+function readDeletedArchiveTombstones(): {
+  idSet: Set<string>;
+  docIdSet: Set<string>;
+  list: DeletedArchiveTombstone[];
+} {
+  const idSet = new Set<string>();
+  const docIdSet = new Set<string>();
+  const list: DeletedArchiveTombstone[] = [];
+  if (typeof window === 'undefined') return { idSet, docIdSet, list };
+  try {
+    const raw = window.localStorage.getItem(DELETED_ARCHIVE_TOMBSTONES_KEY);
+    if (!raw) return { idSet, docIdSet, list };
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { idSet, docIdSet, list };
+    const now = Date.now();
+    for (const item of parsed) {
+      if (!item || typeof item.id !== 'string' || !item.id) continue;
+      const ts = typeof item.deletedAtMs === 'number' ? item.deletedAtMs : now;
+      if (now - ts > TOMBSTONE_TTL_MS) continue;
+      const docId = typeof item.docId === 'string' && item.docId ? item.docId : makeAdminArchiveDocId(item.id);
+      list.push({ id: item.id, docId, deletedAtMs: ts });
+      idSet.add(item.id);
+      idSet.add(docId);
+      docIdSet.add(docId);
+      docIdSet.add(item.id);
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  return { idSet, docIdSet, list };
+}
+
+function recordDeletedArchiveIds(ids: string[]): void {
+  if (typeof window === 'undefined' || !Array.isArray(ids) || ids.length === 0) return;
+  try {
+    const { list } = readDeletedArchiveTombstones();
+    const byId = new Map<string, DeletedArchiveTombstone>();
+    for (const item of list) byId.set(item.id, item);
+    const now = Date.now();
+    for (const rawId of ids) {
+      if (!rawId) continue;
+      byId.set(rawId, {
+        id: rawId,
+        docId: makeAdminArchiveDocId(rawId),
+        deletedAtMs: now,
+      });
+    }
+    const next = Array.from(byId.values())
+      .sort((a, b) => b.deletedAtMs - a.deletedAtMs)
+      .slice(0, 150);
+    window.localStorage.setItem(DELETED_ARCHIVE_TOMBSTONES_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore storage write errors
+  }
+}
+
+function removeDeletedArchiveIds(ids: string[]): void {
+  if (typeof window === 'undefined' || !Array.isArray(ids) || ids.length === 0) return;
+  try {
+    const removeSet = new Set<string>();
+    for (const id of ids) {
+      if (!id) continue;
+      removeSet.add(id);
+      removeSet.add(makeAdminArchiveDocId(id));
+    }
+    const { list } = readDeletedArchiveTombstones();
+    const next = list.filter((item) => !removeSet.has(item.id) && !removeSet.has(item.docId));
+    window.localStorage.setItem(DELETED_ARCHIVE_TOMBSTONES_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore storage write errors
+  }
+}
+
+function isSnapshotTombstoned(
+  snap: Pick<DaySnapshot, 'id'> | null | undefined,
+  tombstones = readDeletedArchiveTombstones()
+): boolean {
+  if (!snap || !snap.id) return false;
+  return (
+    tombstones.idSet.has(snap.id) ||
+    tombstones.docIdSet.has(snap.id) ||
+    tombstones.docIdSet.has(makeAdminArchiveDocId(snap.id))
+  );
+}
+
+function readBinnedArchiveIdSet(): Set<string> {
+  const out = new Set<string>();
+  if (typeof window === 'undefined') return out;
+  try {
+    const raw = window.localStorage.getItem(BINNED_ARCHIVE_IDS_KEY);
+    if (!raw) return out;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      for (const id of parsed) {
+        if (typeof id === 'string' && id) out.add(id);
+      }
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  return out;
+}
+
+function addBinnedArchiveId(id: string): void {
+  if (typeof window === 'undefined' || !id) return;
+  try {
+    const set = readBinnedArchiveIdSet();
+    set.add(id);
+    window.localStorage.setItem(BINNED_ARCHIVE_IDS_KEY, JSON.stringify(Array.from(set).slice(-120)));
+  } catch {
+    // Ignore storage write errors
+  }
+}
+
+function removeBinnedArchiveIds(ids: string[]): void {
+  if (typeof window === 'undefined' || !Array.isArray(ids) || ids.length === 0) return;
+  try {
+    const set = readBinnedArchiveIdSet();
+    for (const id of ids) set.delete(id);
+    window.localStorage.setItem(BINNED_ARCHIVE_IDS_KEY, JSON.stringify(Array.from(set)));
+  } catch {
+    // Ignore storage write errors
+  }
+}
+
 function preserveSavedSnapshots(history: DaySnapshot[]): DaySnapshot[] {
   if (!Array.isArray(history) || history.length === 0) return [];
   const nowMs = Date.now();
-  return history.filter((snap) => !isArchiveSnapshotExpired(snap, nowMs));
+  const tombstones = readDeletedArchiveTombstones();
+  return history.filter(
+    (snap) => !isArchiveSnapshotExpired(snap, nowMs) && !isSnapshotTombstoned(snap, tombstones)
+  );
 }
 
 function normalizeLoadedState(parsed: Partial<AppState> | null | undefined): AppState {
@@ -473,6 +613,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<SheetTab>('Seller Bill');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sellerIdsOpen, setSellerIdsOpen] = useState(false);
+  const [slipScannerOpen, setSlipScannerOpen] = useState(false);
   const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
   const [announcementBusy, setAnnouncementBusy] = useState(false);
   const [announcementError, setAnnouncementError] = useState('');
@@ -1932,6 +2073,7 @@ export default function App() {
         // missing any cloud archive listed in meta.archiveDocIds.
         const localEnvMeta = readLocalStorageEnvelope();
         const localSnapshotCount = local.history.length + (local.recycleBin?.length || 0);
+        const deletedTombstones = readDeletedArchiveTombstones();
         if (!isFreshLocalDevice && !localEnvMeta?.historyTruncated && vaultRetryNonce === 0) {
           try {
             const rawMeta = window.localStorage.getItem(`kk-admin-vault-meta:v1:${agencyId}`);
@@ -1944,14 +2086,17 @@ export default function App() {
                 archiveSigs?: Record<string, string>;
                 archiveDocIds?: string[];
               };
-              const metaArchiveCount = Array.isArray(meta?.archiveDocIds)
-                ? meta.archiveDocIds.length
-                : 0;
+              const metaDocIds = Array.isArray(meta?.archiveDocIds) ? meta.archiveDocIds : [];
+              const hasPendingTombstoneCleanup = metaDocIds.some(
+                (docId) => deletedTombstones.docIdSet.has(docId) || deletedTombstones.idSet.has(docId)
+              );
+              const metaArchiveCount = metaDocIds.length;
               if (
                 meta &&
                 meta.ownerUid === ownerUid &&
                 typeof meta.syncedAtMs === 'number' &&
                 meta.syncedAtMs > 0 &&
+                !hasPendingTombstoneCleanup &&
                 localSnapshotCount >= metaArchiveCount
               ) {
                 const remoteAgencyUpdatedAtMs = await peekAgencyUpdatedAtMs(agencyId);
@@ -1961,9 +2106,7 @@ export default function App() {
                   adminChunkSigsRef.current = { ...(meta.chunkSigs || {}) };
                   adminChunkIdsRef.current = new Set(Array.isArray(meta.chunkIds) ? meta.chunkIds : []);
                   adminArchiveSigsRef.current = { ...(meta.archiveSigs || {}) };
-                  adminArchiveDocIdsRef.current = new Set(
-                    Array.isArray(meta.archiveDocIds) ? meta.archiveDocIds : []
-                  );
+                  adminArchiveDocIdsRef.current = new Set(metaDocIds);
                   vaultHydratedKeyRef.current = sessionVaultKey;
                   setAdminVaultHydrated(true);
                   return;
@@ -1978,11 +2121,54 @@ export default function App() {
         const vault = await loadAdminCloudVault(ownerUid, agencyId);
         if (cancelled) return;
 
+        // Filter out any locally permanently-deleted archives that still existed in Firestore
+        // (e.g. if iOS closed the app before an in-flight deleteDoc finished) and finish deleting them now!
+        const activeTombstones = readDeletedArchiveTombstones();
+        const activeBinnedIds = readBinnedArchiveIdSet();
+        const zombieIdsToDelete: string[] = [];
+        const cleanVaultHistory: DaySnapshot[] = [];
+        const cleanVaultRecycleBin: DaySnapshot[] = [];
+
+        for (const h of vault.history) {
+          if (isSnapshotTombstoned(h, activeTombstones)) {
+            zombieIdsToDelete.push(h.id);
+            continue;
+          }
+          if (activeBinnedIds.has(h.id)) {
+            cleanVaultRecycleBin.push({ ...h, deletedAt: h.deletedAt || new Date().toISOString() });
+            continue;
+          }
+          cleanVaultHistory.push(h);
+        }
+        for (const b of vault.recycleBin) {
+          if (isSnapshotTombstoned(b, activeTombstones)) {
+            zombieIdsToDelete.push(b.id);
+            continue;
+          }
+          if (!cleanVaultRecycleBin.some((x) => x.id === b.id)) {
+            cleanVaultRecycleBin.push(b);
+          }
+        }
+        vault.history = cleanVaultHistory;
+        vault.recycleBin = cleanVaultRecycleBin;
+
         // Seed incremental chunk & archive tracking maps from Firestore snapshot
         adminChunkSigsRef.current = { ...vault.chunkSigs };
         adminChunkIdsRef.current = new Set(vault.chunkIds);
         adminArchiveSigsRef.current = { ...vault.archiveSigs };
         adminArchiveDocIdsRef.current = new Set(vault.archiveDocIds);
+        if (zombieIdsToDelete.length > 0) {
+          void deleteAdminArchivesByIdCloud(
+            zombieIdsToDelete,
+            adminArchiveSigsRef.current,
+            adminArchiveDocIdsRef.current,
+            agencyId
+          )
+            .then(() => {
+              persistAdminVaultMetaLocal(agencyId, ownerUid);
+            })
+            .catch(() => {});
+        }
         persistAdminVaultMetaLocal(agencyId, ownerUid);
 
         const cloudFilledCount = countFilled(vault.entries);
@@ -2192,14 +2378,20 @@ export default function App() {
           showToast('Latest Admin Data Synced from Cloud');
         } else {
           // Local has current/newer data: safely union-merge any cloud archives missing locally
-          const missingHistory = vault.history.filter(
-            (ch) => !local.history.some((lh) => lh.id === ch.id)
-          );
+          // (never resurrecting tombstoned or locally-binned records!)
           const localBin = local.recycleBin || [];
+          const missingHistory = vault.history.filter(
+            (ch) =>
+              !local.history.some((lh) => lh.id === ch.id) &&
+              !localBin.some((lb) => lb.id === ch.id) &&
+              !activeBinnedIds.has(ch.id) &&
+              !isSnapshotTombstoned(ch, activeTombstones)
+          );
           const missingBin = vault.recycleBin.filter(
             (cb) =>
               !localBin.some((lb) => lb.id === cb.id) &&
-              !local.history.some((lh) => lh.id === cb.id)
+              !local.history.some((lh) => lh.id === cb.id) &&
+              !isSnapshotTombstoned(cb, activeTombstones)
           );
           const missingExtra = (vault.privateConfig?.extraNames || []).filter(
             (n) => !local.extraNames.some((ln) => ln.toUpperCase() === n.toUpperCase())
@@ -2263,14 +2455,19 @@ export default function App() {
       winning6PM: state.winningRaw['6PM'],
       winning8PM: state.winningRaw['8PM'],
     });
-    if (sig === lastAgencySigRef.current) return;
+    const agencyDateDrifted = Boolean(cloudAgency.date && state.date && cloudAgency.date !== state.date);
+    if (sig === lastAgencySigRef.current && !agencyDateDrifted) return;
 
     const timer = window.setTimeout(() => {
       if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current || dayCloseSyncingRef.current) return;
-      lastAgencySigRef.current = sig;
-      void syncAdminAgencyState(latestStateRef.current).catch((err) => {
-        setCloudError(err instanceof Error ? err.message : 'Agency sync error');
-      });
+      void syncAdminAgencyState(latestStateRef.current)
+        .then(() => {
+          lastAgencySigRef.current = sig;
+        })
+        .catch((err) => {
+          lastAgencySigRef.current = '';
+          setCloudError(err instanceof Error ? err.message : 'Agency sync error');
+        });
     }, 450);
 
     return () => window.clearTimeout(timer);
@@ -2745,6 +2942,7 @@ export default function App() {
             if (unsyncedRecent.length >= 3) break;
           }
           if (unsyncedRecent.length > 0 && cloudPartiesRef.current.length > 0) {
+            const partialFailed: string[] = [];
             void syncAdminArchivesBatchToPartiesCloud(
               cloudSession.agencyId,
               agencyDoc.ownerUid || cloudSession.ownerUid,
@@ -2752,16 +2950,19 @@ export default function App() {
               unsyncedRecent.map((u) => u.snap),
               cloudPartiesRef.current,
               currState.config,
-              true
+              true,
+              (names) => partialFailed.push(...names)
             )
               .then(() => {
-                for (const u of unsyncedRecent) {
-                  syncedDateMap[u.snap.date] = u.sig;
-                }
-                try {
-                  window.localStorage.setItem(partyArchCacheKey, JSON.stringify(syncedDateMap));
-                } catch {
-                  // Ignore storage quota errors
+                if (partialFailed.length === 0) {
+                  for (const u of unsyncedRecent) {
+                    syncedDateMap[u.snap.date] = u.sig;
+                  }
+                  try {
+                    window.localStorage.setItem(partyArchCacheKey, JSON.stringify(syncedDateMap));
+                  } catch {
+                    // Ignore storage quota errors
+                  }
                 }
               })
               .catch(() => {});
@@ -3394,16 +3595,23 @@ export default function App() {
       const idbVault = await readPermanentSellersIdb();
       if (cancelled) return;
 
+      const bootTombstones = readDeletedArchiveTombstones();
+      const bootBinnedIds = readBinnedArchiveIdSet();
+      const bootNowMs = Date.now();
       const unionSnapsById = (
         primary: DaySnapshot[] | undefined,
         secondary: DaySnapshot[] | undefined
       ): DaySnapshot[] => {
         const byId = new Map<string, DaySnapshot>();
         for (const s of primary || []) {
-          if (s && s.id) byId.set(s.id, s);
+          if (!s || !s.id) continue;
+          if (isArchiveSnapshotExpired(s, bootNowMs) || isSnapshotTombstoned(s, bootTombstones)) continue;
+          byId.set(s.id, s);
         }
         for (const s of secondary || []) {
-          if (s && s.id && !byId.has(s.id)) byId.set(s.id, s);
+          if (!s || !s.id || byId.has(s.id)) continue;
+          if (isArchiveSnapshotExpired(s, bootNowMs) || isSnapshotTombstoned(s, bootTombstones)) continue;
+          byId.set(s.id, s);
         }
         return Array.from(byId.values()).sort((a, b) =>
           String(b.savedAt || '').localeCompare(String(a.savedAt || ''))
@@ -3432,12 +3640,18 @@ export default function App() {
           newestVault && newestVault.sellers.length > 0
             ? mergeWithPermanentSellers(normalized.sellers, newestVault.sellers)
             : normalized.sellers;
-        const mergedHistory = idbEnv
+        const rawMergedHistory = idbEnv
           ? unionSnapsById(normalized.history, idbEnv.state.history)
-          : normalized.history;
-        const mergedRecycleBin = idbEnv
+          : unionSnapsById(normalized.history, []);
+        const rawMergedBin = idbEnv
           ? unionSnapsById(normalized.recycleBin, idbEnv.state.recycleBin)
-          : normalized.recycleBin;
+          : unionSnapsById(normalized.recycleBin, []);
+        // Respect any local Recycle Bin moves that happened right before app close
+        const movedToBin = rawMergedHistory
+          .filter((h) => bootBinnedIds.has(h.id))
+          .map((h) => ({ ...h, deletedAt: h.deletedAt || new Date().toISOString() }));
+        const mergedHistory = rawMergedHistory.filter((h) => !bootBinnedIds.has(h.id));
+        const mergedRecycleBin = unionSnapsById(rawMergedBin, movedToBin);
         const nextNormalized: AppState = {
           ...normalized,
           sellers: restoredSellers,
@@ -3447,13 +3661,15 @@ export default function App() {
         latestStateRef.current = nextNormalized;
         lastSavedAtRef.current = Math.max(winner.updatedAt, lastSavedAtRef.current);
         writeLocalStorageSafe(nextNormalized, lastSavedAtRef.current);
+        void writeIndexedDbEnvelope(nextNormalized, lastSavedAtRef.current);
         if (restoredSellers.length > 0) {
           writePermanentSellers(restoredSellers, lastSavedAtRef.current);
         }
         setRawState(nextNormalized);
       } else {
         // Even if localStorage matched IndexedDB's timestamp, always recover any full archives
-        // or recycleBin records stored in IndexedDB that localStorage trimmed for size/quota!
+        // or recycleBin records stored in IndexedDB that localStorage trimmed for size/quota
+        // (while NEVER resurrecting tombstoned permanently-deleted archives!).
         const curr = latestStateRef.current;
         const idbHistory = Array.isArray(idbEnv?.state?.history) ? idbEnv.state.history : [];
         const idbBin = Array.isArray(idbEnv?.state?.recycleBin) ? idbEnv.state.recycleBin : [];
@@ -3461,13 +3677,23 @@ export default function App() {
           (ih) =>
             ih &&
             ih.id &&
+            !isArchiveSnapshotExpired(ih, bootNowMs) &&
+            !isSnapshotTombstoned(ih, bootTombstones) &&
+            !bootBinnedIds.has(ih.id) &&
             !curr.history.some((ch) => ch.id === ih.id) &&
             !(curr.recycleBin || []).some((cb) => cb.id === ih.id)
         );
-        const missingBin = idbBin.filter(
+        const missingBin = [
+          ...idbBin,
+          ...idbHistory
+            .filter((ih) => ih && ih.id && bootBinnedIds.has(ih.id))
+            .map((ih) => ({ ...ih, deletedAt: ih.deletedAt || new Date().toISOString() })),
+        ].filter(
           (ib) =>
             ib &&
             ib.id &&
+            !isArchiveSnapshotExpired(ib, bootNowMs) &&
+            !isSnapshotTombstoned(ib, bootTombstones) &&
             !(curr.recycleBin || []).some((cb) => cb.id === ib.id) &&
             !curr.history.some((ch) => ch.id === ib.id)
         );
@@ -4165,11 +4391,21 @@ export default function App() {
       const agencyId = cloudSession.agencyId;
       const ownerUid = cloudAgencyRef.current.ownerUid || cloudSession.ownerUid;
       try {
+        // Also ensure live agency date (e.g. 27/11/2026) is synced to Firestore if it drifted behind
+        if (
+          !isAdminRestoredViewRef.current &&
+          cloudAgencyRef.current.date &&
+          latestStateRef.current.date &&
+          cloudAgencyRef.current.date !== latestStateRef.current.date
+        ) {
+          void syncAdminAgencyState(latestStateRef.current).catch(() => {});
+        }
         let partiesToSync = cloudPartiesRef.current;
         if (partiesToSync.length === 0) {
           const fetched = await fetchAdminPartiesAndSheetsOnce(ownerUid, agencyId);
           partiesToSync = fetched.parties;
         }
+        const failedNames: string[] = [];
         const updatedCount = await syncAdminRestoredArchiveToPartiesCloud(
           agencyId,
           ownerUid,
@@ -4177,8 +4413,16 @@ export default function App() {
           snap,
           partiesToSync,
           latestStateRef.current.config,
-          authUser.uid
+          authUser.uid,
+          (names) => failedNames.push(...names)
         );
+        if (failedNames.length > 0) {
+          showToast(
+            `${formatDateDDMM(snap.date)} sync incomplete (${failedNames.slice(0, 3).join(', ')}) — 1 baar dubara Sync IDs dabayein`,
+            5000
+          );
+          return;
+        }
         AppSounds.success();
         if (updatedCount > 0) {
           showToast(
@@ -4258,6 +4502,7 @@ export default function App() {
     const timer = window.setTimeout(() => {
       if (isAdminRestoredViewRef.current || dayCloseSyncingRef.current) return;
       reconciledHistorySigRef.current = fullSig;
+      const partialFailed: string[] = [];
       void syncAdminArchivesBatchToPartiesCloud(
         agencyId,
         ownerUid,
@@ -4265,16 +4510,21 @@ export default function App() {
         unsyncedItems.map((u) => u.snap),
         cloudPartiesRef.current,
         latestStateRef.current.config,
-        true
+        true,
+        (names) => partialFailed.push(...names)
       )
         .then((syncedCount) => {
-          for (const u of unsyncedItems) {
-            syncedDateMap[u.snap.date] = u.sig;
-          }
-          try {
-            window.localStorage.setItem(partyArchCacheKey, JSON.stringify(syncedDateMap));
-          } catch {
-            // Ignore storage quota errors
+          if (partialFailed.length === 0) {
+            for (const u of unsyncedItems) {
+              syncedDateMap[u.snap.date] = u.sig;
+            }
+            try {
+              window.localStorage.setItem(partyArchCacheKey, JSON.stringify(syncedDateMap));
+            } catch {
+              // Ignore storage quota errors
+            }
+          } else {
+            reconciledHistorySigRef.current = '';
           }
           if (syncedCount > 0) {
             showToast(`Master / Sub-Master archives synced (${syncedCount} updated) ✓`, 3500);
@@ -5171,7 +5421,7 @@ export default function App() {
 
         // STEP 2: Now roll agency.date forward to nextDate + carry forward sub-balances + clear live sheets
         // in parallel — Master & Sub-Master phones wake up to nextDate with closedDate ALREADY in Archive!
-        lastAgencySigRef.current = JSON.stringify({
+        const nextAgencySig = JSON.stringify({
           date: nextDate,
           limitThreshold: closedConfig.limitThreshold,
           sellerLimitThreshold: closedConfig.sellerLimitThreshold ?? 20,
@@ -5181,9 +5431,20 @@ export default function App() {
           winning6PM: '',
           winning8PM: '',
         });
-        const agencyRolloverTask = syncAdminAgencyState(nextAgencyState).catch((err) => {
-          console.error('[KK Agency] Day Close agency rollover sync failed:', err);
-        });
+        const agencyRolloverTask = (async () => {
+          try {
+            await syncAdminAgencyState(nextAgencyState);
+            lastAgencySigRef.current = nextAgencySig;
+          } catch (firstErr) {
+            try {
+              await syncAdminAgencyState(nextAgencyState);
+              lastAgencySigRef.current = nextAgencySig;
+            } catch (retryErr) {
+              lastAgencySigRef.current = '';
+              console.error('[KK Agency] Day Close agency rollover sync failed:', retryErr || firstErr);
+            }
+          }
+        })();
 
         const carrySubBalancesTask = (async () => {
           const carryItems = Array.from(carriedSubBalances.values());
@@ -5908,6 +6169,7 @@ export default function App() {
       onOpenSettings={handleOpenSettings}
       onOpenSellerIds={handleOpenSellerIds}
       onOpenAnnouncement={handleOpenAnnouncementModal}
+      onOpenSlipScanner={() => setSlipScannerOpen(true)}
       announcementActive={isAnnouncementLive}
       onOpenGoogleSheets={handleOpenGoogleSheets}
       googleSheetsActive={Boolean(
@@ -6122,48 +6384,106 @@ export default function App() {
             }));
           }}
           onDeleteSnapshot={(snapshotId) => {
-            const target = state.history.find((h) => h.id === snapshotId);
-            setState((prev) => {
-              const found = prev.history.find((h) => h.id === snapshotId);
-              const nextHistory = prev.history.filter((h) => h.id !== snapshotId);
-              if (!found) return { ...prev, history: nextHistory };
-              const binned: DaySnapshot = { ...found, deletedAt: new Date().toISOString() };
-              const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
-              return {
-                ...prev,
-                history: nextHistory,
-                recycleBin: [binned, ...existingBin.filter((b) => b.id !== snapshotId)].slice(0, 120),
-              };
-            });
+            const cur = latestStateRef.current;
+            const target = cur.history.find((h) => h.id === snapshotId);
+            addBinnedArchiveId(snapshotId);
+            const nextHistory = cur.history.filter((h) => h.id !== snapshotId);
+            const existingBin = Array.isArray(cur.recycleBin) ? cur.recycleBin : [];
+            const nextRecycleBin = target
+              ? [
+                  { ...target, deletedAt: new Date().toISOString() },
+                  ...existingBin.filter((b) => b.id !== snapshotId),
+                ].slice(0, 120)
+              : existingBin;
+            const nextState: AppState = {
+              ...cur,
+              history: nextHistory,
+              recycleBin: nextRecycleBin,
+            };
+            const ts = Math.max(Date.now(), lastSavedAtRef.current + 1);
+            latestStateRef.current = nextState;
+            lastSavedAtRef.current = ts;
+            setRawState(nextState);
+            flushPersistNow();
+            if (cloudSession.kind === 'admin' && cloudAgencyRef.current) {
+              const agencyId = cloudSession.agencyId;
+              const ownerUid = cloudSession.ownerUid;
+              void syncAdminArchivesCloud(
+                ownerUid,
+                cloudAgencyRef.current.adminUids,
+                nextHistory,
+                nextRecycleBin,
+                adminArchiveSigsRef.current,
+                adminArchiveDocIdsRef.current,
+                agencyId
+              )
+                .then(() => {
+                  persistAdminVaultMetaLocal(agencyId, ownerUid);
+                })
+                .catch(() => {});
+            }
             if (target) {
               showToast(`${formatDateDDMM(target.date)} Recycle Bin me move ho gaya`);
             }
           }}
           onRecoverFromBin={(snapshotId) => {
-            const target = (state.recycleBin || []).find((b) => b.id === snapshotId);
-            setState((prev) => {
-              const existingBin = Array.isArray(prev.recycleBin) ? prev.recycleBin : [];
-              const found = existingBin.find((b) => b.id === snapshotId);
-              if (!found) return prev;
-              const { deletedAt: _removed, ...cleanSnap } = found;
-              return {
-                ...prev,
-                history: preserveSavedSnapshots([
-                  cleanSnap,
-                  ...prev.history.filter((h) => h.id !== cleanSnap.id),
-                ]).slice(0, 180),
-                recycleBin: existingBin.filter((b) => b.id !== snapshotId),
-              };
-            });
-            if (target) {
-              showToast(`${formatDateDDMM(target.date)} Recycle Bin se Recover ho gaya!`);
+            const cur = latestStateRef.current;
+            const existingBin = Array.isArray(cur.recycleBin) ? cur.recycleBin : [];
+            const target = existingBin.find((b) => b.id === snapshotId);
+            if (!target) return;
+            removeBinnedArchiveIds([snapshotId]);
+            removeDeletedArchiveIds([snapshotId]);
+            const { deletedAt: _removed, ...cleanSnap } = target;
+            const nextHistory = preserveSavedSnapshots([
+              cleanSnap,
+              ...cur.history.filter((h) => h.id !== cleanSnap.id),
+            ]).slice(0, 180);
+            const nextRecycleBin = existingBin.filter((b) => b.id !== snapshotId);
+            const nextState: AppState = {
+              ...cur,
+              history: nextHistory,
+              recycleBin: nextRecycleBin,
+            };
+            const ts = Math.max(Date.now(), lastSavedAtRef.current + 1);
+            latestStateRef.current = nextState;
+            lastSavedAtRef.current = ts;
+            setRawState(nextState);
+            flushPersistNow();
+            if (cloudSession.kind === 'admin' && cloudAgencyRef.current) {
+              const agencyId = cloudSession.agencyId;
+              const ownerUid = cloudSession.ownerUid;
+              void syncAdminArchivesCloud(
+                ownerUid,
+                cloudAgencyRef.current.adminUids,
+                nextHistory,
+                nextRecycleBin,
+                adminArchiveSigsRef.current,
+                adminArchiveDocIdsRef.current,
+                agencyId
+              )
+                .then(() => {
+                  persistAdminVaultMetaLocal(agencyId, ownerUid);
+                })
+                .catch(() => {});
             }
+            showToast(`${formatDateDDMM(target.date)} Recycle Bin se Recover ho gaya!`);
           }}
           onPermanentDeleteFromBin={(snapshotId) => {
-            setState((prev) => ({
-              ...prev,
-              recycleBin: (prev.recycleBin || []).filter((b) => b.id !== snapshotId),
-            }));
+            recordDeletedArchiveIds([snapshotId]);
+            removeBinnedArchiveIds([snapshotId]);
+            const cur = latestStateRef.current;
+            const nextHistory = cur.history.filter((h) => h.id !== snapshotId);
+            const nextRecycleBin = (cur.recycleBin || []).filter((b) => b.id !== snapshotId);
+            const nextState: AppState = {
+              ...cur,
+              history: nextHistory,
+              recycleBin: nextRecycleBin,
+            };
+            const ts = Math.max(Date.now(), lastSavedAtRef.current + 1);
+            latestStateRef.current = nextState;
+            lastSavedAtRef.current = ts;
+            setRawState(nextState);
+            flushPersistNow();
             if (cloudSession.kind === 'admin') {
               const agencyId = cloudSession.agencyId;
               const ownerUid = cloudSession.ownerUid;
@@ -6181,13 +6501,23 @@ export default function App() {
             showToast('Archive Recycle Bin se permanently delete ho gaya');
           }}
           onEmptyRecycleBin={() => {
-            const binIds = (latestStateRef.current.recycleBin || [])
+            const cur = latestStateRef.current;
+            const binIds = (cur.recycleBin || [])
               .map((b) => b.id)
               .filter(Boolean);
-            setState((prev) => ({
-              ...prev,
+            recordDeletedArchiveIds(binIds);
+            removeBinnedArchiveIds(binIds);
+            const binIdSet = new Set(binIds);
+            const nextState: AppState = {
+              ...cur,
+              history: cur.history.filter((h) => !binIdSet.has(h.id)),
               recycleBin: [],
-            }));
+            };
+            const ts = Math.max(Date.now(), lastSavedAtRef.current + 1);
+            latestStateRef.current = nextState;
+            lastSavedAtRef.current = ts;
+            setRawState(nextState);
+            flushPersistNow();
             if (cloudSession.kind === 'admin' && binIds.length > 0) {
               const agencyId = cloudSession.agencyId;
               const ownerUid = cloudSession.ownerUid;
@@ -6306,6 +6636,29 @@ export default function App() {
           error={announcementError || cloudError}
           onAdminSignIn={handleAdminGoogleSignIn}
           onSaveAnnouncement={handleSavePublicAnnouncement}
+        />
+      )}
+
+      {slipScannerOpen && (
+        <AdminSlipScannerModal
+          isOpen={slipScannerOpen}
+          onClose={() => setSlipScannerOpen(false)}
+          isAdminSignedIn={cloudSession.kind === 'admin'}
+          sellerNames={Array.from(
+            new Set([
+              ...state.sellers.map((s) => s.name.trim()).filter(Boolean),
+              ...state.extraNames.map((n) => n.trim()).filter(Boolean),
+            ])
+          )}
+          activeSession={
+            activeTab === '1PM' || activeTab === '6PM' || activeTab === '8PM'
+              ? activeTab
+              : '1PM'
+          }
+          onInsertIntoSession={(sid, rows) => {
+            handleBulkAddEntries(sid, rows);
+            showToast(`${rows.length} scanned rows added to ${sid} ✓`);
+          }}
         />
       )}
     </AppShell>

@@ -5,6 +5,7 @@ import {
   Clock,
   FileSpreadsheet,
   Megaphone,
+  ScanLine,
   SlidersHorizontal,
   Smartphone,
   Trophy,
@@ -25,6 +26,7 @@ interface AppShellProps {
   onOpenSellerIds: () => void;
   onOpenGoogleSheets?: () => void;
   onOpenAnnouncement?: () => void;
+  onOpenSlipScanner?: () => void;
   announcementActive?: boolean;
   googleSheetsActive?: boolean;
   cloudConnected: boolean;
@@ -68,6 +70,7 @@ export const AppShell = memo(function AppShell({
   onOpenSellerIds,
   onOpenGoogleSheets,
   onOpenAnnouncement,
+  onOpenSlipScanner,
   announcementActive = false,
   googleSheetsActive = false,
   cloudConnected,
@@ -195,6 +198,22 @@ export const AppShell = memo(function AppShell({
             )}
           </button>
 
+          {onOpenSlipScanner && (
+            <button
+              type="button"
+              onClick={() => {
+                AppSounds.tap();
+                onOpenSlipScanner();
+              }}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-sm font-semibold text-white bg-cyan-400/20 hover:bg-cyan-400/30 border border-cyan-300/35 rounded-xl transition-colors duration-100 cursor-pointer"
+            >
+              <span className="flex items-center gap-2.5 min-w-0">
+                <ScanLine className="w-4 h-4 shrink-0 text-cyan-200" aria-hidden="true" />
+                <span className="truncate">Slip Scan</span>
+              </span>
+            </button>
+          )}
+
           {onOpenAnnouncement && (
             <button
               type="button"
@@ -313,7 +332,23 @@ export const AppShell = memo(function AppShell({
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+              {onOpenSlipScanner && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    AppSounds.tap();
+                    onOpenSlipScanner();
+                  }}
+                  aria-label="Admin Slip Photo Extractor"
+                  title="Slip Photo Extractor (Admin Only)"
+                  className="relative inline-flex items-center justify-center gap-1 h-9 sm:h-10 px-2 sm:px-3 text-xs font-extrabold text-cyan-50 bg-cyan-500/28 hover:bg-cyan-500/42 border border-cyan-300/45 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                >
+                  <ScanLine className="w-4 h-4 shrink-0 text-cyan-200" aria-hidden="true" />
+                  <span className="hidden sm:inline">Scan</span>
+                </button>
+              )}
+
               {onOpenAnnouncement && (
                 <button
                   type="button"
