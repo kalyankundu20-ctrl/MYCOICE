@@ -18,8 +18,11 @@ import { useRef, useState } from 'react';
 import {
   FIREBASE_AUTH_PROVIDERS_URL,
   FIREBASE_AUTHORIZED_DOMAINS_URL,
+  FIREBASE_FIRESTORE_UPGRADE_URL,
+  FIREBASE_PRICING_URL,
   getAuthEnvironmentInfo,
   isAnonymousAuthDisabledError,
+  isFirestoreQuotaExceededError,
   isUnauthorizedDomainError,
 } from '../firebase';
 import type { CloudPublicAnnouncement } from '../services/cloudSync';
@@ -55,7 +58,8 @@ export function SellerLoginView({
   const [domainCopied, setDomainCopied] = useState(false);
   const logoTapRef = useRef<{ count: number; lastTs: number }>({ count: 0, lastTs: 0 });
 
-  const isAnonDisabled = isAnonymousAuthDisabledError(error);
+  const isQuotaExceeded = isFirestoreQuotaExceededError(error);
+  const isAnonDisabled = !isQuotaExceeded && isAnonymousAuthDisabledError(error);
   const isUnauthorizedDomain = isUnauthorizedDomainError(error);
   const authEnv = getAuthEnvironmentInfo();
   const canShowAdminButton = Boolean(
@@ -196,11 +200,40 @@ export function SellerLoginView({
           </label>
 
           {error && (
-            <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-xs font-bold text-rose-900 space-y-2.5">
-              <div className="flex items-start gap-2">
+            <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-xs font-bold text-rose-900 space-y-2.5 overflow-hidden">
+              <div className="flex items-start gap-2 min-w-0">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
-                <span>{error}</span>
+                <span className="break-words min-w-0">{error}</span>
               </div>
+              {isQuotaExceeded && (
+                <div className="pt-2 border-t border-rose-200/80 space-y-2">
+                  <div className="text-[11px] font-semibold text-rose-950 leading-relaxed">
+                    <strong>Note:</strong> Ye Firebase ka Free Daily Read limit full hone ki wajah se aaya hai. Kal quota apne aap reset ho jayega, ya Admin turant upgrade karke abhi chalu kar sakte hain.
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <a
+                      href={FIREBASE_FIRESTORE_UPGRADE_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => AppSounds.tap()}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-700 text-white text-xs font-extrabold hover:bg-rose-800 transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Upgrade Firestore</span>
+                    </a>
+                    <a
+                      href={FIREBASE_PRICING_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => AppSounds.tap()}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-rose-300 text-rose-900 text-xs font-extrabold hover:bg-rose-100 transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Quota Details</span>
+                    </a>
+                  </div>
+                </div>
+              )}
               {isUnauthorizedDomain && (
                 <div className="pt-2 border-t border-rose-200/80 space-y-2.5">
                   <div className="text-[11px] font-semibold text-rose-950 leading-relaxed">

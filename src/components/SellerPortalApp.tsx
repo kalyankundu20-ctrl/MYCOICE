@@ -279,7 +279,13 @@ export function SellerPortalApp({
     } catch {
       setPartyRecycleBin([]);
     }
+  }, [archiveStorageKey, recycleBinStorageKey]);
 
+  // Lazy-subscribe to cloud partyArchives ONLY when Archive tab or a Restored date is active
+  // (avoids burning Firestore read units on every routine 1PM/6PM/8PM entry open).
+  const needsCloudArchives = activeTab === 'Archive' || Boolean(restoredSnapshot);
+  useEffect(() => {
+    if (!needsCloudArchives) return;
     const unsubArchives = subscribePartyArchives(agencyId, partyId, (cloudSnaps) => {
       setPartyArchives(cloudSnaps);
       setRestoredSnapshot((curr) => {
@@ -289,17 +295,19 @@ export function SellerPortalApp({
           cloudSnaps.find((s) => s.date === curr.date);
         return fresh || curr;
       });
-      try {
-        window.localStorage.setItem(archiveStorageKey, JSON.stringify(cloudSnaps));
-      } catch {
-        // Ignore storage quota errors
-      }
+      scheduleIdlePersistence(() => {
+        try {
+          window.localStorage.setItem(archiveStorageKey, JSON.stringify(cloudSnaps.slice(0, 12)));
+        } catch {
+          // Ignore storage quota errors
+        }
+      });
     });
 
     return () => {
       unsubArchives();
     };
-  }, [agencyId, partyId, archiveStorageKey, recycleBinStorageKey]);
+  }, [agencyId, partyId, archiveStorageKey, needsCloudArchives]);
 
   useEffect(() => {
     setLoading(true);

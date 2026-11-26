@@ -119,6 +119,23 @@ export function SellerIdManagerModal({
   const [confirmSignOut, setConfirmSignOut] = useState(false);
   const [copiedAppUrl, setCopiedAppUrl] = useState(false);
   const [copiedDomain, setCopiedDomain] = useState(false);
+  const [syncingNow, setSyncingNow] = useState(false);
+  const [justSynced, setJustSynced] = useState(false);
+
+  const handleInstantSyncAll = async () => {
+    if (syncingNow || cloudBusy) return;
+    AppSounds.tap();
+    setSyncingNow(true);
+    setJustSynced(false);
+    await new Promise((r) => window.setTimeout(r, 0));
+    try {
+      await onSyncAllSellersNow();
+      setJustSynced(true);
+      window.setTimeout(() => setJustSynced(false), 2600);
+    } finally {
+      setSyncingNow(false);
+    }
+  };
 
   const openEditCreds = (party: CloudPartyDoc, priv?: CloudPartyPrivateDoc) => {
     AppSounds.tap();
@@ -501,15 +518,20 @@ export function SellerIdManagerModal({
                       )}
                       <button
                         type="button"
-                        disabled={cloudBusy}
-                        onClick={() => {
-                          AppSounds.tap();
-                          void onSyncAllSellersNow();
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[var(--kk-brand)] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl cursor-pointer disabled:opacity-50"
+                        disabled={cloudBusy || syncingNow}
+                        onClick={() => void handleInstantSyncAll()}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl cursor-pointer disabled:opacity-50 transition-colors ${
+                          justSynced
+                            ? 'text-emerald-800 bg-emerald-50 border border-emerald-200'
+                            : 'text-[var(--kk-brand)] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200'
+                        }`}
                       >
-                        <RefreshCw className={`w-3.5 h-3.5 ${cloudBusy ? 'animate-spin' : ''}`} />
-                        <span>Sync IDs</span>
+                        {justSynced ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        ) : (
+                          <RefreshCw className={`w-3.5 h-3.5 ${cloudBusy || syncingNow ? 'animate-spin' : ''}`} />
+                        )}
+                        <span>{syncingNow || cloudBusy ? 'Syncing...' : justSynced ? 'Synced ✓' : 'Sync IDs'}</span>
                       </button>
                       {!confirmSignOut ? (
                         <button
@@ -650,11 +672,11 @@ export function SellerIdManagerModal({
                               </div>
                               <button
                                 type="button"
-                                disabled={cloudBusy}
-                                onClick={() => void onSyncAllSellersNow()}
-                                className="px-3 py-1.5 text-xs font-bold text-white kk-brand-gradient rounded-xl cursor-pointer"
+                                disabled={cloudBusy || syncingNow}
+                                onClick={() => void handleInstantSyncAll()}
+                                className="px-3 py-1.5 text-xs font-bold text-white kk-brand-gradient rounded-xl cursor-pointer disabled:opacity-50"
                               >
-                                Generate ID
+                                {syncingNow ? 'Syncing...' : 'Generate ID'}
                               </button>
                             </div>
                           );

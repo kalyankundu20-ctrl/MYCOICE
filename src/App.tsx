@@ -87,6 +87,7 @@ import {
   syncAdminLedgerChunksCloud,
   syncAdminPrivateConfigCloud,
   syncAdminRestoredArchiveToPartiesCloud,
+  syncAllSellerPartiesBatch,
   syncSubSellerChainLineage,
   toggleSellerChainRole,
   toggleSellerPartyActive,
@@ -2329,87 +2330,239 @@ export default function App() {
     state.recycleBin,
   ]);
 
-  // Admin -> Cloud Sync: Sellers (Name, Rate, Due, Joma, Mobile) & Easy Login ID/Password creation
-  const syncAllSellersToCloud = useCallback(async () => {
-    if (
-      cloudSession.kind !== 'admin' ||
-      !authUser ||
-      !cloudAgencyRef.current ||
-      isAdminRestoredViewRef.current
-    ) {
-      return;
-    }
-    setCloudBusy(true);
-    setCloudError('');
-    try {
-      const agencyDoc = cloudAgencyRef.current;
-      const currState = latestStateRef.current;
-      const usedLoginIds = new Set(
-        cloudPrivatesRef.current
-          .map((pr) => (pr.loginId || '').trim().toUpperCase())
-          .filter(Boolean)
-      );
-
-      for (const seller of currState.sellers) {
-        const expectedId = makePartyIdFromSeller(seller);
-        const upperName = seller.name.trim().toUpperCase();
+  // Admin -> Cloud Sync: Instant parallel batch sync for ALL Master, Direct Seller & Sub-Seller IDs
+  const syncAllSellersToCloud = useCallback(
+    async (isManual = false) => {
+      if (
+        cloudSession.kind !== 'admin' ||
+        !authUser ||
+        !cloudAgencyRef.current ||
+        isAdminRestoredViewRef.current
+      ) {
+        return;
+      }
+      if (isManual) {
+        setCloudBusy(true);
+      }
+      setCloudError('');
+      try {
+        const agencyDoc = cloudAgencyRef.current;
+        const currState = latestStateRef.current;
         const directParties = cloudPartiesRef.current.filter((p) => !p.parentMasterId);
-        const existingParty =
-          directParties.find((p) => p.partyId === expectedId) ||
-          directParties.find((p) => p.name.trim().toUpperCase() === upperName);
-        const existingPriv = existingParty
-          ? cloudPrivatesRef.current.find((pr) => pr.partyId === existingParty.partyId)
-          : undefined;
-        const initialRows = extractSellerRowsFromEntries(
-          currState.entries,
-          seller.name,
-          existingParty?.partyId || expectedId
-        );
-        await createOrSyncSellerParty(
-          authUser.uid,
-          agencyDoc.ownerUid,
-          agencyDoc.adminUids,
-          seller,
-          existingParty,
-          existingPriv,
-          currState.date,
-          initialRows,
-          usedLoginIds
-        );
-      }
-
-      // Also backfill easy Login ID + Password for any existing Sub-Sellers missing credentials
-      const existingSheetIds = new Set(cloudSheetsRef.current.map((s) => s.partyId));
-      for (const subParty of cloudPartiesRef.current) {
-        if (!subParty.parentMasterId) continue;
-        const subPriv = cloudPrivatesRef.current.find((pr) => pr.partyId === subParty.partyId);
-        if (
-          subPriv?.loginId &&
-          subPriv?.loginPassword &&
-          subParty.accessKey?.startsWith('cred_')
-        ) {
-          continue;
+        const directById = new Map<string, CloudPartyDoc>();
+        const directByName = new Map<string, CloudPartyDoc>();
+        for (const p of directParties) {
+          directById.set(p.partyId, p);
+          const up = p.name.trim().toUpperCase();
+          if (up && !directByName.has(up)) directByName.set(up, p);
         }
-        const loginId = subPriv?.loginId
-          ? normalizeLoginId(subPriv.loginId)
-          : generateEasyLoginId(subParty.name, usedLoginIds);
-        const loginPassword = subPriv?.loginPassword || generateEasyPassword();
-        await updatePartyLoginCredentials(
-          authUser.uid,
-          subParty,
-          subPriv,
-          loginId,
-          loginPassword,
-          existingSheetIds.has(subParty.partyId),
-          false
+
+        const privByPartyId = new Map<string, CloudPartyPrivateDoc>();
+        const usedLoginIds = new Set<string>();
+        for (const pr of cloudPrivatesRef.current) {
+          privByPartyId.set(pr.partyId, pr);
+          const lid = (pr.loginId || '').trim().toUpperCase();
+          if (lid) usedLoginIds.add(lid);
+        }
+
+        // Only scan entries ONCE if there is at least 1 brand-new seller (or manual force sheet flush)
+        const newPartyNameToId = new Map<string, string>();
+        for (const seller of currState.sellers) {
+          const expectedId = makePartyIdFromSeller(seller);
+          const upperName = seller.name.trim().toUpperCase();
+          if (!directById.has(expectedId) && !directByName.has(upperName) && upperName) {
+            newPartyNameToId.set(upperName, expectedId);
+          }
+        }
+
+        const initialEntriesByPartyId: Record<string, Record<SessionId, TicketEntryRow[]>> = {};
+        const manualSheetGrouped: Record<string, Record<SessionId, TicketEntryRow[]>> = {};
+        const shouldScanEntries = newPartyNameToId.size > 0 || (isManual && directParties.length > 0);
+
+        if (shouldScanEntries) {
+          for (const pid of newPartyNameToId.values()) {
+            initialEntriesByPartyId[pid] = { '1PM': [], '6PM': [], '8PM': [] };
+          }
+          if (isManual) {
+            for (const p of directParties) {
+              manualSheetGrouped[p.partyId] = { '1PM': [], '6PM': [], '8PM': [] };
+            }
+          }
+          for (const sid of ['1PM', '6PM', '8PM'] as SessionId[]) {
+            const rows = currState.entries[sid] || [];
+            let lastValidName = '';
+            for (let i = 0; i < rows.length; i++) {
+              const row = rows[i];
+              const currName = row.name.trim();
+              if (currName !== '') lastValidName = currName;
+              if (isRowBlank(row) || row.id.startsWith('sub::')) continue;
+              const resolvedName = currName !== '' ? currName : lastValidName;
+              if (!resolvedName) continue;
+              const up = resolvedName.toUpperCase();
+
+              const newPid = newPartyNameToId.get(up);
+              if (newPid) {
+                initialEntriesByPartyId[newPid][sid].push({
+                  ...row,
+                  id: row.id.startsWith('admin::') ? row.id : `admin::${row.id}`,
+                  name: resolvedName,
+                });
+                continue;
+              }
+              if (isManual) {
+                const party = directByName.get(up);
+                if (party) {
+                  const sellerPrefix = `seller::${party.partyId}::`;
+                  const cloudRowId = row.id.startsWith(sellerPrefix)
+                    ? row.id.slice(sellerPrefix.length) || row.id
+                    : row.id.startsWith('admin::')
+                      ? row.id
+                      : `admin::${row.id}`;
+                  manualSheetGrouped[party.partyId][sid].push({
+                    ...row,
+                    id: cloudRowId,
+                    name: party.name,
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        const parallelTasks: Promise<unknown>[] = [];
+
+        // 1. Single-batch sync for ALL direct Master/Seller IDs (balances, rates, credentials, new IDs)
+        parallelTasks.push(
+          syncAllSellerPartiesBatch(
+            authUser.uid,
+            agencyDoc.ownerUid,
+            agencyDoc.adminUids,
+            currState.sellers,
+            directParties,
+            cloudPrivatesRef.current,
+            currState.date,
+            initialEntriesByPartyId,
+            usedLoginIds
+          )
         );
+
+        // 2. Parallel credential backfill for any Sub-Sellers missing easy Login ID + Password
+        const existingSheetIds = new Set(cloudSheetsRef.current.map((s) => s.partyId));
+        for (const subParty of cloudPartiesRef.current) {
+          if (!subParty.parentMasterId) continue;
+          const subPriv = privByPartyId.get(subParty.partyId);
+          if (
+            subPriv?.loginId &&
+            subPriv?.loginPassword &&
+            subParty.accessKey?.startsWith('cred_')
+          ) {
+            continue;
+          }
+          const loginId = subPriv?.loginId
+            ? normalizeLoginId(subPriv.loginId)
+            : generateEasyLoginId(subParty.name, usedLoginIds);
+          const loginPassword = subPriv?.loginPassword || generateEasyPassword();
+          parallelTasks.push(
+            updatePartyLoginCredentials(
+              authUser.uid,
+              subParty,
+              subPriv,
+              loginId,
+              loginPassword,
+              existingSheetIds.has(subParty.partyId),
+              false
+            )
+          );
+        }
+
+        // 3. On manual "Sync IDs" tap: also immediately push Agency Date/Winning/Config + dirty Live Sheets + Sub-Seller Lineage in parallel!
+        if (isManual) {
+          parallelTasks.push(syncAdminAgencyState(currState));
+
+          for (const party of directParties) {
+            const sliced = manualSheetGrouped[party.partyId];
+            if (!sliced) continue;
+            const clean1 = sanitizeSheetEntriesForCloud(sliced['1PM'], party.name);
+            const clean6 = sanitizeSheetEntriesForCloud(sliced['6PM'], party.name);
+            const clean8 = sanitizeSheetEntriesForCloud(sliced['8PM'], party.name);
+            const sig = serializeSheetEntries(clean1, clean6, clean8);
+            const sheetExists = existingSheetIds.has(party.partyId);
+            if (!sheetExists || sig !== lastCloudSheetSigRef.current[party.partyId]) {
+              lastCloudSheetSigRef.current[party.partyId] = sig;
+              lastAdminPushSigRef.current[party.partyId] = sig;
+              parallelTasks.push(
+                pushAdminSheetRowsForParty(
+                  authUser.uid,
+                  party,
+                  currState.date,
+                  clean1,
+                  clean6,
+                  clean8,
+                  sheetExists
+                )
+              );
+            }
+          }
+
+          const privateIds = new Set(cloudPrivatesRef.current.map((pr) => pr.partyId));
+          const sheetByPartyId = new Map(cloudSheetsRef.current.map((s) => [s.partyId, s]));
+          const sameArr = (a?: string[], b?: string[]) => {
+            const la = a || [];
+            const lb = b || [];
+            if (la.length !== lb.length) return false;
+            for (let i = 0; i < la.length; i++) if (la[i] !== lb[i]) return false;
+            return true;
+          };
+          for (const sub of cloudPartiesRef.current) {
+            if (!sub.parentMasterId) continue;
+            const lineage = computeFullAncestorChainFromParties(sub, cloudPartiesRef.current);
+            const sheet = sheetByPartyId.get(sub.partyId);
+            const needsLineage =
+              (sub.parentMasterUid || '') !== lineage.parentMasterUid ||
+              !sameArr(sub.ancestorMasterIds, lineage.ancestorMasterIds) ||
+              !sameArr(sub.ancestorMasterUids, lineage.ancestorMasterUids) ||
+              Boolean(
+                sheet &&
+                  ((sheet.parentMasterUid || '') !== lineage.parentMasterUid ||
+                    !sameArr(sheet.ancestorMasterIds, lineage.ancestorMasterIds) ||
+                    !sameArr(sheet.ancestorMasterUids, lineage.ancestorMasterUids))
+              );
+            if (needsLineage) {
+              parallelTasks.push(
+                syncSubSellerChainLineage(
+                  authUser.uid,
+                  sub,
+                  lineage,
+                  privateIds.has(sub.partyId),
+                  Boolean(sheet)
+                ).catch(() => {})
+              );
+            }
+          }
+        }
+
+        await Promise.all(parallelTasks);
+
+        if (isManual) {
+          const totalSyncedIds = Math.max(
+            currState.sellers.length,
+            cloudPartiesRef.current.filter((p) => p.role !== 'admin').length
+          );
+          AppSounds.success();
+          showToast(
+            `All ${totalSyncedIds} Master & Seller IDs synced instantly ✓`
+          );
+        }
+      } catch (err) {
+        setCloudError(err instanceof Error ? err.message : 'Could not sync sellers to cloud.');
+      } finally {
+        if (isManual) {
+          setCloudBusy(false);
+        }
       }
-    } catch (err) {
-      setCloudError(err instanceof Error ? err.message : 'Could not sync sellers to cloud.');
-    } finally {
-      setCloudBusy(false);
-    }
-  }, [cloudSession, authUser, extractSellerRowsFromEntries]);
+    },
+    [cloudSession, authUser, showToast]
+  );
 
   // Cloud -> Local Hydration: restore direct sellers already saved in Firestore (e.g. after app delete / fresh phone)
   useEffect(() => {
@@ -2508,8 +2661,8 @@ export default function App() {
     }
     const timer = window.setTimeout(() => {
       if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
-      void syncAllSellersToCloud();
-    }, 400);
+      void syncAllSellersToCloud(false);
+    }, 250);
     return () => window.clearTimeout(timer);
   }, [
     cloudSession,
@@ -2910,9 +3063,7 @@ export default function App() {
     setCloudBusy(true);
     setCloudError('');
     try {
-      for (const party of targets) {
-        await toggleSellerChainRole(party, 'master');
-      }
+      await Promise.all(targets.map((party) => toggleSellerChainRole(party, 'master')));
       AppSounds.success();
       showToast(`Chain System ON enabled for ${targets.length} Master Seller(s)`);
     } catch (err) {
@@ -5692,7 +5843,7 @@ export default function App() {
         subSellersCountByMasterId={subSellersCountByMasterId}
         onAdminSignIn={handleAdminGoogleSignIn}
         onSignOut={handleCloudSignOut}
-        onSyncAllSellersNow={syncAllSellersToCloud}
+        onSyncAllSellersNow={() => syncAllSellersToCloud(true)}
         onEnableChainAll={handleEnableChainAll}
         onTogglePartyActive={handleTogglePartyActive}
         onTogglePartyChainRole={handleTogglePartyChainRole}

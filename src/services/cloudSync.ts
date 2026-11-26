@@ -988,6 +988,353 @@ export async function createOrSyncSellerParty(
 }
 
 /**
+ * Ultra-fast parallel batch sync for ALL direct sellers (creates new IDs + updates changed
+ * rates/due/joma/mobile/credentials in ONE chunked writeBatch round-trip instead of N sequential awaits).
+ */
+export async function syncAllSellerPartiesBatch(
+  adminUid: string,
+  ownerUid: string,
+  adminUids: string[],
+  sellers: Seller[],
+  existingDirectParties: CloudPartyDoc[],
+  existingPrivates: CloudPartyPrivateDoc[],
+  date: string,
+  initialEntriesByPartyId: Record<string, Record<SessionId, TicketEntryRow[]>>,
+  usedLoginIds: Set<string>
+): Promise<{ changedCount: number; totalCount: number }> {
+  if (sellers.length === 0) return { changedCount: 0, totalCount: 0 };
+
+  const cleanDate = sanitizeIsoDate(date);
+  const safeAdminUids = adminUids.length > 0 ? adminUids.slice(0, 10) : [ownerUid];
+
+  const partyById = new Map<string, CloudPartyDoc>();
+  const partyByUpperName = new Map<string, CloudPartyDoc>();
+  for (const p of existingDirectParties) {
+    partyById.set(p.partyId, p);
+    const up = p.name.trim().toUpperCase();
+    if (up && !partyByUpperName.has(up)) partyByUpperName.set(up, p);
+  }
+  const privByPartyId = new Map<string, CloudPartyPrivateDoc>();
+  for (const pr of existingPrivates) {
+    privByPartyId.set(pr.partyId, pr);
+  }
+
+  interface PreparedSellerOp {
+    seller: Seller;
+    existingParty?: CloudPartyDoc;
+    existingPriv?: CloudPartyPrivateDoc;
+    partyId: string;
+    cleanName: string;
+    cleanRate: number;
+    cleanDue: number;
+    cleanJoma: number;
+    cleanMobile: string;
+    mode: 'create' | 'backfill' | 'update';
+    partyChanged: boolean;
+    mobileChanged: boolean;
+    loginId?: string;
+    loginPassword?: string;
+    accessKey?: string;
+  }
+
+  const rawTasks: PreparedSellerOp[] = [];
+  for (const seller of sellers) {
+    const expectedId = makePartyIdFromSeller(seller);
+    const upperName = seller.name.trim().toUpperCase();
+    const existingParty = partyById.get(expectedId) || partyByUpperName.get(upperName);
+    const existingPriv = existingParty ? privByPartyId.get(existingParty.partyId) : undefined;
+    const partyId = existingParty?.partyId || expectedId;
+    const cleanName = (seller.name.trim() || 'SELLER').slice(0, 60);
+    const cleanRate = sanitizeNumber(seller.rate, 0, 10000, 0);
+    const cleanDue = sanitizeNumber(seller.due, -100000000, 100000000, 0);
+    const cleanJoma = sanitizeNumber(seller.joma, -100000000, 100000000, 0);
+    const cleanMobile = String(seller.mobile || '').slice(0, 30);
+
+    if (!existingParty) {
+      const loginId = generateEasyLoginId(cleanName, usedLoginIds);
+      const loginPassword = generateEasyPassword();
+      rawTasks.push({
+        seller,
+        partyId,
+        cleanName,
+        cleanRate,
+        cleanDue,
+        cleanJoma,
+        cleanMobile,
+        mode: 'create',
+        partyChanged: true,
+        mobileChanged: true,
+        loginId,
+        loginPassword,
+      });
+      continue;
+    }
+
+    const partyChanged =
+      existingParty.name !== cleanName ||
+      existingParty.rate !== cleanRate ||
+      existingParty.due !== cleanDue ||
+      existingParty.joma !== cleanJoma;
+    const mobileChanged = (existingPriv?.mobile || '') !== cleanMobile;
+    const needsCredBackfill =
+      !existingPriv?.loginId ||
+      !existingPriv?.loginPassword ||
+      !existingParty.accessKey?.startsWith('cred_');
+
+    if (!partyChanged && !mobileChanged && !needsCredBackfill) {
+      continue;
+    }
+
+    if (needsCredBackfill) {
+      const loginId = existingPriv?.loginId
+        ? normalizeLoginId(existingPriv.loginId)
+        : generateEasyLoginId(cleanName, usedLoginIds);
+      const loginPassword = existingPriv?.loginPassword || generateEasyPassword();
+      rawTasks.push({
+        seller,
+        existingParty,
+        existingPriv,
+        partyId,
+        cleanName,
+        cleanRate,
+        cleanDue,
+        cleanJoma,
+        cleanMobile,
+        mode: 'backfill',
+        partyChanged,
+        mobileChanged,
+        loginId,
+        loginPassword,
+      });
+    } else {
+      rawTasks.push({
+        seller,
+        existingParty,
+        existingPriv,
+        partyId,
+        cleanName,
+        cleanRate,
+        cleanDue,
+        cleanJoma,
+        cleanMobile,
+        mode: 'update',
+        partyChanged,
+        mobileChanged,
+      });
+    }
+  }
+
+  if (rawTasks.length === 0) {
+    return { changedCount: 0, totalCount: sellers.length };
+  }
+
+  // Compute all credential SHA-256 hashes in parallel
+  await Promise.all(
+    rawTasks.map(async (t) => {
+      if ((t.mode === 'create' || t.mode === 'backfill') && t.loginId && t.loginPassword) {
+        t.accessKey = await computeCredentialAccessKey(t.loginId, t.loginPassword);
+      }
+    })
+  );
+
+  // Pack into writeBatch chunks (<= 50 sellers = <= 200 ops per batch, well under Firestore's 500-op limit)
+  const CHUNK_SIZE = 45;
+  const chunks: PreparedSellerOp[][] = [];
+  for (let i = 0; i < rawTasks.length; i += CHUNK_SIZE) {
+    chunks.push(rawTasks.slice(i, i + CHUNK_SIZE));
+  }
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const batch = writeBatch(db);
+      for (const t of chunk) {
+        const partyRef = doc(db, 'agencies', AGENCY_ID, 'parties', t.partyId);
+        const privateRef = doc(db, 'agencies', AGENCY_ID, 'partyPrivate', t.partyId);
+
+        if (t.mode === 'create' && t.accessKey && t.loginId && t.loginPassword) {
+          const inviteRef = doc(db, 'partyInvites', t.accessKey);
+          const sheetRef = doc(db, 'agencies', AGENCY_ID, 'sheets', t.partyId);
+          const init = initialEntriesByPartyId[t.partyId] || { '1PM': [], '6PM': [], '8PM': [] };
+
+          batch.set(partyRef, {
+            agencyId: AGENCY_ID,
+            partyId: t.partyId,
+            name: t.cleanName,
+            role: 'master',
+            parentMasterId: '',
+            parentMasterUid: '',
+            ownerUid,
+            adminUids: safeAdminUids,
+            rate: t.cleanRate,
+            due: t.cleanDue,
+            joma: t.cleanJoma,
+            active: true,
+            accessKey: t.accessKey,
+            assignedUid: '',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          batch.set(privateRef, {
+            agencyId: AGENCY_ID,
+            partyId: t.partyId,
+            ownerUid,
+            adminUids: safeAdminUids,
+            parentMasterId: '',
+            parentMasterUid: '',
+            mobile: t.cleanMobile,
+            assignedEmail: '',
+            loginId: t.loginId,
+            loginPassword: t.loginPassword,
+            updatedAt: serverTimestamp(),
+          });
+          batch.set(inviteRef, {
+            accessKey: t.accessKey,
+            agencyId: AGENCY_ID,
+            partyId: t.partyId,
+            partyName: t.cleanName,
+            role: 'master',
+            parentMasterId: '',
+            parentMasterUid: '',
+            ownerUid,
+            createdByUid: adminUid,
+            active: true,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          batch.set(sheetRef, {
+            agencyId: AGENCY_ID,
+            sheetId: t.partyId,
+            partyId: t.partyId,
+            partyName: t.cleanName,
+            role: 'master',
+            ownerUid,
+            adminUids: safeAdminUids,
+            assignedUid: '',
+            parentMasterId: '',
+            parentMasterUid: '',
+            date: cleanDate,
+            entries1PM: sanitizeSheetEntriesForCloud(init['1PM'], t.cleanName),
+            entries6PM: sanitizeSheetEntriesForCloud(init['6PM'], t.cleanName),
+            entries8PM: sanitizeSheetEntriesForCloud(init['8PM'], t.cleanName),
+            updatedByUid: adminUid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else if (t.mode === 'backfill' && t.existingParty && t.accessKey && t.loginId && t.loginPassword) {
+          if (t.existingParty.accessKey && t.existingParty.accessKey !== t.accessKey) {
+            batch.delete(doc(db, 'partyInvites', t.existingParty.accessKey));
+          }
+          batch.set(doc(db, 'partyInvites', t.accessKey), {
+            accessKey: t.accessKey,
+            agencyId: AGENCY_ID,
+            partyId: t.partyId,
+            partyName: t.cleanName,
+            role: t.existingParty.role,
+            parentMasterId: t.existingParty.parentMasterId || '',
+            parentMasterUid: t.existingParty.parentMasterUid || '',
+            ownerUid: t.existingParty.ownerUid,
+            createdByUid: adminUid,
+            active: t.existingParty.active,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          batch.update(partyRef, {
+            name: t.cleanName,
+            rate: t.cleanRate,
+            due: t.cleanDue,
+            joma: t.cleanJoma,
+            accessKey: t.accessKey,
+            updatedAt: serverTimestamp(),
+          });
+          if (t.existingPriv) {
+            batch.update(privateRef, {
+              parentMasterId: t.existingParty.parentMasterId || '',
+              mobile: t.cleanMobile,
+              loginId: t.loginId,
+              loginPassword: t.loginPassword,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            batch.set(privateRef, {
+              agencyId: AGENCY_ID,
+              partyId: t.partyId,
+              ownerUid,
+              adminUids: safeAdminUids,
+              parentMasterId: t.existingParty.parentMasterId || '',
+              parentMasterUid: t.existingParty.parentMasterUid || '',
+              mobile: t.cleanMobile,
+              assignedEmail: '',
+              loginId: t.loginId,
+              loginPassword: t.loginPassword,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } else if (t.existingParty) {
+          if (t.partyChanged) {
+            batch.update(partyRef, {
+              name: t.cleanName,
+              rate: t.cleanRate,
+              due: t.cleanDue,
+              joma: t.cleanJoma,
+              updatedAt: serverTimestamp(),
+            });
+            if (t.existingParty.name !== t.cleanName && t.existingParty.accessKey) {
+              batch.update(doc(db, 'partyInvites', t.existingParty.accessKey), {
+                partyName: t.cleanName,
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+          if (t.mobileChanged) {
+            if (t.existingPriv) {
+              batch.update(privateRef, {
+                mobile: t.cleanMobile,
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              batch.set(privateRef, {
+                agencyId: AGENCY_ID,
+                partyId: t.partyId,
+                ownerUid,
+                adminUids: safeAdminUids,
+                parentMasterId: t.existingParty.parentMasterId || '',
+                parentMasterUid: t.existingParty.parentMasterUid || '',
+                mobile: t.cleanMobile,
+                assignedEmail: '',
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+        }
+      }
+
+      try {
+        await batch.commit();
+      } catch {
+        // Fallback to parallel per-party commit if any single doc failed rules
+        await Promise.all(
+          chunk.map((t) =>
+            createOrSyncSellerParty(
+              adminUid,
+              ownerUid,
+              safeAdminUids,
+              t.seller,
+              t.existingParty,
+              t.existingPriv,
+              cleanDate,
+              initialEntriesByPartyId[t.partyId] || { '1PM': [], '6PM': [], '8PM': [] },
+              usedLoginIds
+            )
+          )
+        );
+      }
+    })
+  );
+
+  return { changedCount: rawTasks.length, totalCount: sellers.length };
+}
+
+/**
  * Push Admin's edits for a specific Seller's rows to /agencies/kk-main/sheets/{partyId}.
  */
 export async function pushAdminSheetRowsForParty(
@@ -3754,15 +4101,16 @@ async function syncSingleAdminArchiveAgainstExisting(
           savedAt: item.data.savedAt || item.data.payload.savedAt,
           trigger: item.data.trigger || item.data.payload.trigger || 'manual',
         };
+        const { payload } = buildUpdatedPayloadForParty(existingSnap);
+        const nextSig = JSON.stringify(payload);
+        // Fast-path: most Firestore archive payloads are already sanitized; skip re-sanitizing if identical
+        if (JSON.stringify(existingSnap) === nextSig) continue;
         const normalizedExisting = sanitizePartyArchivePayload(
           existingSnap,
           existingSnap.id,
           cleanDate
         );
-        const { payload } = buildUpdatedPayloadForParty(existingSnap);
-        const prevSig = JSON.stringify(normalizedExisting);
-        const nextSig = JSON.stringify(payload);
-        if (prevSig === nextSig) continue;
+        if (JSON.stringify(normalizedExisting) === nextSig) continue;
 
         pendingOps.push({
           kind: 'update',
@@ -3993,20 +4341,21 @@ export async function syncAdminArchivesBatchToPartiesCloud(
 
   const allDocs = await fetchAllAgencyPartyArchives(agencyId, ownerUid, actorUid, activeParties);
 
-  let totalSynced = 0;
-  for (const snap of uniqueSnaps) {
-    totalSynced += await syncSingleAdminArchiveAgainstExisting(
-      agencyId,
-      ownerUid,
-      snap.date,
-      snap,
-      activeParties,
-      config,
-      allDocs,
-      createMissing
-    );
-  }
-  return totalSynced;
+  const counts = await Promise.all(
+    uniqueSnaps.map((snap) =>
+      syncSingleAdminArchiveAgainstExisting(
+        agencyId,
+        ownerUid,
+        snap.date,
+        snap,
+        activeParties,
+        config,
+        allDocs,
+        createMissing
+      )
+    )
+  );
+  return counts.reduce((sum, n) => sum + n, 0);
 }
 
 export async function carryForwardSubSellerBalancesCloud(
@@ -4016,6 +4365,7 @@ export async function carryForwardSubSellerBalancesCloud(
   subBillsByPartyId: Record<string, SellerBillRow>
 ): Promise<void> {
   const directSubs = subParties.filter((p) => p.parentMasterId === masterParty.partyId);
+  const updates: Array<{ sub: CloudPartyDoc; nextDue: number; nextJoma: number }> = [];
   for (const sub of directSubs) {
     const bill = subBillsByPartyId[sub.partyId];
     if (!bill) continue;
@@ -4023,10 +4373,30 @@ export async function carryForwardSubSellerBalancesCloud(
     const nextDue = net > 0 ? net : 0;
     const nextJoma = net < 0 ? Math.round(Math.abs(net) * 100) / 100 : 0;
     if (sub.due === nextDue && sub.joma === nextJoma) continue;
-    await updateSubSellerParty(sub, undefined, {
-      due: nextDue,
-      joma: nextJoma,
-    });
+    updates.push({ sub, nextDue, nextJoma });
+  }
+  if (updates.length === 0) return;
+
+  try {
+    const batch = writeBatch(db);
+    for (const u of updates) {
+      const agencyId = u.sub.agencyId || AGENCY_ID;
+      batch.update(doc(db, 'agencies', agencyId, 'parties', u.sub.partyId), {
+        due: sanitizeNumber(u.nextDue, -100000000, 100000000, 0),
+        joma: sanitizeNumber(u.nextJoma, -100000000, 100000000, 0),
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+  } catch {
+    await Promise.all(
+      updates.map((u) =>
+        updateSubSellerParty(u.sub, undefined, {
+          due: u.nextDue,
+          joma: u.nextJoma,
+        })
+      )
+    );
   }
 }
 
