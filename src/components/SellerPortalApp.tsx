@@ -389,22 +389,64 @@ export function SellerPortalApp({
     }
     if (lastSyncedDate === liveAgencyDateStr) return;
 
+    // Compute expected closed date (previous calendar day before liveAgencyDateStr)
+    const prevExpectedIso = (() => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(liveAgencyDateStr);
+      if (!m) return '';
+      const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) - 1));
+      return d.toISOString().slice(0, 10);
+    })();
+
     let cancelled = false;
-    void fetchPartyArchivesOnce(agencyId, partyId).then((cloudSnaps) => {
-      if (cancelled) return;
-      if (cloudSnaps.length > 0) {
-        applyCloudArchives(cloudSnaps);
-      } else {
-        try {
-          window.localStorage.setItem(archiveSyncedDateKey, liveAgencyDateStr);
-        } catch {
-          // Ignore storage errors
+    let retryTimer: number | null = null;
+
+    const runOneShotFetch = (attempt: number) => {
+      void fetchPartyArchivesOnce(agencyId, partyId).then((cloudSnaps) => {
+        if (cancelled) return;
+        const hasFreshClosedArchive =
+          Boolean(prevExpectedIso) && cloudSnaps.some((s) => s.date >= prevExpectedIso);
+
+        if (cloudSnaps.length > 0) {
+          setPartyArchives(cloudSnaps);
+          setRestoredSnapshot((curr) => {
+            if (!curr) return null;
+            const fresh =
+              cloudSnaps.find((s) => s.id === curr.id) ||
+              cloudSnaps.find((s) => s.date === curr.date);
+            return fresh || curr;
+          });
+          scheduleIdlePersistence(() => {
+            try {
+              window.localStorage.setItem(archiveStorageKey, JSON.stringify(cloudSnaps.slice(0, 12)));
+              if (hasFreshClosedArchive || attempt >= 2) {
+                window.localStorage.setItem(archiveSyncedDateKey, liveAgencyDateStr);
+              }
+            } catch {
+              // Ignore storage quota errors
+            }
+          });
         }
-      }
-    });
+
+        // If Admin Close Day archive is still finishing in Firestore, auto-retry cleanly
+        if (!hasFreshClosedArchive && attempt < 2) {
+          retryTimer = window.setTimeout(() => {
+            if (!cancelled) runOneShotFetch(attempt + 1);
+          }, attempt === 0 ? 3500 : 6500);
+        } else if (cloudSnaps.length === 0 && attempt >= 2) {
+          try {
+            window.localStorage.setItem(archiveSyncedDateKey, liveAgencyDateStr);
+          } catch {
+            // Ignore storage errors
+          }
+        }
+      });
+    };
+
+    runOneShotFetch(0);
 
     return () => {
       cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
   }, [agencyId, partyId, archiveStorageKey, archiveSyncedDateKey, isArchiveViewOpen, liveAgencyDateStr]);
 

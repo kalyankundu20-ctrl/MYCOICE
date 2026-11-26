@@ -3536,6 +3536,12 @@ export async function savePartyArchiveCloud(
         const existingData = existingSnap.data() as Partial<CloudPartyArchiveDoc>;
         if (existingData?.partyId === party.partyId) {
           await updateDoc(ref, {
+            ...(isAdminActor
+              ? {
+                  adminUids: body.adminUids,
+                  assignedUid: party.assignedUid || '',
+                }
+              : {}),
             date: cleanDate,
             payload,
             updatedAt: serverTimestamp(),

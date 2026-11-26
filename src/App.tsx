@@ -626,6 +626,7 @@ export default function App() {
   const [restoredSyncState, setRestoredSyncState] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const pendingRestoredCloudPromiseRef = useRef<Promise<void> | null>(null);
   const reconciledHistorySigRef = useRef<string>('');
+  const dayCloseSyncingRef = useRef<boolean>(false);
 
   const updateAdminRestoredMode = useCallback(
     (next: AdminRestoredArchiveMode | null) => {
@@ -2265,7 +2266,7 @@ export default function App() {
     if (sig === lastAgencySigRef.current) return;
 
     const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current) return;
+      if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current || dayCloseSyncingRef.current) return;
       lastAgencySigRef.current = sig;
       void syncAdminAgencyState(latestStateRef.current).catch((err) => {
         setCloudError(err instanceof Error ? err.message : 'Agency sync error');
@@ -4255,7 +4256,7 @@ export default function App() {
     const ownerUid = cloudAgencyOwnerUid || cloudSession.ownerUid;
     const actorUid = authUser.uid;
     const timer = window.setTimeout(() => {
-      if (isAdminRestoredViewRef.current) return;
+      if (isAdminRestoredViewRef.current || dayCloseSyncingRef.current) return;
       reconciledHistorySigRef.current = fullSig;
       void syncAdminArchivesBatchToPartiesCloud(
         agencyId,
@@ -4556,50 +4557,6 @@ export default function App() {
       const agencyId = cloudSession.agencyId;
       const adminUids = cloudAgencyRef.current?.adminUids || [ownerUid];
 
-      // Immediately push nextDate + cleared winning numbers to /agencies/kk-main
-      // so every Master, Sub-Master & Sub-Seller rolls over cleanly right away.
-      lastAgencySigRef.current = JSON.stringify({
-        date: nextDate,
-        limitThreshold: closedConfig.limitThreshold,
-        sellerLimitThreshold: closedConfig.sellerLimitThreshold ?? 20,
-        excludedPrizeNames: closedConfig.excludedPrizeNames,
-        itemOptions: closedConfig.itemOptions,
-        winning1PM: '',
-        winning6PM: '',
-        winning8PM: '',
-      });
-      void syncAdminAgencyState(nextAgencyState).catch((err) => {
-        console.error('[KK Agency] Day Close agency rollover sync failed:', err);
-      });
-
-      // Immediately flush cleared live ledger chunks + newly closed Admin archive to Cloud Vault
-      // (no debounce delay so a quick reload/switch can NEVER resurrect yesterday's ledger!)
-      const rolloverRevMs = Math.max(Date.now(), lastSavedAtRef.current);
-      void syncAdminLedgerChunksCloud(
-        adminUid,
-        ownerUid,
-        adminUids,
-        nextDate,
-        nextAgencyState.entries,
-        rolloverRevMs,
-        adminChunkSigsRef.current,
-        adminChunkIdsRef.current,
-        agencyId
-      ).catch((err) => {
-        console.error('[KK Agency] Day Close live ledger clear sync failed:', err);
-      });
-      void syncAdminArchivesCloud(
-        ownerUid,
-        adminUids,
-        nextAgencyState.history,
-        nextAgencyState.recycleBin || [],
-        adminArchiveSigsRef.current,
-        adminArchiveDocIdsRef.current,
-        agencyId
-      ).catch((err) => {
-        console.error('[KK Agency] Day Close Admin archive cloud sync failed:', err);
-      });
-
       const initialParties = [...cloudPartiesRef.current];
       const initialSheets = [...cloudSheetsRef.current];
       const emptySig = serializeSheetEntries([], [], []);
@@ -4619,25 +4576,55 @@ export default function App() {
         }
       }
 
+      // Immediately flush cleared live ledger chunks + newly closed Admin archive to Cloud Vault
+      // (no debounce delay so a quick reload/switch can NEVER resurrect yesterday's ledger!)
+      const rolloverRevMs = Math.max(Date.now(), lastSavedAtRef.current);
+      const adminLedgerClearPromise = syncAdminLedgerChunksCloud(
+        adminUid,
+        ownerUid,
+        adminUids,
+        nextDate,
+        nextAgencyState.entries,
+        rolloverRevMs,
+        adminChunkSigsRef.current,
+        adminChunkIdsRef.current,
+        agencyId
+      ).catch((err) => {
+        console.error('[KK Agency] Day Close live ledger clear sync failed:', err);
+      });
+      const adminArchiveSavePromise = syncAdminArchivesCloud(
+        ownerUid,
+        adminUids,
+        nextAgencyState.history,
+        nextAgencyState.recycleBin || [],
+        adminArchiveSigsRef.current,
+        adminArchiveDocIdsRef.current,
+        agencyId
+      ).catch((err) => {
+        console.error('[KK Agency] Day Close Admin archive cloud sync failed:', err);
+      });
+
       showToast(
-        `Closing ${formatDateDDMM(closedDate)} — Admin + sab Master/Sub-Seller archive ho raha hai...`,
+        `Closing ${formatDateDDMM(closedDate)} — Admin + sab Master/Sub-Master archive save ho raha hai...`,
         3200
       );
 
+      dayCloseSyncingRef.current = true;
       void (async () => {
-        let allParties = initialParties;
-        let allSheets = initialSheets;
+        try {
+          let allParties = initialParties;
+          let allSheets = initialSheets;
 
-        // Safety net: if live subscriptions haven't settled yet, fetch fresh parties & sheets from Firestore
-        if (allParties.length === 0) {
-          try {
-            const fetched = await fetchAdminPartiesAndSheetsOnce(ownerUid, agencyId);
-            allParties = fetched.parties;
-            allSheets = fetched.sheets;
-          } catch (err) {
-            console.error('[KK Agency] Could not load parties/sheets during Day Close:', err);
+          // Safety net: if live subscriptions haven't settled yet, fetch fresh parties & sheets from Firestore
+          if (allParties.length === 0 || allSheets.length === 0) {
+            try {
+              const fetched = await fetchAdminPartiesAndSheetsOnce(ownerUid, agencyId);
+              if (fetched.parties.length > 0) allParties = fetched.parties;
+              if (fetched.sheets.length > 0) allSheets = fetched.sheets;
+            } catch (err) {
+              console.error('[KK Agency] Could not load parties/sheets during Day Close:', err);
+            }
           }
-        }
 
         const activeParties = allParties.filter((p) => p.active !== false && p.role !== 'admin');
         const existingSheetIds = new Set(allSheets.map((s) => s.partyId));
@@ -5129,39 +5116,74 @@ export default function App() {
         }
 
         // All closed sheet data is now snapshotted in memory inside `partyArchiveJobs` —
-        // Run Step 1 (save archives), Step 2 (carry forward sub-balances), AND Step 3 (clear ALL live sheets
-        // for active AND any inactive parties with an existing sheet doc) right away so live sheets clear
-        // immediately without waiting behind slow archive writes!
-        const CONCURRENCY = 6;
+        // STEP 1: Save EVERY Master, Sub-Master, Direct Seller & Sub-Seller's Close Day archive FIRST
+        // BEFORE pushing nextDate to /agencies/kk-main so their phones see the new Close Day archive
+        // the instant their app rolls over to nextDate (zero race condition!).
+        const CONCURRENCY = 8;
         let savedCount = 0;
         let failedCount = 0;
 
-        const saveArchivesTask = (async () => {
-          for (let i = 0; i < partyArchiveJobs.length; i += CONCURRENCY) {
-            const slice = partyArchiveJobs.slice(i, i + CONCURRENCY);
-            await Promise.all(
-              slice.map(async ({ party, snap }) => {
+        for (let i = 0; i < partyArchiveJobs.length; i += CONCURRENCY) {
+          const slice = partyArchiveJobs.slice(i, i + CONCURRENCY);
+          await Promise.all(
+            slice.map(async ({ party, snap }) => {
+              try {
+                await savePartyArchiveCloud(adminUid, party, snap, true);
+                savedCount += 1;
+              } catch (firstErr) {
                 try {
                   await savePartyArchiveCloud(adminUid, party, snap, true);
                   savedCount += 1;
-                } catch (firstErr) {
-                  try {
-                    await savePartyArchiveCloud(adminUid, party, snap, true);
-                    savedCount += 1;
-                  } catch (retryErr) {
-                    failedCount += 1;
-                    console.error(
-                      '[KK Agency] Failed to archive party on Day Close:',
-                      party.name,
-                      party.partyId,
-                      retryErr || firstErr
-                    );
-                  }
+                } catch (retryErr) {
+                  failedCount += 1;
+                  console.error(
+                    '[KK Agency] Failed to archive party on Day Close:',
+                    party.name,
+                    party.partyId,
+                    retryErr || firstErr
+                  );
                 }
-              })
+              }
+            })
+          );
+        }
+
+        // Self-healing automatic fallback if any party archive write failed transiently
+        if (failedCount > 0 && allParties.length > 0) {
+          try {
+            const recoveredCount = await syncAdminRestoredArchiveToPartiesCloud(
+              agencyId,
+              ownerUid,
+              closedDate,
+              snapshot,
+              allParties,
+              closedConfig,
+              adminUid
             );
+            if (recoveredCount > 0) {
+              savedCount = Math.min(partyArchiveJobs.length, savedCount + recoveredCount);
+              failedCount = Math.max(0, failedCount - recoveredCount);
+            }
+          } catch (fallbackErr) {
+            console.error('[KK Agency] Day Close fallback archive reconcile failed:', fallbackErr);
           }
-        })();
+        }
+
+        // STEP 2: Now roll agency.date forward to nextDate + carry forward sub-balances + clear live sheets
+        // in parallel — Master & Sub-Master phones wake up to nextDate with closedDate ALREADY in Archive!
+        lastAgencySigRef.current = JSON.stringify({
+          date: nextDate,
+          limitThreshold: closedConfig.limitThreshold,
+          sellerLimitThreshold: closedConfig.sellerLimitThreshold ?? 20,
+          excludedPrizeNames: closedConfig.excludedPrizeNames,
+          itemOptions: closedConfig.itemOptions,
+          winning1PM: '',
+          winning6PM: '',
+          winning8PM: '',
+        });
+        const agencyRolloverTask = syncAdminAgencyState(nextAgencyState).catch((err) => {
+          console.error('[KK Agency] Day Close agency rollover sync failed:', err);
+        });
 
         const carrySubBalancesTask = (async () => {
           const carryItems = Array.from(carriedSubBalances.values());
@@ -5233,19 +5255,45 @@ export default function App() {
           }
         })();
 
-        await Promise.all([saveArchivesTask, carrySubBalancesTask, clearSheetsTask]);
+        await Promise.all([
+          agencyRolloverTask,
+          carrySubBalancesTask,
+          clearSheetsTask,
+          adminLedgerClearPromise,
+          adminArchiveSavePromise,
+        ]);
 
-        if (failedCount > 0) {
-          reconciledHistorySigRef.current = '';
+        if (failedCount === 0) {
+          // Record this closedDate as already synced to all active parties so background reconcile
+          // does not immediately re-write identical docs.
+          try {
+            const partySig = allParties
+              .filter((p) => p.active !== false && p.role !== 'admin')
+              .map((p) => `${p.partyId}:${p.name}:${p.role}:${p.parentMasterId}`)
+              .sort()
+              .join(',');
+            const snapSig = `${snapshot.date}:${snapshot.totalSold}:${snapshot.totalBill}:${snapshot.totalPrize}:${snapshot.totalNetPayable}:${(snapshot.sellerSummaries || []).map((s) => `${s.name}=${s.sold}/${s.due}/${s.joma}/${s.total}`).join(',')}##${partySig}`;
+            const partyArchCacheKey = `kk-synced-party-archive-dates:v1:${agencyId}`;
+            const existingRaw = window.localStorage.getItem(partyArchCacheKey);
+            const map = existingRaw ? (JSON.parse(existingRaw) as Record<string, string>) : {};
+            map[closedDate] = snapSig;
+            window.localStorage.setItem(partyArchCacheKey, JSON.stringify(map));
+          } catch {
+            // Ignore storage errors
+          }
           showToast(
-            `Archived ${formatDateDDMM(closedDate)} (Admin + ${savedCount} IDs, ${failedCount} retry needed — Archive tab me "Sync IDs" dabayein)`,
-            6000
-          );
-        } else {
-          showToast(
-            `Archived ${formatDateDDMM(closedDate)} (Admin + ${savedCount} Master/Sub-Seller) · ${formatDateDDMM(nextDate)} ready`,
+            `Archived ${formatDateDDMM(closedDate)} (Admin + ${savedCount} Master/Sub-Master) · ${formatDateDDMM(nextDate)} ready`,
             5000
           );
+        } else {
+          reconciledHistorySigRef.current = '';
+          showToast(
+            `Archived ${formatDateDDMM(closedDate)} (Admin + ${savedCount} IDs, ${failedCount} auto-retry pending)`,
+            5500
+          );
+        }
+        } finally {
+          dayCloseSyncingRef.current = false;
         }
       })();
       return;
