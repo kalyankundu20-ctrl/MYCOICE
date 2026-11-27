@@ -886,7 +886,7 @@ export default function App() {
       sellerNames: string[],
       tabMapping: Record<SessionId, string>,
       silentToast = false,
-      manualTrigger = false
+      _manualTrigger = false
     ) => {
       const sessions: SessionId[] = ['1PM', '6PM', '8PM'];
       const mappedSessions = sessions.filter((sid) => Boolean((tabMapping[sid] || '').trim()));
@@ -910,24 +910,12 @@ export default function App() {
       };
 
       const sig = JSON.stringify(normalizedIncoming);
-      const prevCountsSnapshot: Record<SessionId, number> = {
-        '1PM': prevGsheetCountsRef.current['1PM'] || 0,
-        '6PM': prevGsheetCountsRef.current['6PM'] || 0,
-        '8PM': prevGsheetCountsRef.current['8PM'] || 0,
-      };
 
       const clearedSessions: SessionId[] = [];
       for (const sid of mappedSessions) {
         const incomingEmpty = normalizedIncoming[sid].length === 0;
         const hadGsheetInState = actualCurrentGsheet[sid].length > 0;
-        const hadGsheetPreviously = prevCountsSnapshot[sid] > 0;
-        const hasAdminNonMobileRows = (currEntries[sid] || []).some(
-          (r) => !isRowBlank(r) && !r.id.startsWith('seller::') && !r.id.startsWith('sub::')
-        );
-        if (
-          incomingEmpty &&
-          (hadGsheetInState || hadGsheetPreviously || (manualTrigger && hasAdminNonMobileRows))
-        ) {
+        if (incomingEmpty && hadGsheetInState) {
           clearedSessions.push(sid);
         }
       }
@@ -949,7 +937,6 @@ export default function App() {
         // ignore storage write error
       }
 
-      const clearedSet = new Set<SessionId>(clearedSessions);
       const totalIncoming =
         normalizedIncoming['1PM'].length +
         normalizedIncoming['6PM'].length +
@@ -986,42 +973,30 @@ export default function App() {
             return existing.length > 0 ? existing : createBlankRows(1);
           }
 
-          const hasGsheetInPrev = existing.some((r) => isGoogleSheetRowId(r.id));
-          const isClearedNow =
-            normalizedIncoming[sid].length === 0 &&
-            (clearedSet.has(sid) || hasGsheetInPrev);
-
-          if (isClearedNow) {
-            // Google Sheet tab was cleared -> clear ALL Google Sheet & Admin's own rows on this session,
-            // while keeping live mobile Seller/Sub-Seller phone rows (seller:: / sub::) intact.
-            const preservedMobileRows = existing.filter(
-              (r) =>
-                (r.id.startsWith('seller::') || r.id.startsWith('sub::')) &&
-                Boolean(
-                  r.name.trim() ||
-                    r.item.trim() ||
-                    r.start.trim() ||
-                    r.end.trim() ||
-                    r.qtyOverride.trim() ||
-                    r.rangeOverride.trim()
-                )
-            );
-            return preservedMobileRows.length > 0 ? preservedMobileRows : createBlankRows(1);
+          // ALWAYS keep 100% of non-Google-Sheet rows (Admin manual/pasted + Seller/Sub-Seller phone rows) intact!
+          // Even if the Google Sheet tab is cleared or empty, ONLY `gsheet::` rows are removed — NEVER Admin's own data.
+          let lastSeenName = '';
+          const preserved: TicketEntryRow[] = [];
+          for (const r of existing) {
+            if (r.name.trim()) {
+              lastSeenName = r.name.trim();
+            }
+            if (isGoogleSheetRowId(r.id)) continue;
+            if (
+              r.name.trim() ||
+              r.item.trim() ||
+              r.start.trim() ||
+              r.end.trim() ||
+              r.qtyOverride.trim() ||
+              r.rangeOverride.trim()
+            ) {
+              if (preserved.length === 0 && !r.name.trim() && lastSeenName) {
+                preserved.push({ ...r, name: lastSeenName });
+              } else {
+                preserved.push(r);
+              }
+            }
           }
-
-          // Keep ALL non-Google-Sheet rows (Admin manual/pasted + Seller/Sub-Seller phone rows) 100% intact
-          const preserved = existing.filter(
-            (r) =>
-              !isGoogleSheetRowId(r.id) &&
-              Boolean(
-                r.name.trim() ||
-                  r.item.trim() ||
-                  r.start.trim() ||
-                  r.end.trim() ||
-                  r.qtyOverride.trim() ||
-                  r.rangeOverride.trim()
-              )
-          );
           const merged = [...normalizedIncoming[sid], ...preserved];
           return merged.length > 0 ? merged : createBlankRows(1);
         };
@@ -1040,12 +1015,12 @@ export default function App() {
       if (clearedSessions.length > 0 && totalIncoming === 0) {
         AppSounds.remove();
         showToast(
-          `Google Sheet clear hua — Admin data bhi clear ho gaya (${clearedSessions.join(', ')})`
+          `Google Sheet tab clear hua (${clearedSessions.join(', ')}) — Admin entries safe hain`
         );
       } else if (clearedSessions.length > 0 && totalIncoming > 0) {
         AppSounds.add();
         showToast(
-          `Google Sheet synced: ${totalIncoming} rows (${clearedSessions.join(', ')} cleared)`
+          `Google Sheet synced: ${totalIncoming} rows (${clearedSessions.join(', ')} sheet cleared, Admin safe)`
         );
       } else if (!silentToast && totalIncoming > 0) {
         AppSounds.add();
@@ -1060,6 +1035,12 @@ export default function App() {
     async (overrideCfg?: GoogleSheetSyncConfig, manualTrigger = false) => {
       const cfg = overrideCfg || gsheetConfigRef.current;
       if (!cfg.spreadsheetId) return;
+      if (isAdminRestoredViewRef.current) {
+        if (manualTrigger) {
+          showToast('Restored archive mode me Google Sheet sync paused hai — pehle Back to Live karein');
+        }
+        return;
+      }
       if (!manualTrigger && gsheetAuthPausedRef.current) return;
       if (gsheetInFlightRef.current) return;
 
