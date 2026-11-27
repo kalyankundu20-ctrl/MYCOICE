@@ -3331,6 +3331,7 @@ export default function App() {
     title: string;
     message: string;
     imageDataUrl?: string;
+    imageDataUrls?: string[];
   }) => {
     if (cloudSession.kind !== 'admin' || !authUser) {
       setAnnouncementError('Pehle Admin Google Sign-In karein.');
@@ -6154,7 +6155,8 @@ export default function App() {
     publicAnnouncement?.active &&
       (publicAnnouncement.title.trim() ||
         publicAnnouncement.message.trim() ||
-        Boolean(publicAnnouncement.imageDataUrl))
+        Boolean(publicAnnouncement.imageDataUrl) ||
+        (publicAnnouncement.imageDataUrls?.length || 0) > 0)
   );
 
   return (

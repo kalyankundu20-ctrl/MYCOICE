@@ -92,6 +92,7 @@ export interface CloudPublicAnnouncement {
   title: string;
   message: string;
   imageDataUrl?: string;
+  imageDataUrls?: string[];
   ownerUid: string;
   updatedByUid: string;
   updatedAtMs: number;
@@ -4899,12 +4900,39 @@ function sanitizeAnnouncementKind(raw: unknown): CloudAnnouncementKind {
   return 'offer';
 }
 
+export const MAX_ANNOUNCEMENT_PHOTOS = 6;
+const MAX_TOTAL_ANNOUNCEMENT_IMAGES_CHARS = 740_000;
+
 export function sanitizeAnnouncementImageDataUrl(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   const trimmed = raw.trim();
   if (!trimmed || trimmed.length > MAX_ANNOUNCEMENT_IMAGE_CHARS) return '';
   if (!ANNOUNCEMENT_IMAGE_DATA_URL_RE.test(trimmed)) return '';
   return trimmed;
+}
+
+export function sanitizeAnnouncementImageDataUrls(
+  rawList: unknown,
+  legacySingle?: unknown
+): string[] {
+  const out: string[] = [];
+  let totalChars = 0;
+  const pushOne = (val: unknown) => {
+    if (out.length >= MAX_ANNOUNCEMENT_PHOTOS) return;
+    const clean = sanitizeAnnouncementImageDataUrl(val);
+    if (!clean) return;
+    if (out.includes(clean)) return;
+    if (totalChars + clean.length > MAX_TOTAL_ANNOUNCEMENT_IMAGES_CHARS) return;
+    out.push(clean);
+    totalChars += clean.length;
+  };
+  if (Array.isArray(rawList)) {
+    for (const item of rawList) pushOne(item);
+  }
+  if (out.length === 0 && legacySingle) {
+    pushOne(legacySingle);
+  }
+  return out;
 }
 
 export function readCachedPublicAnnouncement(
@@ -4916,13 +4944,18 @@ export function readCachedPublicAnnouncement(
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<CloudPublicAnnouncement> | null;
     if (!parsed || typeof parsed !== 'object') return null;
+    const imageDataUrls = sanitizeAnnouncementImageDataUrls(
+      parsed.imageDataUrls,
+      parsed.imageDataUrl
+    );
     return {
       agencyId: typeof parsed.agencyId === 'string' && parsed.agencyId ? parsed.agencyId : agencyId,
       active: Boolean(parsed.active),
       kind: sanitizeAnnouncementKind(parsed.kind),
       title: typeof parsed.title === 'string' ? parsed.title.slice(0, 120) : '',
       message: typeof parsed.message === 'string' ? parsed.message.slice(0, 1000) : '',
-      imageDataUrl: sanitizeAnnouncementImageDataUrl(parsed.imageDataUrl),
+      imageDataUrl: imageDataUrls[0] || '',
+      imageDataUrls,
       ownerUid: typeof parsed.ownerUid === 'string' ? parsed.ownerUid : '',
       updatedByUid: typeof parsed.updatedByUid === 'string' ? parsed.updatedByUid : '',
       updatedAtMs: typeof parsed.updatedAtMs === 'number' ? parsed.updatedAtMs : 0,
@@ -4982,13 +5015,18 @@ export function subscribePublicAnnouncement(
         return;
       }
       const data = snap.data();
+      const imageDataUrls = sanitizeAnnouncementImageDataUrls(
+        data.imageDataUrls,
+        data.imageDataUrl
+      );
       const parsed: CloudPublicAnnouncement = {
         agencyId: typeof data.agencyId === 'string' ? data.agencyId : cleanAgencyId,
         active: Boolean(data.active),
         kind: sanitizeAnnouncementKind(data.kind),
         title: typeof data.title === 'string' ? data.title.slice(0, 120) : '',
         message: typeof data.message === 'string' ? data.message.slice(0, 1000) : '',
-        imageDataUrl: sanitizeAnnouncementImageDataUrl(data.imageDataUrl),
+        imageDataUrl: imageDataUrls[0] || '',
+        imageDataUrls,
         ownerUid: typeof data.ownerUid === 'string' ? data.ownerUid : '',
         updatedByUid: typeof data.updatedByUid === 'string' ? data.updatedByUid : '',
         updatedAtMs: parseTimestampMs(data.updatedAt) || Date.now(),
@@ -5012,14 +5050,21 @@ export async function savePublicAnnouncementCloud(
     title: string;
     message: string;
     imageDataUrl?: string;
+    imageDataUrls?: string[];
   }
 ): Promise<CloudPublicAnnouncement> {
   const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
   const cleanTitle = input.title.trim().slice(0, 120);
   const cleanMessage = input.message.trim().slice(0, 1000);
-  const cleanImageDataUrl = sanitizeAnnouncementImageDataUrl(input.imageDataUrl);
+  const cleanImageDataUrls = sanitizeAnnouncementImageDataUrls(
+    input.imageDataUrls,
+    input.imageDataUrl
+  );
+  const cleanImageDataUrl = cleanImageDataUrls[0] || '';
   const cleanKind = sanitizeAnnouncementKind(input.kind);
-  const cleanActive = Boolean(input.active && (cleanTitle || cleanMessage || cleanImageDataUrl));
+  const cleanActive = Boolean(
+    input.active && (cleanTitle || cleanMessage || cleanImageDataUrls.length > 0)
+  );
 
   const ref = docLite(dbLite, 'publicAnnouncements', cleanAgencyId);
   let existsNow = false;
@@ -5053,6 +5098,7 @@ export async function savePublicAnnouncementCloud(
           title: cleanTitle,
           message: cleanMessage,
           imageDataUrl: cleanImageDataUrl,
+          imageDataUrls: cleanImageDataUrls,
           updatedByUid: adminUid,
           updatedAt: serverTimestampLite(),
         }),
@@ -5068,6 +5114,7 @@ export async function savePublicAnnouncementCloud(
           title: cleanTitle,
           message: cleanMessage,
           imageDataUrl: cleanImageDataUrl,
+          imageDataUrls: cleanImageDataUrls,
           ownerUid,
           updatedByUid: adminUid,
           createdAt: serverTimestampLite(),
@@ -5084,6 +5131,7 @@ export async function savePublicAnnouncementCloud(
       title: cleanTitle,
       message: cleanMessage,
       imageDataUrl: cleanImageDataUrl,
+      imageDataUrls: cleanImageDataUrls,
       ownerUid,
       updatedByUid: adminUid,
       updatedAtMs: Date.now(),

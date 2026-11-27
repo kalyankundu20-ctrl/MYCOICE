@@ -2306,7 +2306,10 @@ export function SellerPortalApp({
           }`}
         >
         {announcement?.active &&
-          (announcement.title.trim() || announcement.message.trim() || Boolean(announcement.imageDataUrl)) && (
+          (announcement.title.trim() ||
+            announcement.message.trim() ||
+            Boolean(announcement.imageDataUrl) ||
+            (announcement.imageDataUrls?.length || 0) > 0) && (
             <div className="mb-3">
               <AnnouncementBanner announcement={announcement} variant="portal" />
             </div>

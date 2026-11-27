@@ -388,7 +388,7 @@ service cloud.firestore {
           'ownerUid', 'updatedByUid', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'agencyId', 'active', 'kind', 'title', 'message', 'imageDataUrl',
+          'agencyId', 'active', 'kind', 'title', 'message', 'imageDataUrl', 'imageDataUrls',
           'ownerUid', 'updatedByUid', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.agencyId) &&
@@ -400,6 +400,15 @@ service cloud.firestore {
           data.imageDataUrl is string &&
           data.imageDataUrl.size() <= 160000 &&
           (data.imageDataUrl == '' || data.imageDataUrl.matches('^data:image/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$'))
+        )) &&
+        (!('imageDataUrls' in data) || (
+          data.imageDataUrls is list &&
+          data.imageDataUrls.size() <= 6 &&
+          (data.imageDataUrls.size() == 0 || (
+            data.imageDataUrls[0] is string &&
+            data.imageDataUrls[0].size() <= 160000 &&
+            data.imageDataUrls[0].matches('^data:image/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$')
+          ))
         )) &&
         isValidId(data.ownerUid) &&
         isValidId(data.updatedByUid) &&
@@ -566,7 +575,7 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         isAgencyAdmin(agencyId) &&
         incoming().diff(existing()).affectedKeys().hasOnly([
-          'active', 'kind', 'title', 'message', 'imageDataUrl', 'updatedByUid', 'updatedAt'
+          'active', 'kind', 'title', 'message', 'imageDataUrl', 'imageDataUrls', 'updatedByUid', 'updatedAt'
         ]);
       allow delete: if isVerifiedUser() && isValidId(agencyId) && isAgencyAdmin(agencyId);
     }

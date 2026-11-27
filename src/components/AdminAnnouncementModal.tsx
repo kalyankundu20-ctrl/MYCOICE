@@ -15,7 +15,9 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
+  MAX_ANNOUNCEMENT_PHOTOS,
   sanitizeAnnouncementImageDataUrl,
+  sanitizeAnnouncementImageDataUrls,
   type CloudAnnouncementKind,
   type CloudPublicAnnouncement,
 } from '../services/cloudSync';
@@ -36,6 +38,7 @@ interface AdminAnnouncementModalProps {
     title: string;
     message: string;
     imageDataUrl?: string;
+    imageDataUrls?: string[];
   }) => Promise<void>;
 }
 
@@ -200,7 +203,7 @@ export function AdminAnnouncementModal({
   const [kind, setKind] = useState<CloudAnnouncementKind>('offer');
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
-  const [imageDataUrl, setImageDataUrl] = useState('');
+  const [imageDataUrls, setImageDataUrls] = useState<string[]>([]);
   const [imageBusy, setImageBusy] = useState(false);
   const [activeField, setActiveField] = useState<'title' | 'message'>('message');
   const [localError, setLocalError] = useState('');
@@ -216,20 +219,25 @@ export function AdminAnnouncementModal({
       setKind(announcement.kind || 'offer');
       setTitle(announcement.title || '');
       setMessage(announcement.message || '');
-      setImageDataUrl(sanitizeAnnouncementImageDataUrl(announcement.imageDataUrl));
+      setImageDataUrls(
+        sanitizeAnnouncementImageDataUrls(announcement.imageDataUrls, announcement.imageDataUrl)
+      );
     } else {
       setKind('offer');
       setTitle('');
       setMessage('');
-      setImageDataUrl('');
+      setImageDataUrls([]);
     }
   }, [isOpen, announcement]);
 
   const isCurrentlyLive = Boolean(
     announcement?.active &&
-      (announcement.title.trim() || announcement.message.trim() || Boolean(announcement.imageDataUrl))
+      (announcement.title.trim() ||
+        announcement.message.trim() ||
+        Boolean(announcement.imageDataUrl) ||
+        (announcement.imageDataUrls?.length || 0) > 0)
   );
-  const hasContent = Boolean(title.trim() || message.trim() || imageDataUrl);
+  const hasContent = Boolean(title.trim() || message.trim() || imageDataUrls.length > 0);
 
   const handleInsertEmoji = (emoji: string) => {
     AppSounds.tap();
@@ -262,20 +270,51 @@ export function AdminAnnouncementModal({
   };
 
   const handlePhotoSelect = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!file) return;
+    if (files.length === 0) return;
+
+    const remainingSlots = MAX_ANNOUNCEMENT_PHOTOS - imageDataUrls.length;
+    if (remainingSlots <= 0) {
+      setLocalError(`Maximum ${MAX_ANNOUNCEMENT_PHOTOS} photos add kar sakte hain.`);
+      return;
+    }
+
+    const filesToProcess = files.slice(0, remainingSlots);
     setLocalError('');
     setImageBusy(true);
     try {
-      const compressed = await compressAnnouncementPhoto(file);
-      setImageDataUrl(compressed);
-      AppSounds.success();
+      const added: string[] = [];
+      let failedCount = 0;
+      for (const file of filesToProcess) {
+        try {
+          const compressed = await compressAnnouncementPhoto(file);
+          added.push(compressed);
+        } catch {
+          failedCount++;
+        }
+      }
+      if (added.length > 0) {
+        setImageDataUrls((prev) =>
+          sanitizeAnnouncementImageDataUrls([...prev, ...added])
+        );
+        AppSounds.success();
+      }
+      if (failedCount > 0 && added.length === 0) {
+        setLocalError('Photo read/compress nahi ho paya. Kripya JPG ya PNG photo chunein.');
+      } else if (files.length > remainingSlots) {
+        setLocalError(`Sirf ${MAX_ANNOUNCEMENT_PHOTOS} photos tak add ho sakte hain.`);
+      }
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Photo add karne me problem aayi.');
     } finally {
       setImageBusy(false);
     }
+  };
+
+  const handleRemovePhoto = (indexToRemove: number) => {
+    AppSounds.remove();
+    setImageDataUrls((prev) => prev.filter((_, idx) => idx !== indexToRemove));
   };
 
   const handlePublish = async () => {
@@ -290,7 +329,8 @@ export function AdminAnnouncementModal({
       kind,
       title: title.trim(),
       message: message.trim(),
-      imageDataUrl,
+      imageDataUrl: imageDataUrls[0] || '',
+      imageDataUrls,
     });
   };
 
@@ -302,7 +342,8 @@ export function AdminAnnouncementModal({
       kind,
       title: title.trim(),
       message: message.trim(),
-      imageDataUrl,
+      imageDataUrl: imageDataUrls[0] || '',
+      imageDataUrls,
     });
   };
 
@@ -311,18 +352,19 @@ export function AdminAnnouncementModal({
     AppSounds.remove();
     setTitle('');
     setMessage('');
-    setImageDataUrl('');
+    setImageDataUrls([]);
     await onSaveAnnouncement({
       active: false,
       kind: 'offer',
       title: '',
       message: '',
       imageDataUrl: '',
+      imageDataUrls: [],
     });
   };
 
   const displayError = localError || error;
-  const imageKB = estimateDataUrlKB(imageDataUrl);
+  const totalImagesKB = imageDataUrls.reduce((sum, url) => sum + estimateDataUrlKB(url), 0);
 
   if (!isOpen) return null;
 
@@ -610,15 +652,15 @@ export function AdminAnnouncementModal({
                     </div>
                   </div>
 
-                  {/* Photo / Poster Upload */}
+                  {/* Multi-Photo / Poster Upload (up to 6 photos) */}
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-extrabold text-slate-800">
-                        Photo / Poster (Optional)
+                        Photos / Posters (Max {MAX_ANNOUNCEMENT_PHOTOS})
                       </span>
-                      {imageDataUrl && (
+                      {imageDataUrls.length > 0 && (
                         <span className="text-[11px] font-bold text-emerald-700">
-                          Ready ({imageKB} KB — Fast Load)
+                          {imageDataUrls.length} Photo{imageDataUrls.length > 1 ? 's' : ''} · {totalImagesKB} KB
                         </span>
                       )}
                     </div>
@@ -627,11 +669,12 @@ export function AdminAnnouncementModal({
                       ref={fileInputRef}
                       type="file"
                       accept="image/*"
+                      multiple
                       onChange={(e) => void handlePhotoSelect(e)}
                       className="hidden"
                     />
 
-                    {!imageDataUrl ? (
+                    {imageDataUrls.length === 0 ? (
                       <button
                         type="button"
                         disabled={busy || imageBusy}
@@ -648,46 +691,87 @@ export function AdminAnnouncementModal({
                         )}
                         <div className="text-left">
                           <div className="text-xs font-extrabold text-slate-900">
-                            {imageBusy ? 'Photo Compress Ho Raha Hai...' : 'Gallery se Photo / Poster Chunein'}
+                            {imageBusy
+                              ? 'Photos Compress Ho Rahe Hain...'
+                              : 'Gallery se Ek ya Multiple Photos Chunein'}
                           </div>
                           <div className="text-[10.5px] font-semibold text-slate-500">
-                            Auto-compress hoga — Master &amp; Sub-Master sabhi ko fast dikhega
+                            Max {MAX_ANNOUNCEMENT_PHOTOS} photos add kar sakte hain — Fit screen live slider chalega
                           </div>
                         </div>
                       </button>
                     ) : (
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2.5 space-y-2">
-                        <div className="relative rounded-xl overflow-hidden bg-slate-900/5 border border-slate-200">
-                          <img
-                            src={imageDataUrl}
-                            alt="Selected advertisement preview"
-                            className="w-full max-h-44 object-contain mx-auto block"
-                          />
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2.5 space-y-2.5">
+                        <div className="grid grid-cols-3 gap-2">
+                          {imageDataUrls.map((url, idx) => (
+                            <div
+                              key={`${idx}-${url.slice(-16)}`}
+                              className="relative aspect-[4/3] rounded-xl overflow-hidden bg-slate-900/5 border border-slate-200 group"
+                            >
+                              <img
+                                src={url}
+                                alt={`Ad photo ${idx + 1}`}
+                                className="w-full h-full object-cover block"
+                              />
+                              <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded-md bg-slate-950/75 text-white text-[10px] font-extrabold font-mono-tabular">
+                                #{idx + 1}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={busy || imageBusy}
+                                onClick={() => handleRemovePhoto(idx)}
+                                aria-label={`Remove photo ${idx + 1}`}
+                                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-sm cursor-pointer disabled:opacity-55"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                          {imageDataUrls.length < MAX_ANNOUNCEMENT_PHOTOS && (
+                            <button
+                              type="button"
+                              disabled={busy || imageBusy}
+                              onClick={() => {
+                                AppSounds.tap();
+                                fileInputRef.current?.click();
+                              }}
+                              className="aspect-[4/3] rounded-xl border-2 border-dashed border-slate-300 hover:border-[var(--kk-brand)] bg-white hover:bg-indigo-50/40 flex flex-col items-center justify-center gap-1 text-slate-700 cursor-pointer disabled:opacity-55"
+                            >
+                              {imageBusy ? (
+                                <RefreshCw className="w-4 h-4 animate-spin text-[var(--kk-brand)]" />
+                              ) : (
+                                <ImagePlus className="w-4 h-4 text-[var(--kk-brand)]" />
+                              )}
+                              <span className="text-[10.5px] font-extrabold">Add Photo</span>
+                            </button>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={busy || imageBusy}
-                            onClick={() => {
-                              AppSounds.tap();
-                              fileInputRef.current?.click();
-                            }}
-                            className="flex-1 py-2 px-3 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-xs font-extrabold text-slate-800 inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
-                          >
-                            <ImagePlus className="w-3.5 h-3.5" />
-                            <span>Photo Badlein</span>
-                          </button>
+                          {imageDataUrls.length < MAX_ANNOUNCEMENT_PHOTOS && (
+                            <button
+                              type="button"
+                              disabled={busy || imageBusy}
+                              onClick={() => {
+                                AppSounds.tap();
+                                fileInputRef.current?.click();
+                              }}
+                              className="flex-1 py-2 px-3 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-xs font-extrabold text-slate-800 inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
+                            >
+                              <ImagePlus className="w-3.5 h-3.5" />
+                              <span>Aur Photo Add Karein ({imageDataUrls.length}/{MAX_ANNOUNCEMENT_PHOTOS})</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={busy || imageBusy}
                             onClick={() => {
                               AppSounds.remove();
-                              setImageDataUrl('');
+                              setImageDataUrls([]);
                             }}
                             className="py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-xs font-extrabold text-rose-700 inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-55"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
-                            <span>Hatayein</span>
+                            <span>Sab Hatayein</span>
                           </button>
                         </div>
                       </div>
@@ -698,7 +782,7 @@ export function AdminAnnouncementModal({
                   {hasContent && (
                     <div className="space-y-1.5">
                       <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                        Live Preview (Master / Sub-Master &amp; Link View)
+                        Live Preview (Fit Screen View)
                       </div>
                       <AnnouncementBanner
                         announcement={{
@@ -706,7 +790,8 @@ export function AdminAnnouncementModal({
                           kind,
                           title: title.trim(),
                           message: message.trim(),
-                          imageDataUrl,
+                          imageDataUrl: imageDataUrls[0] || '',
+                          imageDataUrls,
                           updatedAtMs: 0,
                         }}
                         variant="login"
