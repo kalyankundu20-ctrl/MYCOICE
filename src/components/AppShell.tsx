@@ -126,7 +126,7 @@ export const AppShell = memo(function AppShell({
               <span className="kk-kali-aura" />
               <span className="kk-kali-rays" />
               <img
-                src="/maa-kali.png"
+                src="/maa-kali-face.png"
                 alt=""
                 decoding="async"
                 className="kk-kali-img"
@@ -329,7 +329,7 @@ export const AppShell = memo(function AppShell({
                 <span className="kk-kali-aura" aria-hidden="true" />
                 <span className="kk-kali-rays" aria-hidden="true" />
                 <img
-                  src="/maa-kali.png"
+                  src="/maa-kali-face.png"
                   alt="Maa Kali"
                   decoding="async"
                   className="kk-kali-img"
