@@ -18,8 +18,6 @@ import {
   Send,
   Trophy,
   Users,
-  Volume2,
-  VolumeX,
 } from 'lucide-react';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createBlankRows, createEmptyAppState, createEmptyRow } from '../data/initialState';
@@ -214,8 +212,6 @@ export function SellerPortalApp({
   uid,
   agencyId,
   partyId,
-  soundEnabled,
-  onToggleSound,
   onSignOut,
   adminPreviewMode = false,
   onExitAdminPreview,
@@ -2255,15 +2251,6 @@ export function SellerPortalApp({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={onToggleSound}
-            aria-label={soundEnabled ? 'Turn sound off' : 'Turn sound on'}
-            className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white cursor-pointer"
-          >
-            {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-          </button>
-
           {adminPreviewMode && onExitAdminPreview ? (
             <button
               type="button"

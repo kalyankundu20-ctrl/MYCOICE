@@ -8,8 +8,6 @@ import {
   SlidersHorizontal,
   Smartphone,
   Trophy,
-  Volume2,
-  VolumeX,
 } from 'lucide-react';
 import { memo, ReactNode, useEffect, useRef } from 'react';
 import { formatDateDDMMYYYY } from '../engine/calculations';
@@ -72,8 +70,6 @@ export const AppShell = memo(function AppShell({
   announcementActive = false,
   googleSheetsActive = false,
   cloudConnected,
-  soundEnabled,
-  onToggleSound,
   counts,
   children,
 }: AppShellProps) {
@@ -382,24 +378,6 @@ export const AppShell = memo(function AppShell({
 
               <button
                 type="button"
-                onClick={onToggleSound}
-                aria-label={soundEnabled ? 'Turn sound off' : 'Turn sound on'}
-                title={soundEnabled ? 'Sound On (Tap to Mute)' : 'Sound Off (Tap to Unmute)'}
-                className={`inline-flex items-center justify-center w-9.5 h-9.5 sm:w-10 sm:h-10 rounded-xl border transition-colors duration-100 shrink-0 cursor-pointer shadow-xs ${
-                  soundEnabled
-                    ? 'bg-white/18 hover:bg-white/28 text-white border-white/25'
-                    : 'bg-slate-900/35 hover:bg-slate-900/50 text-white/65 border-white/15'
-                }`}
-              >
-                {soundEnabled ? (
-                  <Volume2 className="w-[18px] h-[18px] stroke-[2.2]" aria-hidden="true" />
-                ) : (
-                  <VolumeX className="w-[18px] h-[18px] stroke-[2.2]" aria-hidden="true" />
-                )}
-              </button>
-
-              <button
-                type="button"
                 onClick={() => {
                   AppSounds.tap();
                   onOpenSettings();
@@ -422,9 +400,11 @@ export const AppShell = memo(function AppShell({
         >
           <div
             className={`px-2 pt-2 sm:px-5 sm:pt-4 max-w-[1440px] w-full mx-auto ${
-              activeTab === '1PM' || activeTab === '6PM' || activeTab === '8PM'
-                ? 'pb-20 lg:pb-8'
-                : 'pb-28 lg:pb-8'
+              activeTab === 'Seller Bill'
+                ? 'min-h-full flex flex-col pb-2 lg:pb-8'
+                : activeTab === '1PM' || activeTab === '6PM' || activeTab === '8PM'
+                  ? 'pb-20 lg:pb-8'
+                  : 'pb-28 lg:pb-8'
             }`}
           >
             {children}
