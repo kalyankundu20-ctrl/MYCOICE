@@ -290,9 +290,9 @@ export function AnnouncementBanner({
           </div>
         )}
 
-        {/* Compact Wide Banner Strip — photo covers full width edge-to-edge, tap for Full-Screen Zoom */}
+        {/* Compact Wide Banner Strip — entire photo fills the full wide box edge-to-edge without cropping, tap for Full-Screen Zoom */}
         {photos.length > 0 && !collapsed && (
-          <div className="relative w-full h-[112px] sm:h-[144px] overflow-hidden bg-slate-950/20">
+          <div className="relative w-full h-[160px] sm:h-[205px] overflow-hidden bg-slate-950/20">
             {photos.length === 1 ? (
               <button
                 type="button"
@@ -306,7 +306,7 @@ export function AnnouncementBanner({
                 <img
                   src={photos[0]}
                   alt={title || 'KK Agency Advertisement'}
-                  className="w-full h-full object-cover object-center block"
+                  className="w-full h-full object-fill block"
                 />
                 <span className="absolute bottom-1.5 right-2 z-20 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-950/75 text-white text-[10px] font-bold backdrop-blur-[2px] shadow-xs">
                   <ZoomIn className="w-3 h-3" />
@@ -339,7 +339,7 @@ export function AnnouncementBanner({
                         <img
                           src={photoUrl}
                           alt={`${title || 'KK Agency Advertisement'} (${idx + 1})`}
-                          className="w-full h-full object-cover object-center block"
+                          className="w-full h-full object-fill block"
                         />
                       </button>
                     </div>
