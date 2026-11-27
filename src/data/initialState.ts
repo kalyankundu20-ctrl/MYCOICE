@@ -56,7 +56,7 @@ export function createEmptyAppState(): AppState {
       autoArchiveDaily: false,
       soundEnabled: true,
       soundPack: 'rhodes',
-      theme: 'aurora',
+      theme: 'aurora-live',
       themeVersion: 4,
       whatsappVersion: 1,
     },

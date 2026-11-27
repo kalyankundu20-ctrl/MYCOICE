@@ -1,14 +1,6 @@
 import { Check, Palette, Volume2, VolumeX, X } from 'lucide-react';
-import { useState } from 'react';
 import { AgencyConfig, AppState, DaySnapshot } from '../types/ledger';
-import {
-  AppSounds,
-  getSoundStyle,
-  previewSoundStyle,
-  setSoundEnabled,
-  SOUND_STYLES,
-  SoundStyleId,
-} from '../utils/sound';
+import { AppSounds, setSoundEnabled } from '../utils/sound';
 import { APP_THEMES, applyDocumentTheme, AppThemeId, resolveThemeOption } from '../utils/theme';
 
 interface SettingsDrawerProps {
@@ -31,8 +23,6 @@ export function SettingsDrawer({
   onUpdateConfig,
   onUpdateExtraNames,
 }: SettingsDrawerProps) {
-  const [activeSound, setActiveSound] = useState<SoundStyleId>(() => getSoundStyle());
-
   const activeTheme = resolveThemeOption(state.config.theme).id;
   const soundOn = state.config.soundEnabled !== false;
 
@@ -49,15 +39,6 @@ export function SettingsDrawer({
     if (next) {
       AppSounds.success();
     }
-  };
-
-  const handleSelectSoundStyle = (styleId: SoundStyleId) => {
-    setActiveSound(styleId);
-    if (!soundOn) {
-      setSoundEnabled(true);
-      onUpdateConfig({ soundEnabled: true });
-    }
-    previewSoundStyle(styleId);
   };
 
   if (!isOpen) return null;
@@ -271,12 +252,15 @@ export function SettingsDrawer({
                 <div className="grid grid-cols-2 gap-2.5">
                   {APP_THEMES.map((theme) => {
                     const isSelected = activeTheme === theme.id;
+                    const isFeatured = theme.id === 'aurora-live';
                     return (
                       <button
                         key={theme.id}
                         type="button"
                         onClick={() => handleSelectTheme(theme.id)}
                         className={`group relative text-left rounded-xl p-2.5 border transition-all cursor-pointer ${
+                          isFeatured ? 'col-span-2' : ''
+                        } ${
                           isSelected
                             ? 'border-[var(--kk-brand)] dark:border-teal-400 bg-[var(--kk-tint)] shadow-xs ring-1 ring-[var(--kk-brand)]/25 dark:ring-teal-400/35'
                             : 'border-slate-200 dark:border-slate-700/75 bg-white dark:bg-slate-900/75 hover:border-slate-300 dark:hover:border-slate-600 hover:bg-slate-50/70 dark:hover:bg-slate-800/80'
@@ -288,9 +272,7 @@ export function SettingsDrawer({
                             backgroundImage:
                               theme.id === 'aurora-live'
                                 ? 'radial-gradient(circle at 22% 72%, rgba(168,85,247,0.58) 0%, transparent 48%), radial-gradient(circle at 82% 24%, rgba(52,245,197,0.68) 0%, transparent 46%), linear-gradient(135deg, #061329 0%, #1D3B8A 48%, #0F766E 100%)'
-                                : theme.id === 'aurora'
-                                  ? 'radial-gradient(circle at 85% 20%, rgba(52,245,197,0.45) 0%, transparent 50%), linear-gradient(135deg, #1E3A8A 0%, #4338CA 48%, #0D9488 100%)'
-                                  : `linear-gradient(135deg, ${theme.brand} 0%, ${theme.brandMid} 55%, ${theme.brandEnd} 100%)`,
+                                : `linear-gradient(135deg, ${theme.brand} 0%, ${theme.brandMid} 55%, ${theme.brandEnd} 100%)`,
                           }}
                         >
                           <span className="flex items-center gap-1.5">
@@ -326,17 +308,17 @@ export function SettingsDrawer({
 
               <hr className="border-slate-200 dark:border-slate-700/70" />
 
-              {/* Sound Style & Tone Controls */}
-              <section className="space-y-3">
+              {/* App Sound Control (Classic Click permanently active) */}
+              <section className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-lg bg-[var(--kk-tint)] border border-[var(--kk-tint-border)] text-[var(--kk-brand)] dark:text-teal-300 flex items-center justify-center">
                       {soundOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
                     </div>
                     <div>
-                      <h3 className="text-xs font-bold text-slate-900 dark:text-white">App Sound &amp; Tone</h3>
+                      <h3 className="text-xs font-bold text-slate-900 dark:text-white">App Sound</h3>
                       <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                        Tap any tone to preview &amp; apply
+                        Classic Click · Snappy keypad
                       </p>
                     </div>
                   </div>
@@ -354,42 +336,6 @@ export function SettingsDrawer({
                     {soundOn ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
                     <span>{soundOn ? 'Sound ON' : 'Muted'}</span>
                   </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  {SOUND_STYLES.map((style) => {
-                    const isSelected = activeSound === style.id;
-                    return (
-                      <button
-                        key={style.id}
-                        type="button"
-                        onClick={() => handleSelectSoundStyle(style.id)}
-                        className={`text-left rounded-xl px-3 py-2.5 border transition-all cursor-pointer flex items-start justify-between gap-2 ${
-                          isSelected
-                            ? 'border-[var(--kk-brand)] dark:border-teal-400 bg-[var(--kk-tint)] ring-1 ring-[var(--kk-brand)]/25 dark:ring-teal-400/35'
-                            : 'border-slate-200 dark:border-slate-700/75 bg-white dark:bg-slate-900/75 hover:border-slate-300 dark:hover:border-slate-600 hover:bg-slate-50/70 dark:hover:bg-slate-800/80'
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div
-                            className={`text-xs font-bold leading-tight ${
-                              isSelected ? 'text-[var(--kk-brand)] dark:text-teal-200' : 'text-slate-900 dark:text-white'
-                            }`}
-                          >
-                            {style.label}
-                          </div>
-                          <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                            {style.desc}
-                          </div>
-                        </div>
-                        {isSelected && (
-                          <span className="w-4 h-4 rounded-full bg-[var(--kk-brand)] dark:bg-teal-400 text-white dark:text-slate-950 flex items-center justify-center shrink-0 mt-0.5">
-                            <Check className="w-2.5 h-2.5 stroke-[3]" />
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
                 </div>
               </section>
             </div>

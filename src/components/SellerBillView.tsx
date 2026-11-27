@@ -301,7 +301,7 @@ export const SellerBillView = memo(function SellerBillView({
   };
 
   return (
-    <div className="space-y-2 sm:space-y-3">
+    <div className="space-y-1.5 sm:space-y-3">
       <AnimatePresence>
         {waCardToast && (
           <motion.div
@@ -326,29 +326,29 @@ export const SellerBillView = memo(function SellerBillView({
       </AnimatePresence>
 
       {/* Executive KPI Summary Strip */}
-      <section aria-label="Daily agency summary" className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-2.5">
-        <div className="kk-surface-card kk-kpi-tickets rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Total Tickets Sold</div>
-          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-slate-950 dark:text-white">
+      <section aria-label="Daily agency summary" className="grid grid-cols-2 lg:grid-cols-5 gap-1.5 sm:gap-2.5">
+        <div className="kk-surface-card kk-kpi-tickets rounded-xl sm:rounded-2xl px-2.5 py-1.5 sm:px-4 sm:py-3">
+          <div className="text-[10.5px] sm:text-[11px] leading-tight font-semibold text-slate-500 dark:text-slate-400">Total Tickets Sold</div>
+          <div className="mt-0.5 sm:mt-1 text-[16px] leading-tight sm:text-xl font-bold font-mono-tabular text-slate-950 dark:text-white">
             {formatINR(totals.sold)}
           </div>
         </div>
-        <div className="kk-surface-card kk-kpi-gross rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500 dark:text-teal-200/85">Gross Bill</div>
-          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-slate-950 dark:text-white">
+        <div className="kk-surface-card kk-kpi-gross rounded-xl sm:rounded-2xl px-2.5 py-1.5 sm:px-4 sm:py-3">
+          <div className="text-[10.5px] sm:text-[11px] leading-tight font-semibold text-slate-500 dark:text-teal-200/85">Gross Bill</div>
+          <div className="mt-0.5 sm:mt-1 text-[16px] leading-tight sm:text-xl font-bold font-mono-tabular text-slate-950 dark:text-white">
             ₹{formatINR(totals.bill)}
           </div>
         </div>
-        <div className="kk-surface-card kk-kpi-prizes rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500 dark:text-rose-300/90">Seller Prizes (-)</div>
-          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-emerald-700 dark:text-rose-400">
+        <div className="kk-surface-card kk-kpi-prizes rounded-xl sm:rounded-2xl px-2.5 py-1.5 sm:px-4 sm:py-3">
+          <div className="text-[10.5px] sm:text-[11px] leading-tight font-semibold text-slate-500 dark:text-rose-300/90">Seller Prizes (-)</div>
+          <div className="mt-0.5 sm:mt-1 text-[16px] leading-tight sm:text-xl font-bold font-mono-tabular text-emerald-700 dark:text-rose-400">
             ₹{formatINR(totals.prize)}
           </div>
         </div>
-        <div className="kk-surface-card kk-kpi-fresh rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-300">Fresh Bill (=)</div>
+        <div className="kk-surface-card kk-kpi-fresh rounded-xl sm:rounded-2xl px-2.5 py-1.5 sm:px-4 sm:py-3">
+          <div className="text-[10.5px] sm:text-[11px] leading-tight font-semibold text-slate-500 dark:text-slate-300">Fresh Bill (=)</div>
           <div
-            className={`mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular ${
+            className={`mt-0.5 sm:mt-1 text-[16px] leading-tight sm:text-xl font-bold font-mono-tabular ${
               totals.fresh > 0
                 ? 'text-emerald-700 dark:text-emerald-300'
                 : totals.fresh < 0
@@ -359,12 +359,12 @@ export const SellerBillView = memo(function SellerBillView({
             ₹{formatINR(totals.fresh)}
           </div>
         </div>
-        <div className="col-span-2 lg:col-span-1 kk-brand-gradient kk-kpi-net text-white rounded-2xl px-4 py-3.5 sm:px-5 sm:py-4 flex flex-col items-center justify-center text-center">
-          <div className="text-xs sm:text-[13px] font-semibold tracking-wide text-white/85">
+        <div className="col-span-2 lg:col-span-1 kk-brand-gradient kk-kpi-net text-white rounded-xl sm:rounded-2xl px-3.5 py-2 sm:px-5 sm:py-4 flex flex-col items-center justify-center text-center">
+          <div className="text-[11px] sm:text-[13px] leading-tight font-semibold tracking-wide text-white/85">
             Net Payable Total
           </div>
           <div
-            className={`mt-1 text-3xl sm:text-[32px] lg:text-2xl xl:text-[28px] leading-tight font-extrabold font-mono-tabular tracking-tight ${
+            className={`mt-0.5 sm:mt-1 text-[24px] sm:text-[32px] lg:text-2xl xl:text-[28px] leading-tight font-extrabold font-mono-tabular tracking-tight ${
               totals.total > 0
                 ? 'text-emerald-300 dark:text-[#34F5C5]'
                 : totals.total < 0
@@ -378,12 +378,12 @@ export const SellerBillView = memo(function SellerBillView({
       </section>
 
       {/* Toolbar */}
-      <div className="kk-surface-card rounded-2xl p-2 sm:px-3 sm:py-2.5 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:gap-2.5">
+      <div className="kk-surface-card rounded-xl sm:rounded-2xl p-1.5 sm:px-3 sm:py-2.5 space-y-1.5 sm:space-y-0 sm:flex sm:items-center sm:justify-between sm:gap-2.5">
         {/* Segmented View Switcher: All Cols | Limit >10 */}
         <div
           className={`grid ${
             sessionComputations ? 'grid-cols-2' : 'grid-cols-1'
-          } sm:inline-flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-950/55 border border-slate-200/90 dark:border-slate-700/60 rounded-xl w-full sm:w-auto`}
+          } sm:inline-flex items-center gap-1 p-0.5 sm:p-1 bg-slate-100 dark:bg-slate-950/55 border border-slate-200/90 dark:border-slate-700/60 rounded-xl w-full sm:w-auto`}
         >
           <button
             type="button"
@@ -391,7 +391,7 @@ export const SellerBillView = memo(function SellerBillView({
               AppSounds.tap();
               setViewMode('all');
             }}
-            className={`inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+            className={`inline-flex items-center justify-center gap-1.5 h-7 sm:h-8 px-3 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
               viewMode === 'all'
                 ? 'bg-white text-[var(--kk-brand)] shadow-xs dark:bg-white/14 dark:text-white dark:border dark:border-white/18'
                 : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
@@ -408,7 +408,7 @@ export const SellerBillView = memo(function SellerBillView({
                 AppSounds.tap();
                 setViewMode('limit');
               }}
-              className={`inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 h-7 sm:h-8 px-3 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
                 viewMode === 'limit'
                   ? 'bg-rose-600 text-white shadow-xs'
                   : overLimitSummary.grandTotal > 0
@@ -475,7 +475,7 @@ export const SellerBillView = memo(function SellerBillView({
                 setShowRateMobile((prev) => !prev);
               }}
               title={showRateMobile ? 'Hide Rate & Mobile Number' : 'Show Rate & Mobile Number'}
-              className={`inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
+              className={`inline-flex items-center justify-center gap-1 h-8 sm:h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
                 showRateMobile
                   ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)] dark:text-teal-200'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200 dark:text-slate-100 dark:bg-white/10 dark:hover:bg-white/16 dark:border-slate-600/60'
@@ -495,7 +495,7 @@ export const SellerBillView = memo(function SellerBillView({
                 AppSounds.tap();
                 setShowAddForm((prev) => !prev);
               }}
-              className={`kk-btn-add-seller inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
+              className={`kk-btn-add-seller inline-flex items-center justify-center gap-1 h-8 sm:h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
                 showAddForm
                   ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)] dark:text-white'
                   : 'text-slate-900 bg-slate-100 hover:bg-slate-200 border-slate-200'
@@ -512,7 +512,7 @@ export const SellerBillView = memo(function SellerBillView({
                   AppSounds.tap();
                   setConfirmRollover(true);
                 }}
-                className="kk-btn-close-day inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] border border-transparent rounded-xl cursor-pointer whitespace-nowrap transition-colors shadow-xs"
+                className="kk-btn-close-day inline-flex items-center justify-center gap-1 h-8 sm:h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] border border-transparent rounded-xl cursor-pointer whitespace-nowrap transition-colors shadow-xs"
               >
                 <RotateCcw className="w-3.5 h-3.5 shrink-0" />
                 <span className="truncate">Close Day</span>
@@ -596,32 +596,32 @@ export const SellerBillView = memo(function SellerBillView({
             <table className="w-max min-w-full sm:min-w-[860px] border-collapse text-[12px] sm:text-[14.5px] tracking-[-0.025em] sm:tracking-normal">
               <thead>
                 <tr className="kk-table-head text-slate-100 text-[10.5px] sm:text-xs font-extrabold uppercase tracking-[-0.01em] sm:tracking-[0.04em] align-middle">
-                  <th className="bill-col-name sticky left-0 z-20 bg-[var(--kk-brand)] dark:bg-[#22305B] sm:min-w-[128px] pl-1.5 pr-0.5 sm:px-3 py-2.5 sm:py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                  <th className="bill-col-name sticky left-0 z-20 bg-[var(--kk-brand)] dark:bg-[#22305B] sm:min-w-[128px] pl-1.5 pr-0.5 sm:px-3 py-2 sm:py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                     NAME
                   </th>
-                  <th className="bill-col-sess px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">MOR</th>
-                  <th className="bill-col-day px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">DAY</th>
-                  <th className="bill-col-sess px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">EVE</th>
-                  <th className="bill-col-sold px-[3px] sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">SOLD</th>
-                  <th className="bill-col-bill px-[3px] sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">BILL</th>
-                  <th className="bill-col-fresh pl-[3px] pr-1.5 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">FRESH</th>
-                  <th className="min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">1PM ₹</th>
-                  <th className="min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">6PM ₹</th>
-                  <th className="min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">8PM ₹</th>
-                  <th className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                  <th className="bill-col-sess px-[2.5px] sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">MOR</th>
+                  <th className="bill-col-day px-[2.5px] sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">DAY</th>
+                  <th className="bill-col-sess px-[2.5px] sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">EVE</th>
+                  <th className="bill-col-sold px-[3px] sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">SOLD</th>
+                  <th className="bill-col-bill px-[3px] sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">BILL</th>
+                  <th className="bill-col-fresh pl-[3px] pr-1.5 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">FRESH</th>
+                  <th className="min-w-[68px] px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">1PM ₹</th>
+                  <th className="min-w-[68px] px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">6PM ₹</th>
+                  <th className="min-w-[68px] px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">8PM ₹</th>
+                  <th className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
                     JOMA<span className="hidden sm:inline"> (-)</span>
                   </th>
-                  <th className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
+                  <th className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">
                     DUE<span className="hidden sm:inline"> (+)</span>
                   </th>
-                  <th className="min-w-[88px] px-2.5 sm:px-3 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">TOTAL</th>
+                  <th className="min-w-[88px] px-2.5 sm:px-3 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">TOTAL</th>
                   {showRateMobile && (
                     <>
-                      <th className="px-2 sm:px-2.5 py-2.5 sm:py-3 text-left border-r border-white/10 whitespace-nowrap">MOBILE</th>
-                      <th className="px-2 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">RATE</th>
+                      <th className="px-2 sm:px-2.5 py-2 sm:py-3 text-left border-r border-white/10 whitespace-nowrap">MOBILE</th>
+                      <th className="px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">RATE</th>
                     </>
                   )}
-                  <th className="px-2 sm:px-2.5 py-2.5 sm:py-3 text-center whitespace-nowrap">SEND</th>
+                  <th className="px-2 sm:px-2.5 py-2 sm:py-3 text-center whitespace-nowrap">SEND</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/80 dark:divide-slate-700/45 text-slate-950 dark:text-slate-100 font-sans tabular-nums">
@@ -645,21 +645,21 @@ export const SellerBillView = memo(function SellerBillView({
                       } hover:bg-indigo-50/40 dark:hover:bg-indigo-500/15 transition-colors`}
                     >
                       <td
-                        className={`bill-col-name sticky left-0 z-10 sm:min-w-[128px] pl-1.5 pr-0.5 sm:px-3 py-2.5 sm:py-3 border-r border-slate-200/90 dark:border-slate-700/50 font-sans font-extrabold sm:text-[14.5px] tracking-[-0.02em] sm:tracking-normal text-slate-900 dark:text-white whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)] dark:shadow-[2px_0_8px_-2px_rgba(2,6,23,0.45)] ${
+                        className={`bill-col-name sticky left-0 z-10 sm:min-w-[128px] pl-1.5 pr-0.5 sm:px-3 py-1.5 sm:py-3 border-r border-slate-200/90 dark:border-slate-700/50 font-sans font-extrabold sm:text-[14.5px] tracking-[-0.02em] sm:tracking-normal text-slate-900 dark:text-white whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)] dark:shadow-[2px_0_8px_-2px_rgba(2,6,23,0.45)] ${
                           idx % 2 === 1 ? 'bg-slate-50 dark:bg-[#142038]' : 'bg-white dark:bg-[#101A2F]'
                         }`}
                       >
                         <span className="block truncate sm:overflow-visible whitespace-nowrap">{row.name}</span>
                       </td>
-                      <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right font-bold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.mor)}</td>
-                      <td className="bill-col-day px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right font-bold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.day)}</td>
-                      <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right font-bold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.eve)}</td>
-                      <td className="bill-col-sold px-[3px] sm:px-2.5 py-2.5 sm:py-3 text-right font-extrabold sm:text-[14.5px] text-[var(--kk-brand)] dark:text-sky-300 bg-indigo-50/40 dark:bg-indigo-500/12 border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">
+                      <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-1.5 sm:py-3 text-right font-bold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.mor)}</td>
+                      <td className="bill-col-day px-[2.5px] sm:px-2.5 py-1.5 sm:py-3 text-right font-bold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.day)}</td>
+                      <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-1.5 sm:py-3 text-right font-bold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.eve)}</td>
+                      <td className="bill-col-sold px-[3px] sm:px-2.5 py-1.5 sm:py-3 text-right font-extrabold sm:text-[14.5px] text-[var(--kk-brand)] dark:text-sky-300 bg-indigo-50/40 dark:bg-indigo-500/12 border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">
                         {formatINR(row.sold)}
                       </td>
-                      <td className="bill-col-bill px-[3px] sm:px-2.5 py-2.5 sm:py-3 text-right font-extrabold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.bill)}</td>
+                      <td className="bill-col-bill px-[3px] sm:px-2.5 py-1.5 sm:py-3 text-right font-extrabold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.bill)}</td>
                       <td
-                        className={`bill-col-fresh pl-[3px] pr-1.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-extrabold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${
+                        className={`bill-col-fresh pl-[3px] pr-1.5 sm:px-2.5 py-1.5 sm:py-3 text-right font-extrabold sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${
                           row.fresh > 0
                             ? 'text-emerald-700 dark:text-emerald-300'
                             : row.fresh < 0
@@ -669,16 +669,16 @@ export const SellerBillView = memo(function SellerBillView({
                       >
                         {formatINR(row.fresh)}
                       </td>
-                      <td className={`min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt1pm > 0 ? 'font-extrabold text-emerald-700 dark:text-emerald-300' : 'font-bold text-slate-600 dark:text-slate-300'}`}>
+                      <td className={`min-w-[68px] px-2.5 py-1.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt1pm > 0 ? 'font-extrabold text-emerald-700 dark:text-emerald-300' : 'font-bold text-slate-600 dark:text-slate-300'}`}>
                         {formatINR(row.amt1pm)}
                       </td>
-                      <td className={`min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt6pm > 0 ? 'font-extrabold text-emerald-700 dark:text-emerald-300' : 'font-bold text-slate-600 dark:text-slate-300'}`}>
+                      <td className={`min-w-[68px] px-2.5 py-1.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt6pm > 0 ? 'font-extrabold text-emerald-700 dark:text-emerald-300' : 'font-bold text-slate-600 dark:text-slate-300'}`}>
                         {formatINR(row.amt6pm)}
                       </td>
-                      <td className={`min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt8pm > 0 ? 'font-extrabold text-emerald-700 dark:text-emerald-300' : 'font-bold text-slate-600 dark:text-slate-300'}`}>
+                      <td className={`min-w-[68px] px-2.5 py-1.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt8pm > 0 ? 'font-extrabold text-emerald-700 dark:text-emerald-300' : 'font-bold text-slate-600 dark:text-slate-300'}`}>
                         {formatINR(row.amt8pm)}
                       </td>
-                      <td className="min-w-[84px] sm:min-w-[96px] p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45">
+                      <td className="min-w-[84px] sm:min-w-[96px] py-0.5 px-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45">
                         <FormulaNumberInput
                           id={`bill-joma-${row.id}`}
                           label={`${row.name} · JOMA`}
@@ -694,7 +694,7 @@ export const SellerBillView = memo(function SellerBillView({
                           }`}
                         />
                       </td>
-                      <td className="min-w-[84px] sm:min-w-[96px] p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45">
+                      <td className="min-w-[84px] sm:min-w-[96px] py-0.5 px-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45">
                         <FormulaNumberInput
                           id={`bill-due-${row.id}`}
                           label={`${row.name} · DUE`}
@@ -711,7 +711,7 @@ export const SellerBillView = memo(function SellerBillView({
                         />
                       </td>
                       <td
-                        className={`min-w-[88px] px-2.5 sm:px-3 py-2.5 sm:py-3 text-right text-[14px] sm:text-[15.5px] font-extrabold bg-indigo-50/40 dark:bg-indigo-500/14 border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${
+                        className={`min-w-[88px] px-2.5 sm:px-3 py-1.5 sm:py-3 text-right text-[14px] sm:text-[15.5px] font-extrabold bg-indigo-50/40 dark:bg-indigo-500/14 border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${
                           row.total > 0
                             ? 'text-emerald-700 dark:text-emerald-300'
                             : row.total < 0
@@ -723,7 +723,7 @@ export const SellerBillView = memo(function SellerBillView({
                       </td>
                       {showRateMobile && (
                         <>
-                          <td className="p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45 min-w-[120px]">
+                          <td className="py-0.5 px-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45 min-w-[120px]">
                             <div className="ios-compact-wrap-bill">
                               <input
                                 type="text"
@@ -734,7 +734,7 @@ export const SellerBillView = memo(function SellerBillView({
                               />
                             </div>
                           </td>
-                          <td className="p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45 min-w-[64px]">
+                          <td className="py-0.5 px-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45 min-w-[64px]">
                             <div className="ios-compact-wrap-bill">
                               <input
                                 type="number"
@@ -750,13 +750,13 @@ export const SellerBillView = memo(function SellerBillView({
                           </td>
                         </>
                       )}
-                      <td className="px-2 py-1.5 text-center font-sans whitespace-nowrap">
+                      <td className="px-1.5 py-0.5 sm:px-2 sm:py-1.5 text-center font-sans whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1.5">
                           <button
                             type="button"
                             onClick={() => openBillPreview(row)}
                             title={`View ${row.name} Bill Card`}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-[var(--kk-brand)] dark:text-sky-200 bg-indigo-50 dark:bg-indigo-500/20 hover:bg-indigo-100 dark:hover:bg-indigo-500/30 border border-indigo-200 dark:border-indigo-400/35 rounded-lg cursor-pointer transition-colors"
+                            className="inline-flex items-center gap-1 px-2 py-1 sm:py-1.5 text-xs font-bold text-[var(--kk-brand)] dark:text-sky-200 bg-indigo-50 dark:bg-indigo-500/20 hover:bg-indigo-100 dark:hover:bg-indigo-500/30 border border-indigo-200 dark:border-indigo-400/35 rounded-lg cursor-pointer transition-colors"
                           >
                             <FileText className="w-3.5 h-3.5" />
                             <span>Card</span>
@@ -766,7 +766,7 @@ export const SellerBillView = memo(function SellerBillView({
                             disabled={sendingBillId !== null}
                             onClick={() => void handleSendBillCard(row)}
                             title={`Send ${row.name} Bill Card on WhatsApp`}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer transition-colors disabled:opacity-60"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 sm:py-1.5 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer transition-colors disabled:opacity-60"
                           >
                             {sendingBillId === row.id ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -778,11 +778,11 @@ export const SellerBillView = memo(function SellerBillView({
                           <button
                             type="button"
                             onClick={() => requestDeleteSeller(row)}
-                            className="p-1.5 text-slate-500 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 bg-slate-100 dark:bg-slate-800/80 hover:bg-rose-50 dark:hover:bg-rose-500/20 border border-slate-200 dark:border-slate-700 hover:border-rose-200 dark:hover:border-rose-500/40 rounded-lg cursor-pointer transition-colors"
+                            className="p-1 sm:p-1.5 text-slate-500 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 bg-slate-100 dark:bg-slate-800/80 hover:bg-rose-50 dark:hover:bg-rose-500/20 border border-slate-200 dark:border-slate-700 hover:border-rose-200 dark:hover:border-rose-500/40 rounded-lg cursor-pointer transition-colors"
                             title={`Delete ${row.name}`}
                             aria-label={`Delete ${row.name}`}
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                           </button>
                         </div>
                       </td>
@@ -793,16 +793,16 @@ export const SellerBillView = memo(function SellerBillView({
               {visibleBills.length > 0 && (
                 <tfoot>
                   <tr className="kk-table-head text-white text-[11.5px] sm:text-[14.5px] tracking-[-0.025em] sm:tracking-normal font-extrabold font-sans tabular-nums align-middle">
-                    <td className="bill-col-name sticky left-0 z-10 bg-[var(--kk-brand)] dark:bg-[#22305B] sm:min-w-[128px] pl-1.5 pr-0.5 sm:px-3 py-2.5 sm:py-3 font-sans sm:text-[13.5px] font-extrabold uppercase tracking-[-0.02em] sm:tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                    <td className="bill-col-name sticky left-0 z-10 bg-[var(--kk-brand)] dark:bg-[#22305B] sm:min-w-[128px] pl-1.5 pr-0.5 sm:px-3 py-2 sm:py-3 font-sans sm:text-[13.5px] font-extrabold uppercase tracking-[-0.02em] sm:tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                       TOTAL ({visibleBills.length})
                     </td>
-                    <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.mor)}</td>
-                    <td className="bill-col-day px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.day)}</td>
-                    <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-2.5 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.eve)}</td>
-                    <td className="bill-col-sold px-[3px] sm:px-2.5 py-2.5 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.sold)}</td>
-                    <td className="bill-col-bill px-[3px] sm:px-2.5 py-2.5 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.bill)}</td>
+                    <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-2 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.mor)}</td>
+                    <td className="bill-col-day px-[2.5px] sm:px-2.5 py-2 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.day)}</td>
+                    <td className="bill-col-sess px-[2.5px] sm:px-2.5 py-2 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.eve)}</td>
+                    <td className="bill-col-sold px-[3px] sm:px-2.5 py-2 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.sold)}</td>
+                    <td className="bill-col-bill px-[3px] sm:px-2.5 py-2 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.bill)}</td>
                     <td
-                      className={`bill-col-fresh pl-[3px] pr-1.5 sm:px-2.5 py-2.5 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap ${
+                      className={`bill-col-fresh pl-[3px] pr-1.5 sm:px-2.5 py-2 sm:py-3 text-right sm:text-[14.5px] border-r border-white/10 whitespace-nowrap ${
                         totals.fresh > 0
                           ? 'text-emerald-300'
                           : totals.fresh < 0
@@ -812,13 +812,13 @@ export const SellerBillView = memo(function SellerBillView({
                     >
                       {formatINR(totals.fresh)}
                     </td>
-                    <td className="min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] text-emerald-300 border-r border-white/10 whitespace-nowrap">{formatINR(totals.amt1pm)}</td>
-                    <td className="min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] text-emerald-300 border-r border-white/10 whitespace-nowrap">{formatINR(totals.amt6pm)}</td>
-                    <td className="min-w-[68px] px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] text-emerald-300 border-r border-white/10 whitespace-nowrap">{formatINR(totals.amt8pm)}</td>
-                    <td className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.joma)}</td>
-                    <td className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2.5 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.due)}</td>
+                    <td className="min-w-[68px] px-2.5 py-2 sm:py-3 text-right text-[13px] sm:text-[14.5px] text-emerald-300 border-r border-white/10 whitespace-nowrap">{formatINR(totals.amt1pm)}</td>
+                    <td className="min-w-[68px] px-2.5 py-2 sm:py-3 text-right text-[13px] sm:text-[14.5px] text-emerald-300 border-r border-white/10 whitespace-nowrap">{formatINR(totals.amt6pm)}</td>
+                    <td className="min-w-[68px] px-2.5 py-2 sm:py-3 text-right text-[13px] sm:text-[14.5px] text-emerald-300 border-r border-white/10 whitespace-nowrap">{formatINR(totals.amt8pm)}</td>
+                    <td className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.joma)}</td>
+                    <td className="min-w-[84px] sm:min-w-[96px] px-2 sm:px-2.5 py-2 sm:py-3 text-right text-[13px] sm:text-[14.5px] border-r border-white/10 whitespace-nowrap">{formatINR(totals.due)}</td>
                     <td
-                      className={`min-w-[88px] px-2.5 sm:px-3 py-2.5 sm:py-3 text-right text-[14px] sm:text-[15.5px] border-r border-white/10 whitespace-nowrap ${
+                      className={`min-w-[88px] px-2.5 sm:px-3 py-2 sm:py-3 text-right text-[14px] sm:text-[15.5px] border-r border-white/10 whitespace-nowrap ${
                         totals.total > 0
                           ? 'text-emerald-300'
                           : totals.total < 0
@@ -830,11 +830,11 @@ export const SellerBillView = memo(function SellerBillView({
                     </td>
                     {showRateMobile && (
                       <>
-                        <td className="px-2 sm:px-2.5 py-2.5 sm:py-3 font-sans border-r border-white/10 whitespace-nowrap">MOBILE</td>
-                        <td className="px-2 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">{formatINR(totals.rate)}</td>
+                        <td className="px-2 sm:px-2.5 py-2 sm:py-3 font-sans border-r border-white/10 whitespace-nowrap">MOBILE</td>
+                        <td className="px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">{formatINR(totals.rate)}</td>
                       </>
                     )}
-                    <td className="px-2 sm:px-2.5 py-2.5 sm:py-3 text-center font-sans tracking-wide whitespace-nowrap">KK AGENCY</td>
+                    <td className="px-2 sm:px-2.5 py-2 sm:py-3 text-center font-sans tracking-wide whitespace-nowrap">KK AGENCY</td>
                   </tr>
                 </tfoot>
               )}

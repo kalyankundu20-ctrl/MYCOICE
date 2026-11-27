@@ -22,21 +22,6 @@ const STORAGE_KEY = 'kk-app-theme';
 
 export const APP_THEMES: AppThemeOption[] = [
   {
-    id: 'aurora',
-    name: 'Aurora Glass',
-    tagline: 'Midnight Dark',
-    isDark: true,
-    brand: '#132544',
-    brandMid: '#283F8C',
-    brandEnd: '#19858E',
-    brandHover: '#2563EB',
-    canvas: '#0A1120',
-    surface: 'rgba(17, 29, 49, 0.76)',
-    tint: 'rgba(56, 189, 248, 0.16)',
-    tintBorder: 'rgba(94, 234, 212, 0.42)',
-    accentDot: '#34F5C5',
-  },
-  {
     id: 'aurora-live',
     name: 'Neon Aurora Live',
     tagline: 'Animated Particles',
@@ -63,58 +48,6 @@ export const APP_THEMES: AppThemeOption[] = [
     tint: '#EEF4FF',
     tintBorder: '#C7D7FE',
     accentDot: '#60A5FA',
-  },
-  {
-    id: 'emerald',
-    name: 'Emerald Gold',
-    tagline: 'Wealth Ledger',
-    brand: '#064E3B',
-    brandMid: '#065F46',
-    brandEnd: '#0F766E',
-    brandHover: '#047857',
-    canvas: '#F2FBF7',
-    tint: '#ECFDF5',
-    tintBorder: '#A7F3D0',
-    accentDot: '#34D399',
-  },
-  {
-    id: 'obsidian',
-    name: 'Midnight Slate',
-    tagline: 'Ultra Pro Dark',
-    brand: '#0F172A',
-    brandMid: '#1E293B',
-    brandEnd: '#334155',
-    brandHover: '#1E293B',
-    canvas: '#F4F6F9',
-    tint: '#F1F5F9',
-    tintBorder: '#CBD5E1',
-    accentDot: '#94A3B8',
-  },
-  {
-    id: 'amethyst',
-    name: 'Imperial Purple',
-    tagline: 'Velvet Violet',
-    brand: '#2E1065',
-    brandMid: '#4C1D95',
-    brandEnd: '#6D28D9',
-    brandHover: '#5B21B6',
-    canvas: '#F6F4FF',
-    tint: '#F5F3FF',
-    tintBorder: '#DDD6FE',
-    accentDot: '#C084FC',
-  },
-  {
-    id: 'crimson',
-    name: 'Royal Ruby',
-    tagline: 'Classic Crimson',
-    brand: '#7F1D1D',
-    brandMid: '#991B1B',
-    brandEnd: '#B91C1C',
-    brandHover: '#991B1B',
-    canvas: '#FDF6F6',
-    tint: '#FEF2F2',
-    tintBorder: '#FECACA',
-    accentDot: '#FB7185',
   },
   {
     id: 'sapphire',
@@ -144,20 +77,19 @@ export function resolveThemeOption(themeId?: AppThemeId): AppThemeOption {
     return THEME_MAP[themeId]!;
   }
   if (themeId === 'cobalt') return THEME_MAP.navy!;
-  if (themeId === 'graphite') return THEME_MAP.obsidian!;
-  if (themeId === 'teal') return THEME_MAP.emerald!;
-  return THEME_MAP.aurora!;
+  if (themeId === 'teal') return THEME_MAP.sapphire!;
+  return THEME_MAP['aurora-live']!;
 }
 
 export function getStoredThemeId(): AppThemeId {
-  if (typeof window === 'undefined') return 'aurora';
+  if (typeof window === 'undefined') return 'aurora-live';
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY) as AppThemeId | null;
     if (raw) return resolveThemeOption(raw).id;
   } catch {
     // ignore storage errors
   }
-  return 'aurora';
+  return 'aurora-live';
 }
 
 export function applyDocumentTheme(themeId?: AppThemeId): AppThemeOption {

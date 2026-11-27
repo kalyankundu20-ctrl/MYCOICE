@@ -36,9 +36,6 @@ export interface SoundStyleOption {
 }
 
 export const SOUND_STYLES: SoundStyleOption[] = [
-  { id: 'studio', label: 'Soft Studio', desc: 'Warm pure tone' },
-  { id: 'crisp', label: 'Crisp iOS', desc: 'Bright glass pop' },
-  { id: 'chime', label: 'Royal Chime', desc: 'Melodic bell' },
   { id: 'classic', label: 'Classic Click', desc: 'Snappy keypad' },
 ];
 
@@ -308,19 +305,21 @@ const SOUND_PROFILES: Record<SoundStyleId, Record<SoundName, CleanVoiceSpec[]>> 
   classic: CLASSIC_PRESETS,
 };
 
-function readStoredSoundStyle(): SoundStyleId {
-  if (typeof window === 'undefined') return 'studio';
-  try {
-    const raw = window.localStorage.getItem(SOUND_STYLE_STORAGE_KEY) as SoundStyleId | null;
-    if (raw && SOUND_PROFILES[raw]) return raw;
-  } catch {
-    // ignore storage errors
+const PERMANENT_SOUND_STYLE: SoundStyleId = 'classic';
+
+function ensurePermanentSoundStyle(): SoundStyleId {
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(SOUND_STYLE_STORAGE_KEY, PERMANENT_SOUND_STYLE);
+    } catch {
+      // ignore storage errors
+    }
   }
-  return 'studio';
+  return PERMANENT_SOUND_STYLE;
 }
 
 let soundEnabled = true;
-let activeSoundStyle: SoundStyleId = readStoredSoundStyle();
+const activeSoundStyle: SoundStyleId = ensurePermanentSoundStyle();
 
 export function setSoundEnabled(enabled: boolean) {
   soundEnabled = Boolean(enabled);
@@ -334,22 +333,12 @@ export function getSoundStyle(): SoundStyleId {
   return activeSoundStyle;
 }
 
-export function setSoundStyle(style: SoundStyleId) {
-  if (!SOUND_PROFILES[style]) return;
-  activeSoundStyle = style;
-  bufferCache.clear();
-  lastSoundName = null;
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.setItem(SOUND_STYLE_STORAGE_KEY, style);
-    } catch {
-      // ignore storage errors
-    }
-  }
+export function setSoundStyle(_style: SoundStyleId) {
+  ensurePermanentSoundStyle();
 }
 
-export function previewSoundStyle(style: SoundStyleId) {
-  setSoundStyle(style);
+export function previewSoundStyle(_style: SoundStyleId) {
+  ensurePermanentSoundStyle();
   const wasEnabled = soundEnabled;
   soundEnabled = true;
   lastSoundName = null;
