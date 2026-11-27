@@ -6177,8 +6177,9 @@ export default function App() {
   );
 
   return (
-    <AppShell
-      activeTab={activeTab}
+    <>
+      <AppShell
+        activeTab={activeTab}
       onSelectTab={setActiveTab}
       billingDate={state.date}
       onChangeBillingDate={handleChangeDate}
@@ -6551,6 +6552,7 @@ export default function App() {
           }}
         />
       )}
+      </AppShell>
 
       {previewModal.isOpen && (
         <MessagePreviewModal
@@ -6653,6 +6655,6 @@ export default function App() {
           onSaveAnnouncement={handleSavePublicAnnouncement}
         />
       )}
-    </AppShell>
+    </>
   );
 }

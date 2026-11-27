@@ -151,27 +151,27 @@
     transform-origin: top left !important;
   }
 
-  /* All Cols Screen 1 fit: NAME tightly cropped to full name (e.g. PRASANTA) + MOR..FRESH clean fit */
+  /* All Cols Screen 1 fit: NAME -> FRESH = 100% of card width (19 + 11.5*3 + 13 + 16.75*2 = 100%) */
   .bill-col-name {
-    width: 1%;
-    min-width: 74px;
-    max-width: none;
+    width: calc((100vw - 18px) * 0.19);
+    min-width: calc((100vw - 18px) * 0.19);
+    max-width: calc((100vw - 18px) * 0.20);
   }
   .bill-col-sess {
     width: calc((100vw - 18px) * 0.115);
     min-width: calc((100vw - 18px) * 0.115);
   }
   .bill-col-sold {
-    width: calc((100vw - 18px) * 0.135);
-    min-width: calc((100vw - 18px) * 0.135);
+    width: calc((100vw - 18px) * 0.13);
+    min-width: calc((100vw - 18px) * 0.13);
   }
   .bill-col-bill {
-    width: calc((100vw - 18px) * 0.155);
-    min-width: calc((100vw - 18px) * 0.155);
+    width: calc((100vw - 18px) * 0.1675);
+    min-width: calc((100vw - 18px) * 0.1675);
   }
   .bill-col-fresh {
-    width: calc((100vw - 18px) * 0.155);
-    min-width: calc((100vw - 18px) * 0.155);
+    width: calc((100vw - 18px) * 0.1675);
+    min-width: calc((100vw - 18px) * 0.1675);
   }
 }
 

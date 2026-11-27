@@ -123,7 +123,7 @@ export function GoogleSheetsSyncModal({
             exit={{ opacity: 0, y: 18, scale: 0.97 }}
             transition={{ type: 'spring', stiffness: 460, damping: 34 }}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-xl bg-white rounded-t-3xl sm:rounded-3xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92%]"
+            className="w-full max-w-xl bg-white rounded-t-3xl sm:rounded-3xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
           >
             {/* Header */}
             <div className="kk-brand-gradient text-white px-5 py-4 flex items-center justify-between gap-3 shrink-0">
@@ -154,7 +154,7 @@ export function GoogleSheetsSyncModal({
             </div>
 
             {/* Body */}
-            <div className="p-4 sm:p-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-y-auto space-y-4 flex-1 bg-slate-50/70">
+            <div className="p-4 sm:p-5 pb-[max(2rem,calc(env(safe-area-inset-bottom)+1.25rem))] overflow-y-auto space-y-4 flex-1 bg-slate-50/70">
               {(errorMessage || localInputError) && (
                 <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-xs font-bold text-rose-900 flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
