@@ -290,9 +290,9 @@ export function AnnouncementBanner({
           </div>
         )}
 
-        {/* Compact Header-Strip Full-Width Photo / Multi-Photo Slider (short height ~108px mobile, ambient full-bleed edge-to-edge, tap for Full-Screen Zoom) */}
+        {/* Compact Wide Banner Strip — photo covers full width edge-to-edge, tap for Full-Screen Zoom */}
         {photos.length > 0 && !collapsed && (
-          <div className="relative w-full h-[108px] sm:h-[136px] overflow-hidden">
+          <div className="relative w-full h-[112px] sm:h-[144px] overflow-hidden bg-slate-950/20">
             {photos.length === 1 ? (
               <button
                 type="button"
@@ -305,14 +305,8 @@ export function AnnouncementBanner({
               >
                 <img
                   src={photos[0]}
-                  alt=""
-                  aria-hidden="true"
-                  className="absolute inset-0 w-full h-full object-cover scale-110 blur-md brightness-75 select-none pointer-events-none"
-                />
-                <img
-                  src={photos[0]}
                   alt={title || 'KK Agency Advertisement'}
-                  className="relative z-10 w-full h-full object-contain mx-auto block"
+                  className="w-full h-full object-cover object-center block"
                 />
                 <span className="absolute bottom-1.5 right-2 z-20 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-950/75 text-white text-[10px] font-bold backdrop-blur-[2px] shadow-xs">
                   <ZoomIn className="w-3 h-3" />
@@ -344,14 +338,8 @@ export function AnnouncementBanner({
                       >
                         <img
                           src={photoUrl}
-                          alt=""
-                          aria-hidden="true"
-                          className="absolute inset-0 w-full h-full object-cover scale-110 blur-md brightness-75 select-none pointer-events-none"
-                        />
-                        <img
-                          src={photoUrl}
                           alt={`${title || 'KK Agency Advertisement'} (${idx + 1})`}
-                          className="relative z-10 w-full h-full object-contain mx-auto block"
+                          className="w-full h-full object-cover object-center block"
                         />
                       </button>
                     </div>
