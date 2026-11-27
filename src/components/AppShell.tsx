@@ -110,7 +110,7 @@ export const AppShell = memo(function AppShell({
           <button
             type="button"
             onClick={() => handleNavClick('Seller Bill')}
-            className="flex items-center gap-3 text-left cursor-pointer group min-w-0"
+            className="flex items-center gap-2.5 text-left cursor-pointer group min-w-0"
           >
             <img
               src="/kk-logo.png"
@@ -122,6 +122,16 @@ export const AppShell = memo(function AppShell({
             <div className="text-lg font-black tracking-tight text-white truncate group-hover:opacity-90">
               KK Agency
             </div>
+            <span className="kk-kali-emblem w-10 h-10 shrink-0" aria-hidden="true">
+              <span className="kk-kali-aura" />
+              <span className="kk-kali-rays" />
+              <img
+                src="/maa-kali.png"
+                alt=""
+                decoding="async"
+                className="kk-kali-img"
+              />
+            </span>
           </button>
         </div>
 
@@ -249,13 +259,13 @@ export const AppShell = memo(function AppShell({
       <div className="relative z-10 flex-1 min-w-0 h-full flex flex-col overflow-hidden">
         {/* Executive Full-App Top Bar */}
         <header className="shrink-0 z-30 kk-brand-gradient kk-header-bar text-white border-b border-black/15 dark:border-slate-700/40 pt-[env(safe-area-inset-top)]">
-          <div className="min-h-[58px] sm:min-h-[64px] py-1.5 sm:py-2 px-2.5 sm:px-6 flex items-center justify-between gap-2">
-            {/* Left Brand Cluster: Logo + Agency Name + Billing Date */}
-            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+          <div className="min-h-[58px] sm:min-h-[64px] py-1.5 sm:py-2 px-2 min-[390px]:px-2.5 sm:px-6 flex items-center justify-between gap-1.5 sm:gap-2">
+            {/* Left Brand Cluster: Logo + Agency Name/Date + Animated Maa Kali PNG */}
+            <div className="flex items-center gap-1.5 min-[390px]:gap-2 sm:gap-3 min-w-0 flex-1">
               <button
                 type="button"
                 onClick={() => handleNavClick('Seller Bill')}
-                className="lg:hidden w-10 h-10 rounded-xl overflow-hidden shrink-0 shadow-md ring-1 ring-white/30 cursor-pointer"
+                className="lg:hidden w-9 h-9 min-[390px]:w-9.5 min-[390px]:h-9.5 sm:w-10 sm:h-10 rounded-xl overflow-hidden shrink-0 shadow-md ring-1 ring-white/30 cursor-pointer"
                 aria-label="KK Agency Home"
               >
                 <img
@@ -271,7 +281,7 @@ export const AppShell = memo(function AppShell({
                 <button
                   type="button"
                   onClick={() => handleNavClick('Seller Bill')}
-                  className="lg:hidden text-left text-[16.5px] sm:text-xl font-extrabold tracking-[-0.02em] text-white leading-tight whitespace-nowrap cursor-pointer"
+                  className="lg:hidden text-left text-[15.5px] min-[390px]:text-[16.5px] sm:text-xl font-extrabold tracking-[-0.02em] text-white leading-tight whitespace-nowrap cursor-pointer"
                 >
                   KK Agency
                 </button>
@@ -289,7 +299,7 @@ export const AppShell = memo(function AppShell({
 
                 <label
                   title="Change billing date"
-                  className="group relative self-start sm:self-auto inline-flex items-center gap-1 sm:gap-1.5 sm:px-2 py-0 sm:py-1 text-[11.5px] sm:text-[13.5px] font-bold font-sans tabular-nums tracking-[0.01em] text-white/88 hover:text-white sm:hover:bg-white/10 rounded-md cursor-pointer whitespace-nowrap shrink-0 leading-tight"
+                  className="group relative self-start sm:self-auto inline-flex items-center gap-1 sm:gap-1.5 sm:px-2 py-0 sm:py-1 text-[11px] min-[390px]:text-[11.5px] sm:text-[13.5px] font-bold font-sans tabular-nums tracking-[0.01em] text-white/88 hover:text-white sm:hover:bg-white/10 rounded-md cursor-pointer whitespace-nowrap shrink-0 leading-tight"
                 >
                   <Calendar
                     className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 text-amber-300"
@@ -310,10 +320,25 @@ export const AppShell = memo(function AppShell({
                   />
                 </label>
               </div>
+
+              {/* Animated Maa Kali PNG beside KK Agency (matches Google Sheet icon size) */}
+              <div
+                className="lg:hidden kk-kali-emblem w-9 h-9 min-[390px]:w-9.5 min-[390px]:h-9.5 sm:w-10 sm:h-10 shrink-0 ml-0.5"
+                title="Maa Kali"
+              >
+                <span className="kk-kali-aura" aria-hidden="true" />
+                <span className="kk-kali-rays" aria-hidden="true" />
+                <img
+                  src="/maa-kali.png"
+                  alt="Maa Kali"
+                  decoding="async"
+                  className="kk-kali-img"
+                />
+              </div>
             </div>
 
             {/* Right Action Cluster: Uniform Glass Tiles (Ad · Sheet · IDs · Settings) */}
-            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <div className="flex items-center gap-1 min-[390px]:gap-1.5 sm:gap-2 shrink-0">
               {onOpenAnnouncement && (
                 <button
                   type="button"
@@ -323,7 +348,7 @@ export const AppShell = memo(function AppShell({
                   }}
                   aria-label="Advertisement & Urgent Message"
                   title="Advertisement, Offer & Urgent Message"
-                  className="relative inline-flex items-center justify-center gap-1 w-9.5 sm:w-auto h-9.5 sm:h-10 sm:px-3 text-xs font-extrabold text-amber-200 bg-amber-400/16 hover:bg-amber-400/26 border border-amber-300/35 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                  className="relative inline-flex items-center justify-center gap-1 w-9 min-[390px]:w-9.5 sm:w-auto h-9 min-[390px]:h-9.5 sm:h-10 sm:px-3 text-xs font-extrabold text-amber-200 bg-amber-400/16 hover:bg-amber-400/26 border border-amber-300/35 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
                 >
                   <Megaphone className="w-[17px] h-[17px] shrink-0 text-amber-300" aria-hidden="true" />
                   <span className="hidden sm:inline">Ad</span>
@@ -345,7 +370,7 @@ export const AppShell = memo(function AppShell({
                   }}
                   aria-label="Google Sheets Live Sync"
                   title="Google Sheets Live Sync"
-                  className="relative inline-flex items-center justify-center gap-1 w-9.5 sm:w-auto h-9.5 sm:h-10 sm:px-3 text-xs font-extrabold text-emerald-100 bg-emerald-500/24 hover:bg-emerald-500/34 border border-emerald-300/40 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                  className="relative inline-flex items-center justify-center gap-1 w-9 min-[390px]:w-9.5 sm:w-auto h-9 min-[390px]:h-9.5 sm:h-10 sm:px-3 text-xs font-extrabold text-emerald-100 bg-emerald-500/24 hover:bg-emerald-500/34 border border-emerald-300/40 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
                 >
                   <FileSpreadsheet className="w-[17px] h-[17px] shrink-0 text-emerald-300" aria-hidden="true" />
                   <span className="hidden sm:inline">Sheet</span>
@@ -366,9 +391,9 @@ export const AppShell = memo(function AppShell({
                 }}
                 aria-label="Seller Mobile IDs"
                 title="Seller Mobile IDs & Live Sync"
-                className="relative inline-flex items-center justify-center gap-1 h-9.5 sm:h-10 px-2.5 sm:px-3 text-xs font-extrabold text-white bg-white/14 hover:bg-white/24 border border-white/25 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                className="relative inline-flex items-center justify-center gap-1 h-9 min-[390px]:h-9.5 sm:h-10 px-2 min-[390px]:px-2.5 sm:px-3 text-xs font-extrabold text-white bg-white/14 hover:bg-white/24 border border-white/25 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
               >
-                <Smartphone className="w-4 h-4 shrink-0 text-white/95" aria-hidden="true" />
+                <Smartphone className="w-3.5 h-3.5 min-[390px]:w-4 min-[390px]:h-4 shrink-0 text-white/95" aria-hidden="true" />
                 <span>IDs</span>
                 {cloudConnected && (
                   <span
@@ -386,7 +411,7 @@ export const AppShell = memo(function AppShell({
                 }}
                 aria-label="Agency Settings"
                 title="Agency Settings"
-                className="inline-flex items-center justify-center gap-1.5 w-9.5 sm:w-auto h-9.5 sm:h-10 sm:px-3.5 text-xs sm:text-sm font-bold text-white bg-white/18 hover:bg-white/28 border border-white/30 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                className="inline-flex items-center justify-center gap-1.5 w-9 min-[390px]:w-9.5 sm:w-auto h-9 min-[390px]:h-9.5 sm:h-10 sm:px-3.5 text-xs sm:text-sm font-bold text-white bg-white/18 hover:bg-white/28 border border-white/30 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
               >
                 <SlidersHorizontal className="w-[17px] h-[17px] shrink-0" aria-hidden="true" />
                 <span className="hidden sm:inline">Settings</span>

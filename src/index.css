@@ -727,6 +727,98 @@ a[role="button"]:active {
   transform: scale(0.97);
 }
 
+/* Divine animated aura, rotating light rays & gentle float for Maa Kali PNG emblem */
+.kk-kali-emblem {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  isolation: isolate;
+}
+
+.kk-kali-aura {
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle,
+    rgba(251, 191, 36, 0.52) 0%,
+    rgba(244, 63, 94, 0.28) 46%,
+    transparent 74%
+  );
+  filter: blur(4px);
+  animation: kkKaliAuraPulse 3.2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.kk-kali-rays {
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    rgba(253, 224, 71, 0.38) 22deg,
+    transparent 44deg,
+    transparent 90deg,
+    rgba(251, 113, 133, 0.28) 112deg,
+    transparent 134deg,
+    transparent 180deg,
+    rgba(253, 224, 71, 0.38) 202deg,
+    transparent 224deg,
+    transparent 270deg,
+    rgba(251, 113, 133, 0.28) 292deg,
+    transparent 314deg,
+    transparent 360deg
+  );
+  -webkit-mask-image: radial-gradient(circle, black 35%, transparent 74%);
+  mask-image: radial-gradient(circle, black 35%, transparent 74%);
+  animation: kkKaliRaysSpin 14s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.kk-kali-img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 0 4px rgba(253, 224, 71, 0.45)) drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+  animation: kkKaliFloat 3.2s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes kkKaliFloat {
+  0%, 100% {
+    transform: translate3d(0, 0.5px, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -2px, 0) scale(1.06);
+  }
+}
+
+@keyframes kkKaliAuraPulse {
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.58;
+  }
+  50% {
+    transform: scale(1.16);
+    opacity: 0.96;
+  }
+}
+
+@keyframes kkKaliRaysSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .kk-tab-enter,
   .kk-modal-in,
@@ -734,6 +826,9 @@ a[role="button"]:active {
   .kk-card-lift,
   .kk-aurora-ribbon,
   .kk-aurora-particle,
+  .kk-kali-aura,
+  .kk-kali-rays,
+  .kk-kali-img,
   html[data-kk-theme="aurora-live"] .kk-kpi-net::after {
     animation: none !important;
     transition: none !important;
