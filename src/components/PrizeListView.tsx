@@ -322,7 +322,7 @@ export const PrizeListView = memo(function PrizeListView({
       {/* Header & Filters */}
       <div className="kk-surface-card rounded-2xl px-3.5 py-3 flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 border border-slate-200 rounded-xl">
+          <div className="flex items-center gap-0.5 p-0.5 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-700/70 rounded-xl">
             {(['ALL', '1PM', '6PM', '8PM'] as const).map((s) => (
               <button
                 key={s}
@@ -333,8 +333,8 @@ export const PrizeListView = memo(function PrizeListView({
                 }}
                 className={`px-2.5 py-1 text-xs font-bold rounded-lg cursor-pointer transition-colors ${
                   sessionFilter === s
-                    ? 'bg-white text-[var(--kk-brand)] shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white dark:bg-white/14 text-[var(--kk-brand)] dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 {s === 'ALL' ? 'All' : s}
@@ -352,19 +352,19 @@ export const PrizeListView = memo(function PrizeListView({
           />
 
           <div className="relative flex-1 min-w-[130px] sm:flex-initial">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search number..."
-              className="h-9 sm:h-auto pl-8 pr-2.5 py-1 sm:py-1.5 text-base sm:text-xs font-medium text-slate-950 placeholder:text-slate-400 bg-slate-50 border border-slate-200 rounded-xl w-full sm:w-48 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
+              className="h-9 sm:h-auto pl-8 pr-2.5 py-1 sm:py-1.5 text-base sm:text-xs font-medium text-slate-950 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-700 rounded-xl w-full sm:w-48 focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
             />
           </div>
         </div>
 
-        <div className="text-xs font-semibold text-slate-600">
-          Excluded: <span className="font-bold text-slate-950">{displayedExcludedNames.join(', ')}</span>
+        <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+          Excluded: <span className="font-bold text-slate-950 dark:text-white">{displayedExcludedNames.join(', ')}</span>
         </div>
       </div>
 
@@ -391,29 +391,29 @@ export const PrizeListView = memo(function PrizeListView({
             </span>
           </div>
 
-          <div className="p-2.5 bg-slate-50/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <div className="p-2.5 bg-slate-50/60 dark:bg-slate-950/35 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {sellerDispatches.map((d) => {
               const isCopied = copiedSellerKey === d.sellerKey;
               return (
                 <div
                   key={d.sellerKey}
-                  className="bg-white border border-slate-200/90 rounded-xl px-3 py-2.5 flex items-center justify-between gap-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03)] hover:border-emerald-300/80 transition-colors"
+                  className="bg-white dark:bg-slate-900/75 border border-slate-200/90 dark:border-slate-700/70 rounded-xl px-3 py-2.5 flex items-center justify-between gap-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03)] hover:border-emerald-300/80 transition-colors"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-9 h-8 rounded-lg bg-emerald-50 border border-emerald-200/80 text-emerald-800 font-extrabold font-mono-tabular text-[11px] flex items-center justify-center shrink-0">
+                    <div className="w-9 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-200/80 dark:border-emerald-400/35 text-emerald-800 dark:text-emerald-300 font-extrabold font-mono-tabular text-[11px] flex items-center justify-center shrink-0">
                       {d.time}
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-bold text-slate-950 truncate">
+                        <span className="text-xs font-bold text-slate-950 dark:text-white truncate">
                           {d.name}
                         </span>
-                        <span className="text-[10px] font-semibold text-slate-500 font-mono-tabular shrink-0">
+                        <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 font-mono-tabular shrink-0">
                           ({d.ticketCount})
                         </span>
                       </div>
                       <div className="flex items-center gap-1.5 mt-0.5">
-                        <span className="text-xs font-extrabold font-mono-tabular text-emerald-700">
+                        <span className="text-xs font-extrabold font-mono-tabular text-emerald-700 dark:text-emerald-300">
                           ₹{formatINR(d.total)}
                         </span>
                         <span className="text-[10px] font-semibold text-slate-400 truncate">
@@ -489,10 +489,10 @@ export const PrizeListView = memo(function PrizeListView({
               <th className="w-[16.5%] px-1 sm:px-3 py-2.5 sm:py-3 text-right truncate">TOTAL</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200/80 text-slate-950 text-[10.5px] sm:text-[13.5px] font-mono-tabular">
+          <tbody className="divide-y divide-slate-200/80 dark:divide-slate-700/45 text-slate-950 dark:text-slate-100 text-[10.5px] sm:text-[13.5px] font-mono-tabular">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center font-sans text-xs sm:text-sm font-semibold text-slate-600">
+                <td colSpan={9} className="px-4 py-8 text-center font-sans text-xs sm:text-sm font-semibold text-slate-600 dark:text-slate-400">
                   No winning tickets matched yet.
                 </td>
               </tr>
@@ -501,16 +501,16 @@ export const PrizeListView = memo(function PrizeListView({
                 const animateRow = filtered.length <= 40;
                 const cells = (
                   <>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-600 border-r border-slate-200/70 truncate">
+                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-600 dark:text-slate-300 border-r border-slate-200/70 dark:border-slate-700/45 truncate">
                       {row.time}
                     </td>
-                    <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-950 border-r border-slate-200/70 whitespace-normal break-words leading-tight">
+                    <td className="px-1 sm:px-2.5 py-2.5 sm:py-3 font-sans font-bold text-slate-950 dark:text-white border-r border-slate-200/70 dark:border-slate-700/45 whitespace-normal break-words leading-tight">
                       {row.name}
                     </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-[var(--kk-brand)] border-r border-slate-200/70 tracking-[-0.02em] sm:tracking-normal whitespace-nowrap">
+                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-[var(--kk-brand)] dark:text-sky-300 border-r border-slate-200/70 dark:border-slate-700/45 tracking-[-0.02em] sm:tracking-normal whitespace-nowrap">
                       {row.number}
                     </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-sans font-bold border-r border-slate-200/70">
+                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-sans font-bold border-r border-slate-200/70 dark:border-slate-700/45">
                       <span
                         className={`inline-block px-1 sm:px-2 py-0.5 rounded border text-[9.5px] sm:text-xs leading-tight ${getRankBadgeClass(
                           row.rank
@@ -519,32 +519,33 @@ export const PrizeListView = memo(function PrizeListView({
                         {row.rank}
                       </span>
                     </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-slate-800 border-r border-slate-200/70 whitespace-nowrap">
+                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-center font-extrabold text-slate-800 dark:text-slate-200 border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">
                       {row.item}
                     </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 dark:border-slate-700/45 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
                       {formatINR(row.prize)}
                     </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 dark:border-slate-700/45 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
                       {formatINR(row.vc)}
                     </td>
-                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right font-semibold border-r border-slate-200/70 dark:border-slate-700/45 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
                       {formatINR(row.svc)}
                     </td>
-                    <td className="px-1 sm:px-3 py-2.5 sm:py-3 text-right font-extrabold text-emerald-700 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                    <td className="px-1 sm:px-3 py-2.5 sm:py-3 text-right font-extrabold text-emerald-700 dark:text-emerald-300 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
                       {formatINR(row.total)}
                     </td>
                   </>
                 );
 
+                const rowSurfaceClass = `${
+                  idx % 2 === 1
+                    ? 'bg-slate-50/70 dark:bg-slate-800/35'
+                    : 'bg-white dark:bg-slate-900/45'
+                } hover:bg-emerald-50/45 dark:hover:bg-emerald-500/15 transition-colors align-middle`;
+
                 if (!animateRow) {
                   return (
-                    <tr
-                      key={row.id}
-                      className={`${
-                        idx % 2 === 1 ? 'bg-slate-50/70' : 'bg-white'
-                      } hover:bg-emerald-50/45 transition-colors align-middle`}
-                    >
+                    <tr key={row.id} className={rowSurfaceClass}>
                       {cells}
                     </tr>
                   );
@@ -553,27 +554,14 @@ export const PrizeListView = memo(function PrizeListView({
                 return (
                   <motion.tr
                     key={`${revealKey}-${row.id}`}
-                    initial={{
-                      opacity: 0,
-                      y: 12,
-                      backgroundColor: 'rgba(16, 185, 129, 0.16)',
-                    }}
-                    animate={{
-                      opacity: 1,
-                      y: 0,
-                      backgroundColor:
-                        idx % 2 === 1 ? 'rgba(248, 250, 252, 0.7)' : 'rgba(255, 255, 255, 0)',
-                    }}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
                     transition={{
                       duration: 0.32,
                       delay: Math.min(idx * 0.04, 0.55),
                       ease: [0.22, 1, 0.36, 1],
-                      backgroundColor: {
-                        duration: 0.85,
-                        delay: Math.min(idx * 0.04, 0.55) + 0.08,
-                      },
                     }}
-                    className="hover:bg-emerald-50/45 transition-colors align-middle"
+                    className={rowSurfaceClass}
                   >
                     {cells}
                   </motion.tr>
@@ -583,14 +571,14 @@ export const PrizeListView = memo(function PrizeListView({
           </tbody>
           {filtered.length > 0 && (
             <tfoot>
-              <tr className="bg-slate-100 font-extrabold text-[10.5px] sm:text-[13.5px] font-mono-tabular text-slate-950 border-t border-slate-200 align-middle">
-                <td colSpan={5} className="px-1.5 sm:px-3 py-2.5 sm:py-3 font-sans text-left border-r border-slate-200 truncate">
+              <tr className="bg-slate-100 dark:bg-slate-800/70 font-extrabold text-[10.5px] sm:text-[13.5px] font-mono-tabular text-slate-950 dark:text-white border-t border-slate-200 dark:border-slate-700/60 align-middle">
+                <td colSpan={5} className="px-1.5 sm:px-3 py-2.5 sm:py-3 font-sans text-left border-r border-slate-200 dark:border-slate-700/60 truncate">
                   TOTAL ({filtered.length})
                 </td>
-                <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-slate-200 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-slate-200 dark:border-slate-700/60 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
                   {formatINR(totals.prize)}
                 </td>
-                <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-slate-200 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
+                <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-slate-200 dark:border-slate-700/60 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">
                   {formatINR(totals.vc)}
                 </td>
                 <td className="px-0.5 sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-slate-200 tracking-[-0.03em] sm:tracking-normal whitespace-nowrap">

@@ -15,6 +15,7 @@ import { memo, ReactNode, useEffect, useRef } from 'react';
 import { formatDateDDMMYYYY } from '../engine/calculations';
 import { SheetTab } from '../types/ledger';
 import { AppSounds } from '../utils/sound';
+import { AuroraLiveBackdrop } from './AuroraLiveBackdrop';
 
 interface AppShellProps {
   activeTab: SheetTab;
@@ -105,9 +106,10 @@ export const AppShell = memo(function AppShell({
   };
 
   return (
-    <div className="h-full w-full overflow-hidden bg-[var(--kk-canvas)] text-slate-950 flex">
+    <div className="relative h-full w-full overflow-hidden bg-[var(--kk-canvas)] kk-app-canvas text-slate-950 dark:text-slate-100 flex">
+      <AuroraLiveBackdrop />
       {/* Desktop Left Sidebar */}
-      <aside className="hidden lg:flex lg:flex-col w-60 shrink-0 kk-brand-gradient text-white border-r border-black/15 h-full">
+      <aside className="relative z-10 hidden lg:flex lg:flex-col w-60 shrink-0 kk-brand-gradient kk-header-bar text-white border-r border-black/15 dark:border-slate-700/40 h-full">
         <div className="px-4 h-16 flex items-center justify-between border-b border-white/12">
           <button
             type="button"
@@ -248,9 +250,9 @@ export const AppShell = memo(function AppShell({
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
-        {/* Executive Full-App Top Bar (Solid Navy, Zero Blur, Safe-Area Full-Screen) */}
-        <header className="shrink-0 z-30 kk-brand-gradient text-white border-b border-black/15 pt-[env(safe-area-inset-top)]">
+      <div className="relative z-10 flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+        {/* Executive Full-App Top Bar */}
+        <header className="shrink-0 z-30 kk-brand-gradient kk-header-bar text-white border-b border-black/15 dark:border-slate-700/40 pt-[env(safe-area-inset-top)]">
           <div className="min-h-16 sm:min-h-[68px] py-2 px-3 sm:px-6 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
               <button
@@ -403,7 +405,7 @@ export const AppShell = memo(function AppShell({
                   onOpenSettings();
                 }}
                 aria-label="Agency Settings"
-                className="inline-flex items-center justify-center gap-1.5 h-9.5 sm:h-10 px-2.5 sm:px-3.5 text-xs sm:text-sm font-bold text-[var(--kk-brand)] bg-white hover:bg-slate-100 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-sm"
+                className="inline-flex items-center justify-center gap-1.5 h-9.5 sm:h-10 px-2.5 sm:px-3.5 text-xs sm:text-sm font-bold text-[var(--kk-brand)] bg-white hover:bg-slate-100 dark:text-white dark:bg-white/14 dark:hover:bg-white/22 dark:border dark:border-white/22 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-sm"
               >
                 <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
                 <span className="hidden sm:inline">Settings</span>
@@ -416,7 +418,7 @@ export const AppShell = memo(function AppShell({
         <main
           ref={scrollRef}
           data-kk-scroll-root="true"
-          className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain bg-[var(--kk-canvas)]"
+          className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain bg-transparent"
         >
           <div
             className={`px-2 pt-2 sm:px-5 sm:pt-4 max-w-[1440px] w-full mx-auto ${
@@ -429,10 +431,10 @@ export const AppShell = memo(function AppShell({
           </div>
         </main>
 
-        {/* Executive Mobile Bottom App Navigation Bar (Solid, Zero Blur, Instant Native Tap) */}
+        {/* Executive Mobile Bottom App Navigation Bar */}
         <nav
           aria-label="Mobile app navigation"
-          className="lg:hidden shrink-0 z-30 bg-white border-t border-slate-200/90 shadow-[0_-4px_18px_rgba(15,36,96,0.08)] px-1.5 pt-1.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] grid grid-cols-7 gap-1"
+          className="lg:hidden shrink-0 z-30 kk-bottom-nav bg-white border-t border-slate-200/90 shadow-[0_-4px_18px_rgba(15,36,96,0.08)] px-1.5 pt-1.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] grid grid-cols-7 gap-1"
         >
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
@@ -450,17 +452,17 @@ export const AppShell = memo(function AppShell({
                 onClick={() => handleNavClick(item.id)}
                 className={`relative min-w-0 flex flex-col items-center justify-center py-2 px-0.5 rounded-2xl transition-colors duration-100 cursor-pointer ${
                   isActive
-                    ? 'kk-brand-gradient text-white shadow-[0_4px_14px_rgba(15,36,96,0.32)]'
+                    ? 'kk-brand-gradient kk-nav-active text-white shadow-[0_4px_14px_rgba(15,36,96,0.32)]'
                     : isLimitAlert
-                      ? 'text-rose-700 bg-rose-50/70 hover:bg-rose-100/70'
-                      : 'text-slate-600 hover:bg-slate-100/90 hover:text-slate-950'
+                      ? 'text-rose-700 bg-rose-50/70 hover:bg-rose-100/70 dark:text-rose-300 dark:bg-rose-500/14 dark:hover:bg-rose-500/22'
+                      : 'text-slate-600 hover:bg-slate-100/90 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
                 }`}
               >
                 {(isLimitAlert || hasPrizeDot) && (
                   <span
                     aria-hidden="true"
                     className={`absolute top-1.5 right-1.5 z-20 w-2 h-2 rounded-full ring-2 ${
-                      isActive ? 'ring-[var(--kk-brand)]' : 'ring-white'
+                      isActive ? 'ring-[var(--kk-brand)] dark:ring-[#1E3A8A]' : 'ring-white dark:ring-[#0B1324]'
                     } ${isLimitAlert ? 'bg-rose-500' : 'bg-emerald-500'}`}
                   />
                 )}

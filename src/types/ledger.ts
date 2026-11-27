@@ -143,6 +143,8 @@ export interface SellerBillRow extends Seller {
 }
 
 export type AppThemeId =
+  | 'aurora'
+  | 'aurora-live'
   | 'cobalt'
   | 'graphite'
   | 'teal'

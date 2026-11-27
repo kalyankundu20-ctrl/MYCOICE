@@ -69,6 +69,7 @@ import { scheduleIdlePersistence } from '../utils/storage';
 import { AnnouncementBanner } from './AnnouncementBanner';
 import { getIstClockParts, getSellerSessionLockStatus, SessionLockStatus } from '../utils/sessionLock';
 import { ArchiveView } from './ArchiveView';
+import { AuroraLiveBackdrop } from './AuroraLiveBackdrop';
 import { LiveChainEntriesPanel } from './LiveChainEntriesPanel';
 import { MasterChainTab } from './MasterChainTab';
 import { MessagePreviewModal } from './MessagePreviewModal';
@@ -2199,9 +2200,10 @@ export function SellerPortalApp({
   };
 
   return (
-    <div className="h-full w-full overflow-hidden bg-[var(--kk-canvas)] text-slate-950 flex flex-col">
-      {/* Top Executive Seller Header (Solid Navy, Zero Blur, Safe-Area Full-Screen) */}
-      <header className="shrink-0 z-30 kk-brand-gradient text-white border-b border-black/15 pt-[env(safe-area-inset-top)]">
+    <div className="relative h-full w-full overflow-hidden bg-[var(--kk-canvas)] kk-app-canvas text-slate-950 dark:text-slate-100 flex flex-col">
+      <AuroraLiveBackdrop />
+      {/* Top Executive Seller Header */}
+      <header className="relative shrink-0 z-30 kk-brand-gradient kk-header-bar text-white border-b border-black/15 dark:border-slate-700/40 pt-[env(safe-area-inset-top)]">
         <div className="min-h-16 sm:min-h-[68px] py-2 px-3 sm:px-6 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
           <img
@@ -2296,7 +2298,7 @@ export function SellerPortalApp({
       <main
         ref={scrollRef}
         data-kk-scroll-root="true"
-        className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain bg-[var(--kk-canvas)]"
+        className="relative z-10 flex-1 min-h-0 overflow-y-auto overscroll-y-contain bg-transparent"
       >
         <div
           className={`px-2 pt-2 sm:px-5 sm:pt-4 max-w-[1200px] w-full mx-auto ${
@@ -2412,50 +2414,50 @@ export function SellerPortalApp({
               <div className="space-y-3.5">
                 {/* Summary KPI Grid (Strictly Sold, Bill, Prize, Fresh / Net Total — NO cut margin) */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                  <div className="kk-surface-card rounded-2xl p-3.5">
-                    <div className="text-[11px] font-bold text-slate-500">Total Sold</div>
-                    <div className="text-xl sm:text-2xl font-black font-mono-tabular text-slate-950 mt-0.5">
+                  <div className="kk-surface-card kk-kpi-tickets rounded-2xl p-3.5">
+                    <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">Total Sold</div>
+                    <div className="text-xl sm:text-2xl font-black font-mono-tabular text-slate-950 dark:text-white mt-0.5">
                       {formatINR(myBill.sold)}
                     </div>
-                    <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
+                    <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 mt-0.5">
                       1PM + 6PM + 8PM
                     </div>
                   </div>
-                  <div className="kk-surface-card rounded-2xl p-3.5">
-                    <div className="text-[11px] font-bold text-slate-500">Gross Bill</div>
-                    <div className="text-xl sm:text-2xl font-black font-mono-tabular text-slate-950 mt-0.5">
+                  <div className="kk-surface-card kk-kpi-gross rounded-2xl p-3.5">
+                    <div className="text-[11px] font-bold text-slate-500 dark:text-teal-200/85">Gross Bill</div>
+                    <div className="text-xl sm:text-2xl font-black font-mono-tabular text-slate-950 dark:text-white mt-0.5">
                       ₹{formatINR(myBill.bill)}
                     </div>
                     <div className="text-[11px] font-semibold font-mono-tabular mt-0.5">
-                      <span className="text-slate-500">Fresh: </span>
+                      <span className="text-slate-500 dark:text-slate-300">Fresh: </span>
                       <span
                         className={
                           myBill.fresh > 0
-                            ? 'text-emerald-700 font-bold'
+                            ? 'text-emerald-700 dark:text-emerald-300 font-bold'
                             : myBill.fresh < 0
-                              ? 'text-rose-600 font-bold'
-                              : 'text-slate-700'
+                              ? 'text-rose-600 dark:text-rose-400 font-bold'
+                              : 'text-slate-700 dark:text-slate-200'
                         }
                       >
                         ₹{formatINR(myBill.fresh)}
                       </span>
                     </div>
                   </div>
-                  <div className="kk-surface-card rounded-2xl p-3.5">
-                    <div className="text-[11px] font-bold text-slate-500">Prize (-)</div>
-                    <div className="text-xl sm:text-2xl font-black font-mono-tabular text-emerald-700 mt-0.5">
+                  <div className="kk-surface-card kk-kpi-prizes rounded-2xl p-3.5">
+                    <div className="text-[11px] font-bold text-slate-500 dark:text-rose-300/90">Prize (-)</div>
+                    <div className="text-xl sm:text-2xl font-black font-mono-tabular text-emerald-700 dark:text-rose-400 mt-0.5">
                       ₹{formatINR(myBill.prizeTotal)}
                     </div>
-                    <div className="text-[11px] font-semibold text-emerald-700 mt-0.5">
+                    <div className="text-[11px] font-semibold text-emerald-700 dark:text-rose-300 mt-0.5">
                       {hasAnyWinningNumbers ? `${myBill.prizes.length} Wins` : 'Waiting Win #'}
                     </div>
                   </div>
-                  <div className="kk-brand-gradient text-white rounded-2xl p-3.5 shadow-md">
+                  <div className="kk-brand-gradient kk-kpi-net text-white rounded-2xl p-3.5 shadow-md">
                     <div className="text-[11px] font-bold text-indigo-100">Net Total</div>
                     <div
                       className={`text-xl sm:text-2xl font-black font-mono-tabular mt-0.5 ${
                         myBill.total > 0
-                          ? 'text-emerald-300'
+                          ? 'text-emerald-300 dark:text-[#34F5C5]'
                           : myBill.total < 0
                             ? 'text-rose-300'
                             : 'text-white'
@@ -2833,10 +2835,10 @@ export function SellerPortalApp({
         </div>
       </main>
 
-      {/* Executive Seller Bottom Tab Bar (Solid, Zero Blur, Instant Native Tap) */}
+      {/* Executive Seller Bottom Tab Bar */}
       <nav
         aria-label="Seller mobile navigation"
-        className={`shrink-0 z-30 bg-white border-t border-slate-200/90 shadow-[0_-4px_18px_rgba(15,36,96,0.08)] px-1 pt-1.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] grid gap-0.5 ${
+        className={`relative shrink-0 z-30 kk-bottom-nav bg-white border-t border-slate-200/90 shadow-[0_-4px_18px_rgba(15,36,96,0.08)] px-1 pt-1.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] grid gap-0.5 ${
           isMasterSeller ? 'grid-cols-7' : 'grid-cols-6'
         }`}
       >
@@ -2868,15 +2870,15 @@ export function SellerPortalApp({
               }}
               className={`relative min-w-0 flex flex-col items-center justify-center py-2 px-1 rounded-2xl transition-colors duration-100 cursor-pointer ${
                 isActive
-                  ? 'kk-brand-gradient text-white shadow-[0_4px_14px_rgba(15,36,96,0.32)]'
-                  : 'text-slate-600 hover:bg-slate-100/90 hover:text-slate-950'
+                  ? 'kk-brand-gradient kk-nav-active text-white shadow-[0_4px_14px_rgba(15,36,96,0.32)]'
+                  : 'text-slate-600 hover:bg-slate-100/90 hover:text-slate-950 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
               }`}
             >
               {hasPrizeDot && (
                 <span
                   aria-hidden="true"
                   className={`absolute top-1.5 right-2.5 z-20 w-2 h-2 rounded-full bg-emerald-500 ring-2 ${
-                    isActive ? 'ring-[var(--kk-brand)]' : 'ring-white'
+                    isActive ? 'ring-[var(--kk-brand)] dark:ring-[#1E3A8A]' : 'ring-white dark:ring-[#0B1324]'
                   }`}
                 />
               )}

@@ -327,46 +327,46 @@ export const SellerBillView = memo(function SellerBillView({
 
       {/* Executive KPI Summary Strip */}
       <section aria-label="Daily agency summary" className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-2.5">
-        <div className="kk-surface-card rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500">Total Tickets Sold</div>
-          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-slate-950">
+        <div className="kk-surface-card kk-kpi-tickets rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
+          <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Total Tickets Sold</div>
+          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-slate-950 dark:text-white">
             {formatINR(totals.sold)}
           </div>
         </div>
-        <div className="kk-surface-card rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500">Gross Bill</div>
-          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-slate-950">
+        <div className="kk-surface-card kk-kpi-gross rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
+          <div className="text-[11px] font-semibold text-slate-500 dark:text-teal-200/85">Gross Bill</div>
+          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-slate-950 dark:text-white">
             ₹{formatINR(totals.bill)}
           </div>
         </div>
-        <div className="kk-surface-card rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500">Seller Prizes (-)</div>
-          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-emerald-700">
+        <div className="kk-surface-card kk-kpi-prizes rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
+          <div className="text-[11px] font-semibold text-slate-500 dark:text-rose-300/90">Seller Prizes (-)</div>
+          <div className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular text-emerald-700 dark:text-rose-400">
             ₹{formatINR(totals.prize)}
           </div>
         </div>
-        <div className="kk-surface-card rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
-          <div className="text-[11px] font-semibold text-slate-500">Fresh Bill (=)</div>
+        <div className="kk-surface-card kk-kpi-fresh rounded-2xl px-3 py-2 sm:px-4 sm:py-3">
+          <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-300">Fresh Bill (=)</div>
           <div
             className={`mt-0.5 sm:mt-1 text-lg sm:text-xl font-bold font-mono-tabular ${
               totals.fresh > 0
-                ? 'text-emerald-700'
+                ? 'text-emerald-700 dark:text-emerald-300'
                 : totals.fresh < 0
-                  ? 'text-rose-600'
-                  : 'text-slate-950'
+                  ? 'text-rose-600 dark:text-rose-400'
+                  : 'text-slate-950 dark:text-white'
             }`}
           >
             ₹{formatINR(totals.fresh)}
           </div>
         </div>
-        <div className="col-span-2 lg:col-span-1 kk-brand-gradient text-white rounded-2xl px-4 py-3.5 sm:px-5 sm:py-4 flex flex-col items-center justify-center text-center">
-          <div className="text-xs sm:text-[13px] font-semibold tracking-wide text-white/80">
+        <div className="col-span-2 lg:col-span-1 kk-brand-gradient kk-kpi-net text-white rounded-2xl px-4 py-3.5 sm:px-5 sm:py-4 flex flex-col items-center justify-center text-center">
+          <div className="text-xs sm:text-[13px] font-semibold tracking-wide text-white/85">
             Net Payable Total
           </div>
           <div
             className={`mt-1 text-3xl sm:text-[32px] lg:text-2xl xl:text-[28px] leading-tight font-extrabold font-mono-tabular tracking-tight ${
               totals.total > 0
-                ? 'text-emerald-300'
+                ? 'text-emerald-300 dark:text-[#34F5C5]'
                 : totals.total < 0
                   ? 'text-rose-300'
                   : 'text-white'
@@ -383,7 +383,7 @@ export const SellerBillView = memo(function SellerBillView({
         <div
           className={`grid ${
             sessionComputations ? 'grid-cols-2' : 'grid-cols-1'
-          } sm:inline-flex items-center gap-1 p-1 bg-slate-100 border border-slate-200/90 rounded-xl w-full sm:w-auto`}
+          } sm:inline-flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-950/55 border border-slate-200/90 dark:border-slate-700/60 rounded-xl w-full sm:w-auto`}
         >
           <button
             type="button"
@@ -393,8 +393,8 @@ export const SellerBillView = memo(function SellerBillView({
             }}
             className={`inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg cursor-pointer transition-colors whitespace-nowrap ${
               viewMode === 'all'
-                ? 'bg-white text-[var(--kk-brand)] shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-white text-[var(--kk-brand)] shadow-xs dark:bg-white/14 dark:text-white dark:border dark:border-white/18'
+                : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
             }`}
           >
             <Table2 className="w-3.5 h-3.5 shrink-0" />
@@ -412,8 +412,8 @@ export const SellerBillView = memo(function SellerBillView({
                 viewMode === 'limit'
                   ? 'bg-rose-600 text-white shadow-xs'
                   : overLimitSummary.grandTotal > 0
-                    ? 'text-rose-700 hover:text-rose-900 bg-rose-50/90'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'text-rose-700 hover:text-rose-900 bg-rose-50/90 dark:text-rose-300 dark:bg-rose-500/14 dark:hover:bg-rose-500/22'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-rose-300/90 dark:hover:text-rose-200'
               }`}
             >
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -477,8 +477,8 @@ export const SellerBillView = memo(function SellerBillView({
               title={showRateMobile ? 'Hide Rate & Mobile Number' : 'Show Rate & Mobile Number'}
               className={`inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
                 showRateMobile
-                  ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)]'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200'
+                  ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)] dark:text-teal-200'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200 dark:text-slate-100 dark:bg-white/10 dark:hover:bg-white/16 dark:border-slate-600/60'
               }`}
             >
               {showRateMobile ? (
@@ -495,9 +495,9 @@ export const SellerBillView = memo(function SellerBillView({
                 AppSounds.tap();
                 setShowAddForm((prev) => !prev);
               }}
-              className={`inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
+              className={`kk-btn-add-seller inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold border rounded-xl cursor-pointer whitespace-nowrap transition-colors ${
                 showAddForm
-                  ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)]'
+                  ? 'text-[var(--kk-brand)] bg-[var(--kk-tint)] border-[var(--kk-tint-border)] dark:text-white'
                   : 'text-slate-900 bg-slate-100 hover:bg-slate-200 border-slate-200'
               }`}
             >
@@ -512,7 +512,7 @@ export const SellerBillView = memo(function SellerBillView({
                   AppSounds.tap();
                   setConfirmRollover(true);
                 }}
-                className="inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] rounded-xl cursor-pointer whitespace-nowrap transition-colors shadow-xs"
+                className="kk-btn-close-day inline-flex items-center justify-center gap-1 h-9 px-2 sm:px-3 text-[11px] sm:text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] border border-transparent rounded-xl cursor-pointer whitespace-nowrap transition-colors shadow-xs"
               >
                 <RotateCcw className="w-3.5 h-3.5 shrink-0" />
                 <span className="truncate">Close Day</span>
@@ -526,9 +526,9 @@ export const SellerBillView = memo(function SellerBillView({
       {showAddForm && (
         <form
           onSubmit={handleCreateSeller}
-          className="bg-white border border-slate-200 rounded-2xl p-3.5 shadow-xs grid grid-cols-2 sm:flex sm:flex-wrap items-end gap-2.5"
+          className="bg-white dark:bg-slate-900/88 border border-slate-200 dark:border-slate-700/70 rounded-2xl p-3.5 shadow-xs grid grid-cols-2 sm:flex sm:flex-wrap items-end gap-2.5"
         >
-          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800">
+          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800 dark:text-slate-200">
             <span>Seller Name</span>
             <input
               type="text"
@@ -536,30 +536,30 @@ export const SellerBillView = memo(function SellerBillView({
               placeholder="RAHUL"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              className="px-3 py-1.5 text-xs font-semibold text-slate-950 bg-slate-50 border border-slate-200 rounded-xl uppercase sm:w-36 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
+              className="px-3 py-1.5 text-xs font-semibold text-slate-950 dark:text-white bg-slate-50 dark:bg-slate-950/75 border border-slate-200 dark:border-slate-700 rounded-xl uppercase sm:w-36 focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800">
+          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800 dark:text-slate-200">
             <span>WhatsApp Mobile</span>
             <input
               type="text"
               placeholder="919876543210"
               value={newMobile}
               onChange={(e) => setNewMobile(e.target.value)}
-              className="px-3 py-1.5 text-xs font-semibold font-mono-tabular text-slate-950 bg-slate-50 border border-slate-200 rounded-xl sm:w-36 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
+              className="px-3 py-1.5 text-xs font-semibold font-mono-tabular text-slate-950 dark:text-white bg-slate-50 dark:bg-slate-950/75 border border-slate-200 dark:border-slate-700 rounded-xl sm:w-36 focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800">
+          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800 dark:text-slate-200">
             <span>Rate (₹)</span>
             <input
               type="number"
               step="0.05"
               value={newRate}
               onChange={(e) => setNewRate(e.target.value)}
-              className="px-3 py-1.5 text-xs font-semibold font-mono-tabular text-slate-950 bg-slate-50 border border-slate-200 rounded-xl sm:w-20 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
+              className="px-3 py-1.5 text-xs font-semibold font-mono-tabular text-slate-950 dark:text-white bg-slate-50 dark:bg-slate-950/75 border border-slate-200 dark:border-slate-700 rounded-xl sm:w-20 focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800">
+          <label className="flex flex-col gap-1 text-xs font-bold text-slate-800 dark:text-slate-200">
             <span>Due (₹)</span>
             <FormulaNumberInput
               id="new-seller-due"
@@ -568,20 +568,20 @@ export const SellerBillView = memo(function SellerBillView({
               onCommit={(val) => setNewDue(val)}
               onActiveSessionChange={handleActiveFormulaChange}
               placeholder="0"
-              className="px-3 py-1.5 text-xs font-semibold font-mono-tabular text-slate-950 bg-slate-50 border border-slate-200 rounded-xl sm:w-28 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
+              className="px-3 py-1.5 text-xs font-semibold font-mono-tabular text-slate-950 dark:text-white bg-slate-50 dark:bg-slate-950/75 border border-slate-200 dark:border-slate-700 rounded-xl sm:w-28 focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)]"
             />
           </label>
           <div className="col-span-2 flex items-center gap-2">
             <button
               type="submit"
-              className="px-4 py-1.5 text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] rounded-xl cursor-pointer"
+              className="kk-btn-close-day px-4 py-1.5 text-xs font-bold text-white bg-[var(--kk-brand)] hover:bg-[var(--kk-brand-hover)] rounded-xl cursor-pointer"
             >
               Save
             </button>
             <button
               type="button"
               onClick={() => setShowAddForm(false)}
-              className="px-3 py-1.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer"
+              className="px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 rounded-xl cursor-pointer"
             >
               Cancel
             </button>
@@ -596,7 +596,7 @@ export const SellerBillView = memo(function SellerBillView({
             <table className="w-max min-w-full sm:min-w-[860px] border-collapse text-[10px] sm:text-[14px] tracking-[-0.04em] sm:tracking-normal">
               <thead>
                 <tr className="kk-table-head text-slate-100 text-[9.5px] sm:text-xs font-bold uppercase tracking-normal sm:tracking-[0.04em] align-middle">
-                  <th className="bill-col-name sticky left-0 z-20 bg-[var(--kk-brand)] sm:min-w-[124px] pl-1 pr-0.5 sm:px-3 py-2 sm:py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                  <th className="bill-col-name sticky left-0 z-20 bg-[var(--kk-brand)] dark:bg-[#22305B] sm:min-w-[124px] pl-1 pr-0.5 sm:px-3 py-2 sm:py-3 text-left border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                     NAME
                   </th>
                   <th className="bill-col-sess px-[2px] sm:px-2.5 py-2 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">MOR</th>
@@ -624,12 +624,12 @@ export const SellerBillView = memo(function SellerBillView({
                   <th className="px-2 sm:px-2.5 py-2 sm:py-3 text-center whitespace-nowrap">SEND</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200/80 text-slate-950 font-mono-tabular">
+              <tbody className="divide-y divide-slate-200/80 dark:divide-slate-700/45 text-slate-950 dark:text-slate-100 font-mono-tabular">
                 {visibleBills.length === 0 ? (
                   <tr>
                     <td
                       colSpan={showRateMobile ? 16 : 14}
-                      className="px-4 py-8 text-center font-sans text-sm font-medium text-slate-500"
+                      className="px-4 py-8 text-center font-sans text-sm font-medium text-slate-500 dark:text-slate-400"
                     >
                       No sellers added yet. Tap &ldquo;+ Add Seller&rdquo; to create a seller.
                     </td>
@@ -639,44 +639,46 @@ export const SellerBillView = memo(function SellerBillView({
                     <tr
                       key={row.id}
                       className={`align-middle ${
-                        idx % 2 === 1 ? 'bg-slate-50/75' : 'bg-white'
-                      } hover:bg-indigo-50/40 transition-colors`}
+                        idx % 2 === 1
+                          ? 'bg-slate-50/75 dark:bg-slate-800/35'
+                          : 'bg-white dark:bg-slate-900/45'
+                      } hover:bg-indigo-50/40 dark:hover:bg-indigo-500/15 transition-colors`}
                     >
                       <td
-                        className={`bill-col-name sticky left-0 z-10 sm:min-w-[124px] pl-1 pr-0.5 sm:px-3 py-2 sm:py-3 border-r border-slate-200/90 font-sans font-extrabold text-[10.5px] sm:text-[14px] tracking-[-0.02em] sm:tracking-normal text-slate-900 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)] ${
-                          idx % 2 === 1 ? 'bg-slate-50' : 'bg-white'
+                        className={`bill-col-name sticky left-0 z-10 sm:min-w-[124px] pl-1 pr-0.5 sm:px-3 py-2 sm:py-3 border-r border-slate-200/90 dark:border-slate-700/50 font-sans font-extrabold text-[10.5px] sm:text-[14px] tracking-[-0.02em] sm:tracking-normal text-slate-900 dark:text-white whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(15,23,42,0.08)] dark:shadow-[2px_0_8px_-2px_rgba(2,6,23,0.45)] ${
+                          idx % 2 === 1 ? 'bg-slate-50 dark:bg-[#142038]' : 'bg-white dark:bg-[#101A2F]'
                         }`}
                       >
                         <span className="block truncate sm:overflow-visible whitespace-nowrap">{row.name}</span>
                       </td>
-                      <td className="bill-col-sess px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-semibold border-r border-slate-200/70 whitespace-nowrap">{formatINR(row.mor)}</td>
-                      <td className="bill-col-sess px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-semibold border-r border-slate-200/70 whitespace-nowrap">{formatINR(row.day)}</td>
-                      <td className="bill-col-sess px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-semibold border-r border-slate-200/70 whitespace-nowrap">{formatINR(row.eve)}</td>
-                      <td className="bill-col-sold px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-extrabold text-[var(--kk-brand)] bg-indigo-50/40 border-r border-slate-200/70 whitespace-nowrap">
+                      <td className="bill-col-sess px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-semibold border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.mor)}</td>
+                      <td className="bill-col-sess px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-semibold border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.day)}</td>
+                      <td className="bill-col-sess px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-semibold border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.eve)}</td>
+                      <td className="bill-col-sold px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-extrabold text-[var(--kk-brand)] dark:text-sky-300 bg-indigo-50/40 dark:bg-indigo-500/12 border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">
                         {formatINR(row.sold)}
                       </td>
-                      <td className="bill-col-bill px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-bold border-r border-slate-200/70 whitespace-nowrap">{formatINR(row.bill)}</td>
+                      <td className="bill-col-bill px-[2px] sm:px-2.5 py-2 sm:py-3 text-right font-bold border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap">{formatINR(row.bill)}</td>
                       <td
-                        className={`bill-col-fresh pl-[2px] pr-1.5 sm:px-2.5 py-2 sm:py-3 text-right font-extrabold border-r border-slate-200/70 whitespace-nowrap ${
+                        className={`bill-col-fresh pl-[2px] pr-1.5 sm:px-2.5 py-2 sm:py-3 text-right font-extrabold border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${
                           row.fresh > 0
-                            ? 'text-emerald-700'
+                            ? 'text-emerald-700 dark:text-emerald-300'
                             : row.fresh < 0
-                              ? 'text-rose-600'
-                              : 'text-slate-900'
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : 'text-slate-900 dark:text-slate-100'
                         }`}
                       >
                         {formatINR(row.fresh)}
                       </td>
-                      <td className={`px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-slate-200/70 whitespace-nowrap ${row.amt1pm > 0 ? 'font-bold text-emerald-700' : 'font-semibold'}`}>
+                      <td className={`px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt1pm > 0 ? 'font-bold text-emerald-700 dark:text-emerald-300' : 'font-semibold'}`}>
                         {formatINR(row.amt1pm)}
                       </td>
-                      <td className={`px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-slate-200/70 whitespace-nowrap ${row.amt6pm > 0 ? 'font-bold text-emerald-700' : 'font-semibold'}`}>
+                      <td className={`px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt6pm > 0 ? 'font-bold text-emerald-700 dark:text-emerald-300' : 'font-semibold'}`}>
                         {formatINR(row.amt6pm)}
                       </td>
-                      <td className={`px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-slate-200/70 whitespace-nowrap ${row.amt8pm > 0 ? 'font-bold text-emerald-700' : 'font-semibold'}`}>
+                      <td className={`px-2 sm:px-2.5 py-2 sm:py-3 text-right border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${row.amt8pm > 0 ? 'font-bold text-emerald-700 dark:text-emerald-300' : 'font-semibold'}`}>
                         {formatINR(row.amt8pm)}
                       </td>
-                      <td className="p-1 sm:p-1.5 border-r border-slate-200/70">
+                      <td className="p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45">
                         <FormulaNumberInput
                           id={`bill-joma-${row.id}`}
                           label={`${row.name} · JOMA`}
@@ -685,14 +687,14 @@ export const SellerBillView = memo(function SellerBillView({
                           onActiveSessionChange={handleActiveFormulaChange}
                           compactBillWrapper
                           placeholder="0"
-                          className={`ios-compact-input-bill w-full sm:h-9 px-2 text-right text-[13.5px] sm:text-[14px] font-bold font-mono-tabular rounded-lg sm:rounded-md border focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors ${
+                          className={`ios-compact-input-bill w-full sm:h-9 px-2 text-right text-[13.5px] sm:text-[14px] font-bold font-mono-tabular rounded-lg sm:rounded-md border focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors ${
                             row.joma !== 0
-                              ? 'bg-white border-slate-300 text-slate-950'
-                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-950 placeholder:text-slate-400'
+                              ? 'bg-white border-slate-300 text-slate-950 dark:bg-slate-900/90 dark:border-slate-600 dark:text-white'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-950 placeholder:text-slate-400 dark:bg-slate-950/60 dark:hover:bg-slate-900/80 dark:border-slate-700/70 dark:text-white dark:placeholder:text-slate-500'
                           }`}
                         />
                       </td>
-                      <td className="p-1 sm:p-1.5 border-r border-slate-200/70">
+                      <td className="p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45">
                         <FormulaNumberInput
                           id={`bill-due-${row.id}`}
                           label={`${row.name} · DUE`}
@@ -701,38 +703,38 @@ export const SellerBillView = memo(function SellerBillView({
                           onActiveSessionChange={handleActiveFormulaChange}
                           compactBillWrapper
                           placeholder="0"
-                          className={`ios-compact-input-bill w-full sm:h-9 px-2 text-right text-[13.5px] sm:text-[14px] font-bold font-mono-tabular rounded-lg sm:rounded-md border focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors ${
+                          className={`ios-compact-input-bill w-full sm:h-9 px-2 text-right text-[13.5px] sm:text-[14px] font-bold font-mono-tabular rounded-lg sm:rounded-md border focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors ${
                             row.due !== 0
-                              ? 'bg-white border-slate-300 text-slate-950'
-                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-950 placeholder:text-slate-400'
+                              ? 'bg-white border-slate-300 text-slate-950 dark:bg-slate-900/90 dark:border-slate-600 dark:text-white'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-950 placeholder:text-slate-400 dark:bg-slate-950/60 dark:hover:bg-slate-900/80 dark:border-slate-700/70 dark:text-white dark:placeholder:text-slate-500'
                           }`}
                         />
                       </td>
                       <td
-                        className={`px-2.5 sm:px-3 py-2.5 sm:py-3 text-right text-[13.5px] sm:text-[14.5px] font-extrabold bg-indigo-50/40 border-r border-slate-200/70 whitespace-nowrap ${
+                        className={`px-2.5 sm:px-3 py-2.5 sm:py-3 text-right text-[13.5px] sm:text-[14.5px] font-extrabold bg-indigo-50/40 dark:bg-indigo-500/14 border-r border-slate-200/70 dark:border-slate-700/45 whitespace-nowrap ${
                           row.total > 0
-                            ? 'text-emerald-700'
+                            ? 'text-emerald-700 dark:text-emerald-300'
                             : row.total < 0
-                              ? 'text-rose-600'
-                              : 'text-slate-900'
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : 'text-slate-900 dark:text-slate-100'
                         }`}
                       >
                         {formatINR(row.total)}
                       </td>
                       {showRateMobile && (
                         <>
-                          <td className="p-1 sm:p-1.5 border-r border-slate-200/70 min-w-[120px]">
+                          <td className="p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45 min-w-[120px]">
                             <div className="ios-compact-wrap-bill">
                               <input
                                 type="text"
                                 inputMode="tel"
                                 value={row.mobile}
                                 onChange={(e) => onUpdateSeller(row.id, { mobile: e.target.value })}
-                                className="ios-compact-input-bill w-full sm:h-9 px-2 text-[13px] font-semibold font-mono-tabular text-slate-950 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg sm:rounded-md focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors"
+                                className="ios-compact-input-bill w-full sm:h-9 px-2 text-[13px] font-semibold font-mono-tabular text-slate-950 dark:text-white bg-slate-50 dark:bg-slate-950/65 hover:bg-slate-100 dark:hover:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg sm:rounded-md focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors"
                               />
                             </div>
                           </td>
-                          <td className="p-1 sm:p-1.5 border-r border-slate-200/70 min-w-[64px]">
+                          <td className="p-1 sm:p-1.5 border-r border-slate-200/70 dark:border-slate-700/45 min-w-[64px]">
                             <div className="ios-compact-wrap-bill">
                               <input
                                 type="number"
@@ -742,7 +744,7 @@ export const SellerBillView = memo(function SellerBillView({
                                 onChange={(e) =>
                                   onUpdateSeller(row.id, { rate: parseFloat(e.target.value) || 0 })
                                 }
-                                className="ios-compact-input-bill w-full sm:h-9 px-2 text-right text-[13.5px] sm:text-[14px] font-bold font-mono-tabular text-slate-950 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg sm:rounded-md focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors"
+                                className="ios-compact-input-bill w-full sm:h-9 px-2 text-right text-[13.5px] sm:text-[14px] font-bold font-mono-tabular text-slate-950 dark:text-white bg-slate-50 dark:bg-slate-950/65 hover:bg-slate-100 dark:hover:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg sm:rounded-md focus:bg-white dark:focus:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-[var(--kk-brand)] transition-colors"
                               />
                             </div>
                           </td>
@@ -754,7 +756,7 @@ export const SellerBillView = memo(function SellerBillView({
                             type="button"
                             onClick={() => openBillPreview(row)}
                             title={`View ${row.name} Bill Card`}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-[var(--kk-brand)] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg cursor-pointer transition-colors"
+                            className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-[var(--kk-brand)] dark:text-sky-200 bg-indigo-50 dark:bg-indigo-500/20 hover:bg-indigo-100 dark:hover:bg-indigo-500/30 border border-indigo-200 dark:border-indigo-400/35 rounded-lg cursor-pointer transition-colors"
                           >
                             <FileText className="w-3.5 h-3.5" />
                             <span>Card</span>
@@ -776,7 +778,7 @@ export const SellerBillView = memo(function SellerBillView({
                           <button
                             type="button"
                             onClick={() => requestDeleteSeller(row)}
-                            className="p-1.5 text-slate-500 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-lg cursor-pointer transition-colors"
+                            className="p-1.5 text-slate-500 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 bg-slate-100 dark:bg-slate-800/80 hover:bg-rose-50 dark:hover:bg-rose-500/20 border border-slate-200 dark:border-slate-700 hover:border-rose-200 dark:hover:border-rose-500/40 rounded-lg cursor-pointer transition-colors"
                             title={`Delete ${row.name}`}
                             aria-label={`Delete ${row.name}`}
                           >
@@ -791,7 +793,7 @@ export const SellerBillView = memo(function SellerBillView({
               {visibleBills.length > 0 && (
                 <tfoot>
                   <tr className="kk-table-head text-white text-[10px] sm:text-[14px] tracking-[-0.04em] sm:tracking-normal font-extrabold font-mono-tabular align-middle">
-                    <td className="bill-col-name sticky left-0 z-10 bg-[var(--kk-brand)] sm:min-w-[124px] pl-1 pr-0.5 sm:px-3 py-2.5 sm:py-3 font-sans text-[9.5px] sm:text-[13px] uppercase tracking-normal sm:tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
+                    <td className="bill-col-name sticky left-0 z-10 bg-[var(--kk-brand)] dark:bg-[#22305B] sm:min-w-[124px] pl-1 pr-0.5 sm:px-3 py-2.5 sm:py-3 font-sans text-[9.5px] sm:text-[13px] uppercase tracking-normal sm:tracking-wide border-r border-white/15 whitespace-nowrap shadow-[2px_0_6px_-2px_rgba(0,0,0,0.28)]">
                       TOTAL ({visibleBills.length})
                     </td>
                     <td className="bill-col-sess px-[2px] sm:px-2.5 py-2.5 sm:py-3 text-right border-r border-white/10 whitespace-nowrap">{formatINR(totals.mor)}</td>

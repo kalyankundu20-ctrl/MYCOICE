@@ -488,8 +488,8 @@ function normalizeLoadedState(parsed: Partial<AppState> | null | undefined): App
       soundEnabled:
         typeof parsed.config?.soundEnabled === 'boolean' ? parsed.config.soundEnabled : true,
       ...(needsItemMigration ? { itemOptions: emptyBase.config.itemOptions } : {}),
-      ...((parsed.config?.themeVersion ?? 1) < 3
-        ? { theme: emptyBase.config.theme, themeVersion: 3 }
+      ...((parsed.config?.themeVersion ?? 1) < 4
+        ? { theme: emptyBase.config.theme, themeVersion: 4 }
         : {}),
       ...((parsed.config?.whatsappVersion ?? 0) < 1 || !parsed.config?.whatsappNumber?.trim()
         ? { whatsappNumber: emptyBase.config.whatsappNumber, whatsappVersion: 1 }

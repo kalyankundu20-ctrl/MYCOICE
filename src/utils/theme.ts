@@ -6,11 +6,13 @@ export interface AppThemeOption {
   id: AppThemeId;
   name: string;
   tagline: string;
+  isDark?: boolean;
   brand: string;
   brandMid: string;
   brandEnd: string;
   brandHover: string;
   canvas: string;
+  surface?: string;
   tint: string;
   tintBorder: string;
   accentDot: string;
@@ -19,6 +21,36 @@ export interface AppThemeOption {
 const STORAGE_KEY = 'kk-app-theme';
 
 export const APP_THEMES: AppThemeOption[] = [
+  {
+    id: 'aurora',
+    name: 'Aurora Glass',
+    tagline: 'Midnight Dark',
+    isDark: true,
+    brand: '#132544',
+    brandMid: '#283F8C',
+    brandEnd: '#19858E',
+    brandHover: '#2563EB',
+    canvas: '#0A1120',
+    surface: 'rgba(17, 29, 49, 0.76)',
+    tint: 'rgba(56, 189, 248, 0.16)',
+    tintBorder: 'rgba(94, 234, 212, 0.42)',
+    accentDot: '#34F5C5',
+  },
+  {
+    id: 'aurora-live',
+    name: 'Neon Aurora Live',
+    tagline: 'Animated Particles',
+    isDark: true,
+    brand: '#0C1E3A',
+    brandMid: '#1E3A8A',
+    brandEnd: '#0D9488',
+    brandHover: '#0EA5E9',
+    canvas: '#060D1A',
+    surface: 'rgba(12, 24, 44, 0.72)',
+    tint: 'rgba(45, 212, 191, 0.18)',
+    tintBorder: 'rgba(52, 245, 197, 0.52)',
+    accentDot: '#2DD4BF',
+  },
   {
     id: 'navy',
     name: 'Royal Navy',
@@ -114,18 +146,18 @@ export function resolveThemeOption(themeId?: AppThemeId): AppThemeOption {
   if (themeId === 'cobalt') return THEME_MAP.navy!;
   if (themeId === 'graphite') return THEME_MAP.obsidian!;
   if (themeId === 'teal') return THEME_MAP.emerald!;
-  return THEME_MAP.navy!;
+  return THEME_MAP.aurora!;
 }
 
 export function getStoredThemeId(): AppThemeId {
-  if (typeof window === 'undefined') return 'navy';
+  if (typeof window === 'undefined') return 'aurora';
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY) as AppThemeId | null;
     if (raw) return resolveThemeOption(raw).id;
   } catch {
     // ignore storage errors
   }
-  return 'navy';
+  return 'aurora';
 }
 
 export function applyDocumentTheme(themeId?: AppThemeId): AppThemeOption {
@@ -137,23 +169,46 @@ export function applyDocumentTheme(themeId?: AppThemeId): AppThemeOption {
     root.style.setProperty('--kk-brand-end', theme.brandEnd);
     root.style.setProperty('--kk-brand-hover', theme.brandHover);
     root.style.setProperty('--kk-canvas', theme.canvas);
+    root.style.setProperty('--kk-surface', theme.surface || '#FFFFFF');
     root.style.setProperty('--kk-tint', theme.tint);
     root.style.setProperty('--kk-tint-border', theme.tintBorder);
     root.setAttribute('data-kk-theme', theme.id);
+    root.classList.toggle('dark', Boolean(theme.isDark));
 
     const metaTheme = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if (metaTheme) {
-      metaTheme.content = theme.brand;
+      metaTheme.content = theme.isDark ? theme.canvas : theme.brand;
     }
   }
-  if (typeof window !== 'undefined' && themeId) {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, theme.id);
-    } catch {
-      // ignore storage errors
+  if (typeof window !== 'undefined') {
+    if (themeId) {
+      try {
+        window.localStorage.setItem(STORAGE_KEY, theme.id);
+      } catch {
+        // ignore storage errors
+      }
     }
+    window.dispatchEvent(new CustomEvent<AppThemeId>('kk-theme-change', { detail: theme.id }));
   }
   return theme;
+}
+
+export function getActiveDocumentThemeId(): AppThemeId {
+  if (typeof document !== 'undefined') {
+    const attr = document.documentElement.getAttribute('data-kk-theme') as AppThemeId | null;
+    if (attr) return resolveThemeOption(attr).id;
+  }
+  return getStoredThemeId();
+}
+
+export function subscribeThemeChange(listener: (themeId: AppThemeId) => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const handler = (event: Event) => {
+    const custom = event as CustomEvent<AppThemeId>;
+    listener(resolveThemeOption(custom.detail ?? getActiveDocumentThemeId()).id);
+  };
+  window.addEventListener('kk-theme-change', handler);
+  return () => window.removeEventListener('kk-theme-change', handler);
 }
 
 export function applyAppTheme(themeId: AppThemeId): AppThemeOption {

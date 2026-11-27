@@ -64,10 +64,10 @@ export function ArchiveView({
     <div className="space-y-4">
       <div className="kk-surface-card rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-bold text-slate-950">
+          <h2 className="text-sm font-bold text-slate-950 dark:text-white">
             {title || `Daily Archive Records (${snapshots.length})`}
           </h2>
-          <p className="text-xs font-medium text-slate-600 mt-0.5">
+          <p className="text-xs font-medium text-slate-600 dark:text-slate-300 mt-0.5">
             {subtitle ||
               "Only Close Day saves today's snapshot, carries +Total → Due & -Total → Joma to the new date, and auto-deletes records after 7 days."}
           </p>
@@ -89,10 +89,10 @@ export function ArchiveView({
 
       {snapshots.length === 0 ? (
         <div className="kk-surface-card rounded-2xl p-10 text-center space-y-2">
-          <p className="text-sm font-bold text-slate-900">
+          <p className="text-sm font-bold text-slate-900 dark:text-white">
             No archived daily records yet.
           </p>
-          <p className="text-xs font-medium text-slate-600">
+          <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
             Use &ldquo;Close Day&rdquo; on Seller Bill to save daily records.
           </p>
         </div>
@@ -154,27 +154,27 @@ export function ArchiveView({
                     className="flex items-center gap-2.5 text-left cursor-pointer"
                   >
                     {isExpanded ? (
-                      <ChevronDown className="w-4 h-4 text-[var(--kk-brand)] shrink-0 transition-transform" />
+                      <ChevronDown className="w-4 h-4 text-[var(--kk-brand)] dark:text-sky-300 shrink-0 transition-transform" />
                     ) : (
-                      <ChevronRight className="w-4 h-4 text-slate-700 shrink-0 transition-transform" />
+                      <ChevronRight className="w-4 h-4 text-slate-700 dark:text-slate-300 shrink-0 transition-transform" />
                     )}
                     <div>
-                      <div className="text-sm font-bold text-slate-950 flex flex-wrap items-center gap-1.5">
+                      <div className="text-sm font-bold text-slate-950 dark:text-white flex flex-wrap items-center gap-1.5">
                         <span>{formatDateDDMMYYYY(snap.date)}</span>
-                        <span className="text-xs font-semibold text-slate-600">
+                        <span className="text-xs font-semibold text-slate-600 dark:text-slate-400">
                           · {snap.trigger === 'day-close' ? 'Day Close' : snap.trigger === 'daily-auto' ? 'Daily Auto' : 'Manual'}
                           {' · '}
                           {new Date(snap.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
-                      <div className="text-xs font-semibold text-slate-700 font-mono-tabular mt-0.5">
+                      <div className="text-xs font-semibold text-slate-700 dark:text-slate-300 font-mono-tabular mt-0.5">
                         Sold: {formatINR(snap.totalSold)} · Bill: ₹{formatINR(snap.totalBill)} · Prize: ₹{formatINR(snap.totalPrize)} · Net:{' '}
                         <span
                           className={
                             snap.totalNetPayable > 0
-                              ? 'text-emerald-700 font-bold'
+                              ? 'text-emerald-700 dark:text-emerald-300 font-bold'
                               : snap.totalNetPayable < 0
-                                ? 'text-rose-600 font-bold'
+                                ? 'text-rose-600 dark:text-rose-400 font-bold'
                                 : ''
                           }
                         >
