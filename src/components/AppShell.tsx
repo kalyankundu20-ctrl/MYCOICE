@@ -249,12 +249,13 @@ export const AppShell = memo(function AppShell({
       <div className="relative z-10 flex-1 min-w-0 h-full flex flex-col overflow-hidden">
         {/* Executive Full-App Top Bar */}
         <header className="shrink-0 z-30 kk-brand-gradient kk-header-bar text-white border-b border-black/15 dark:border-slate-700/40 pt-[env(safe-area-inset-top)]">
-          <div className="min-h-16 sm:min-h-[68px] py-2 px-3 sm:px-6 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
+          <div className="min-h-[58px] sm:min-h-[64px] py-1.5 sm:py-2 px-2.5 sm:px-6 flex items-center justify-between gap-2">
+            {/* Left Brand Cluster: Logo + Agency Name + Billing Date */}
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
               <button
                 type="button"
                 onClick={() => handleNavClick('Seller Bill')}
-                className="lg:hidden w-10 h-10 rounded-xl overflow-hidden shrink-0 shadow-md ring-1 ring-white/25 cursor-pointer"
+                className="lg:hidden w-10 h-10 rounded-xl overflow-hidden shrink-0 shadow-md ring-1 ring-white/30 cursor-pointer"
                 aria-label="KK Agency Home"
               >
                 <img
@@ -266,11 +267,11 @@ export const AppShell = memo(function AppShell({
                 />
               </button>
 
-              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-3 min-w-0">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-center gap-0.5 sm:gap-3 min-w-0">
                 <button
                   type="button"
                   onClick={() => handleNavClick('Seller Bill')}
-                  className="lg:hidden text-left text-[17px] sm:text-xl font-extrabold tracking-[-0.015em] text-white leading-tight whitespace-nowrap cursor-pointer"
+                  className="lg:hidden text-left text-[16.5px] sm:text-xl font-extrabold tracking-[-0.02em] text-white leading-tight whitespace-nowrap cursor-pointer"
                 >
                   KK Agency
                 </button>
@@ -288,10 +289,10 @@ export const AppShell = memo(function AppShell({
 
                 <label
                   title="Change billing date"
-                  className="group relative self-start sm:self-auto inline-flex items-center gap-1.5 -ml-1 sm:ml-0 px-1 sm:px-2 py-0.5 sm:py-1 text-[12px] sm:text-[13.5px] font-semibold font-mono-tabular tracking-[0.02em] text-white/90 hover:text-white hover:bg-white/10 rounded-md cursor-pointer whitespace-nowrap shrink-0"
+                  className="group relative self-start sm:self-auto inline-flex items-center gap-1 sm:gap-1.5 sm:px-2 py-0 sm:py-1 text-[11.5px] sm:text-[13.5px] font-bold font-sans tabular-nums tracking-[0.01em] text-white/88 hover:text-white sm:hover:bg-white/10 rounded-md cursor-pointer whitespace-nowrap shrink-0 leading-tight"
                 >
                   <Calendar
-                    className="w-3.5 h-3.5 shrink-0 text-amber-300/95"
+                    className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 text-amber-300"
                     aria-hidden="true"
                   />
                   <span>{formatDateDDMMYYYY(billingDate)}</span>
@@ -311,6 +312,7 @@ export const AppShell = memo(function AppShell({
               </div>
             </div>
 
+            {/* Right Action Cluster: Uniform Glass Tiles (Ad · Sheet · IDs · Settings) */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               {onOpenAnnouncement && (
                 <button
@@ -321,14 +323,14 @@ export const AppShell = memo(function AppShell({
                   }}
                   aria-label="Advertisement & Urgent Message"
                   title="Advertisement, Offer & Urgent Message"
-                  className="relative inline-flex items-center justify-center gap-1 h-9.5 sm:h-10 px-2 sm:px-3 text-xs font-extrabold text-amber-100 bg-amber-500/25 hover:bg-amber-500/38 border border-amber-300/45 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                  className="relative inline-flex items-center justify-center gap-1 w-9.5 sm:w-auto h-9.5 sm:h-10 sm:px-3 text-xs font-extrabold text-amber-200 bg-amber-400/16 hover:bg-amber-400/26 border border-amber-300/35 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
                 >
-                  <Megaphone className="w-4 h-4 shrink-0 text-amber-300" aria-hidden="true" />
+                  <Megaphone className="w-[17px] h-[17px] shrink-0 text-amber-300" aria-hidden="true" />
                   <span className="hidden sm:inline">Ad</span>
                   {announcementActive && (
                     <span
                       aria-hidden="true"
-                      className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-300 ring-2 ring-[var(--kk-brand)] animate-pulse"
+                      className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse"
                     />
                   )}
                 </button>
@@ -343,14 +345,14 @@ export const AppShell = memo(function AppShell({
                   }}
                   aria-label="Google Sheets Live Sync"
                   title="Google Sheets Live Sync"
-                  className="relative inline-flex items-center justify-center gap-1 h-9.5 sm:h-10 px-2 sm:px-3 text-xs font-extrabold text-white bg-emerald-600/85 hover:bg-emerald-600 border border-emerald-300/35 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                  className="relative inline-flex items-center justify-center gap-1 w-9.5 sm:w-auto h-9.5 sm:h-10 sm:px-3 text-xs font-extrabold text-emerald-100 bg-emerald-500/24 hover:bg-emerald-500/34 border border-emerald-300/40 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
                 >
-                  <FileSpreadsheet className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  <span className="hidden xs:inline sm:inline">Sheet</span>
+                  <FileSpreadsheet className="w-[17px] h-[17px] shrink-0 text-emerald-300" aria-hidden="true" />
+                  <span className="hidden sm:inline">Sheet</span>
                   {googleSheetsActive && (
                     <span
                       aria-hidden="true"
-                      className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-300 ring-2 ring-[var(--kk-brand)] animate-pulse"
+                      className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse"
                     />
                   )}
                 </button>
@@ -364,14 +366,14 @@ export const AppShell = memo(function AppShell({
                 }}
                 aria-label="Seller Mobile IDs"
                 title="Seller Mobile IDs & Live Sync"
-                className="relative inline-flex items-center justify-center gap-1 h-9.5 sm:h-10 px-2.5 sm:px-3 text-xs font-extrabold text-white bg-white/18 hover:bg-white/28 border border-white/25 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                className="relative inline-flex items-center justify-center gap-1 h-9.5 sm:h-10 px-2.5 sm:px-3 text-xs font-extrabold text-white bg-white/14 hover:bg-white/24 border border-white/25 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
               >
-                <Smartphone className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <Smartphone className="w-4 h-4 shrink-0 text-white/95" aria-hidden="true" />
                 <span>IDs</span>
                 {cloudConnected && (
                   <span
                     aria-hidden="true"
-                    className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[var(--kk-brand)]"
+                    className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0"
                   />
                 )}
               </button>
@@ -383,9 +385,10 @@ export const AppShell = memo(function AppShell({
                   onOpenSettings();
                 }}
                 aria-label="Agency Settings"
-                className="inline-flex items-center justify-center gap-1.5 h-9.5 sm:h-10 px-2.5 sm:px-3.5 text-xs sm:text-sm font-bold text-[var(--kk-brand)] bg-white hover:bg-slate-100 dark:text-white dark:bg-white/14 dark:hover:bg-white/22 dark:border dark:border-white/22 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-sm"
+                title="Agency Settings"
+                className="inline-flex items-center justify-center gap-1.5 w-9.5 sm:w-auto h-9.5 sm:h-10 sm:px-3.5 text-xs sm:text-sm font-bold text-white bg-white/18 hover:bg-white/28 border border-white/30 rounded-xl transition-colors duration-100 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
               >
-                <SlidersHorizontal className="w-4 h-4" aria-hidden="true" />
+                <SlidersHorizontal className="w-[17px] h-[17px] shrink-0" aria-hidden="true" />
                 <span className="hidden sm:inline">Settings</span>
               </button>
             </div>
@@ -399,12 +402,12 @@ export const AppShell = memo(function AppShell({
           className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain bg-transparent"
         >
           <div
-            className={`px-2 pt-2 sm:px-5 sm:pt-4 max-w-[1440px] w-full mx-auto ${
+            className={`px-2 sm:px-5 sm:pt-4 max-w-[1440px] w-full mx-auto ${
               activeTab === 'Seller Bill'
-                ? 'min-h-full flex flex-col pb-2 lg:pb-8'
+                ? 'min-h-full flex flex-col pt-1.5 pb-1.5 lg:pb-8'
                 : activeTab === '1PM' || activeTab === '6PM' || activeTab === '8PM'
-                  ? 'pb-20 lg:pb-8'
-                  : 'pb-28 lg:pb-8'
+                  ? 'pt-2 pb-20 lg:pb-8'
+                  : 'pt-2 pb-28 lg:pb-8'
             }`}
           >
             {children}
