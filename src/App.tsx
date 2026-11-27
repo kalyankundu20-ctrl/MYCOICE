@@ -3,7 +3,6 @@ import { Archive, RefreshCw, RotateCcw } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminAnnouncementModal } from './components/AdminAnnouncementModal';
-import { AdminSlipScannerModal } from './components/AdminSlipScannerModal';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { AppShell } from './components/AppShell';
 import { ArchiveView } from './components/ArchiveView';
@@ -65,6 +64,7 @@ import {
   deleteSellerPartyCloud,
   deleteSubSellerParty,
   fetchAdminPartiesAndSheetsOnce,
+  fetchAdminPartiesOnlyOnce,
   generateEasyLoginId,
   generateEasyPassword,
   isArchiveSnapshotExpired,
@@ -613,7 +613,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<SheetTab>('Seller Bill');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sellerIdsOpen, setSellerIdsOpen] = useState(false);
-  const [slipScannerOpen, setSlipScannerOpen] = useState(false);
   const [announcementModalOpen, setAnnouncementModalOpen] = useState(false);
   const [announcementBusy, setAnnouncementBusy] = useState(false);
   const [announcementError, setAnnouncementError] = useState('');
@@ -4391,31 +4390,32 @@ export default function App() {
       const agencyId = cloudSession.agencyId;
       const ownerUid = cloudAgencyRef.current.ownerUid || cloudSession.ownerUid;
       try {
-        // Also ensure live agency date (e.g. 27/11/2026) is synced to Firestore if it drifted behind
-        if (
-          !isAdminRestoredViewRef.current &&
-          cloudAgencyRef.current.date &&
-          latestStateRef.current.date &&
-          cloudAgencyRef.current.date !== latestStateRef.current.date
-        ) {
-          void syncAdminAgencyState(latestStateRef.current).catch(() => {});
-        }
         let partiesToSync = cloudPartiesRef.current;
         if (partiesToSync.length === 0) {
-          const fetched = await fetchAdminPartiesAndSheetsOnce(ownerUid, agencyId);
-          partiesToSync = fetched.parties;
+          partiesToSync = await fetchAdminPartiesOnlyOnce(ownerUid, agencyId);
         }
-        const failedNames: string[] = [];
-        const updatedCount = await syncAdminRestoredArchiveToPartiesCloud(
-          agencyId,
-          ownerUid,
-          snap.date,
-          snap,
-          partiesToSync,
-          latestStateRef.current.config,
-          authUser.uid,
-          (names) => failedNames.push(...names)
+        const shouldSyncAgencyDate = Boolean(
+          !isAdminRestoredViewRef.current &&
+            cloudAgencyRef.current.date &&
+            latestStateRef.current.date &&
+            cloudAgencyRef.current.date !== latestStateRef.current.date
         );
+        const failedNames: string[] = [];
+        const [updatedCount] = await Promise.all([
+          syncAdminRestoredArchiveToPartiesCloud(
+            agencyId,
+            ownerUid,
+            snap.date,
+            snap,
+            partiesToSync,
+            latestStateRef.current.config,
+            authUser.uid,
+            (names) => failedNames.push(...names)
+          ),
+          shouldSyncAgencyDate
+            ? syncAdminAgencyState(latestStateRef.current).catch(() => {})
+            : Promise.resolve(),
+        ]);
         if (failedNames.length > 0) {
           showToast(
             `${formatDateDDMM(snap.date)} sync incomplete (${failedNames.slice(0, 3).join(', ')}) — 1 baar dubara Sync IDs dabayein`,
@@ -4433,7 +4433,23 @@ export default function App() {
         }
       } catch (err) {
         console.error('[KK Agency] Manual archive sync failed:', err);
-        showToast('Sync failed — check connection and try again', 4000);
+        if (isFirestoreQuotaExceededError(err)) {
+          showToast('Firestore daily limit reached — please retry shortly', 5000);
+          return;
+        }
+        let reason = '';
+        const rawMsg = err instanceof Error ? err.message : String(err || '');
+        if (rawMsg.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(rawMsg) as { error?: string };
+            reason = String(parsed.error || '').slice(0, 90);
+          } catch {
+            reason = rawMsg.slice(0, 90);
+          }
+        } else {
+          reason = rawMsg.slice(0, 90);
+        }
+        showToast(reason ? `Sync failed: ${reason}` : 'Sync failed — please try again', 4500);
       }
     },
     [cloudSession, authUser, showToast]
@@ -6169,7 +6185,6 @@ export default function App() {
       onOpenSettings={handleOpenSettings}
       onOpenSellerIds={handleOpenSellerIds}
       onOpenAnnouncement={handleOpenAnnouncementModal}
-      onOpenSlipScanner={() => setSlipScannerOpen(true)}
       announcementActive={isAnnouncementLive}
       onOpenGoogleSheets={handleOpenGoogleSheets}
       googleSheetsActive={Boolean(
@@ -6636,29 +6651,6 @@ export default function App() {
           error={announcementError || cloudError}
           onAdminSignIn={handleAdminGoogleSignIn}
           onSaveAnnouncement={handleSavePublicAnnouncement}
-        />
-      )}
-
-      {slipScannerOpen && (
-        <AdminSlipScannerModal
-          isOpen={slipScannerOpen}
-          onClose={() => setSlipScannerOpen(false)}
-          isAdminSignedIn={cloudSession.kind === 'admin'}
-          sellerNames={Array.from(
-            new Set([
-              ...state.sellers.map((s) => s.name.trim()).filter(Boolean),
-              ...state.extraNames.map((n) => n.trim()).filter(Boolean),
-            ])
-          )}
-          activeSession={
-            activeTab === '1PM' || activeTab === '6PM' || activeTab === '8PM'
-              ? activeTab
-              : '1PM'
-          }
-          onInsertIntoSession={(sid, rows) => {
-            handleBulkAddEntries(sid, rows);
-            showToast(`${rows.length} scanned rows added to ${sid} ✓`);
-          }}
         />
       )}
     </AppShell>

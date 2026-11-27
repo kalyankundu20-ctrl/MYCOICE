@@ -58,7 +58,6 @@ export default defineConfig(() => {
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           navigateFallbackDenylist: [
             /^\/__/,
-            /^\/api\//,
             /\.(?:png|jpg|jpeg|gif|svg|ico|webp|webmanifest|json)$/i,
           ],
           runtimeCaching: [

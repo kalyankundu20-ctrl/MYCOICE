@@ -31,6 +31,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   formatINR,
   formatSessionRowsForCopy,
@@ -3623,21 +3624,24 @@ export const SessionSheetView = memo(function SessionSheetView({
         </div>
       )}
 
-      {/* Google Sheets-style Floating fx Live Calculation Bar (manual drag selection OR newly pasted data sum) */}
-      <AnimatePresence>
-        {hasSelection && selectionCalc ? (
-          <motion.div
-            key="fx-selection-bar"
-            initial={{ opacity: 0, y: 20, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 16, scale: 0.96 }}
-            transition={{ type: 'spring', stiffness: 460, damping: 32 }}
-            role="region"
-            aria-label="Selection actions"
-            className={`fixed bottom-[calc(4.85rem+env(safe-area-inset-bottom))] left-2 right-2 lg:left-auto lg:right-6 lg:bottom-5 z-40 bg-white text-slate-900 border border-slate-300 rounded-2xl shadow-2xl overflow-hidden ${
-              isTouchDragging ? 'pointer-events-none' : ''
-            }`}
-          >
+      {/* Google Sheets-style Floating fx Live Calculation Bar & Modals — portaled to document.body so they ALWAYS stay pinned right in front of dragged rows on screen */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <>
+            <AnimatePresence>
+              {hasSelection && selectionCalc ? (
+                <motion.div
+                  key="fx-selection-bar"
+                  initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 16, scale: 0.96 }}
+                  transition={{ type: 'spring', stiffness: 460, damping: 32 }}
+                  role="region"
+                  aria-label="Selection actions"
+                  className={`fixed bottom-[calc(4.9rem+env(safe-area-inset-bottom))] left-2 right-2 lg:left-auto lg:right-6 lg:bottom-5 z-40 bg-white text-slate-900 border border-slate-300 rounded-2xl shadow-2xl overflow-hidden ${
+                    isTouchDragging ? 'pointer-events-none' : ''
+                  }`}
+                >
             {/* Google Sheets fx Stats Row: fx | SUM | AVG | MAX | MIN | COUNT */}
             <div className="flex items-stretch border-b border-slate-200 bg-white overflow-x-auto no-scrollbar font-mono-tabular">
               <div className="shrink-0 px-3 py-2 flex items-center justify-center border-r border-slate-200 bg-slate-50">
@@ -4061,6 +4065,9 @@ export const SessionSheetView = memo(function SessionSheetView({
           </motion.div>
         )}
       </AnimatePresence>
+          </>,
+          document.body
+        )}
     </div>
   );
 });

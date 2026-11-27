@@ -209,10 +209,9 @@
   color: #ffffff;
 }
 
-/* Native momentum scrolling + paint/layout isolation for silky 60/120fps scrolling */
+/* Native momentum scrolling for silky 60/120fps scrolling (no contain: layout so position: fixed overlays stay viewport-pinned) */
 [data-kk-scroll-root="true"] {
   -webkit-overflow-scrolling: touch;
-  contain: layout style;
 }
 
 .kk-surface-card {

@@ -2127,6 +2127,37 @@ export async function fetchAdminPartiesAndSheetsOnce(
 }
 
 /**
+ * Ultra-fast stateless dbLite fetch of agency parties ONLY (zero sheets downloaded).
+ * Used by Sync IDs when live party listener hasn't populated yet.
+ */
+export async function fetchAdminPartiesOnlyOnce(
+  ownerUid: string,
+  agencyId = AGENCY_ID
+): Promise<CloudPartyDoc[]> {
+  const cleanAgencyId = sanitizeId(agencyId || AGENCY_ID, AGENCY_ID);
+  const partiesCol = collectionLite(dbLite, 'agencies', cleanAgencyId, 'parties');
+  if (ownerUid) {
+    try {
+      const snap = await withNetworkTimeout(
+        getDocsLite(queryLite(partiesCol, whereLite('ownerUid', '==', ownerUid))),
+        10000
+      );
+      if (snap.docs.length > 0) {
+        return snap.docs.map((d) => d.data() as CloudPartyDoc);
+      }
+    } catch {
+      // Fallback to unfiltered admin read below
+    }
+  }
+  try {
+    const snap = await withNetworkTimeout(getDocsLite(partiesCol), 10000);
+    return snap.docs.map((d) => d.data() as CloudPartyDoc);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Seller real-time single-document subscriptions (strictly isolated to own party & live agency winning numbers).
  */
 export function subscribeSellerPortal(
@@ -3303,8 +3334,8 @@ function sanitizePartyArchiveEntryRows(
 }
 
 // Safe JSON byte cap so Firestore's protobuf serialization (~1.6x-2.1x JSON for arrays of maps)
-// NEVER exceeds Firestore's hard 1,048,576 byte (1 MiB) document limit on heavy Masters (e.g. 8,000+ tickets).
-const MAX_PARTY_ARCHIVE_PAYLOAD_BYTES = 420_000;
+// stays fast (<450 KB protobuf) and NEVER approaches Firestore's 1 MiB document limit on heavy Masters (e.g. 7,000+ tickets).
+const MAX_PARTY_ARCHIVE_PAYLOAD_BYTES = 260_000;
 
 function buildCompactPartyArchivePayload(payload: DaySnapshot): DaySnapshot {
   return {
@@ -3415,8 +3446,8 @@ function sanitizePartyArchivePayload(snapshot: DaySnapshot, cleanId: string, cle
     return fullCandidate;
   }
 
-  // Heavy Master fallback (6,000+ tickets): shrink entries progressively so protobuf never exceeds 1 MiB
-  const shrinkCaps = [260, 140, 60, 20, 0];
+  // Heavy Master fallback (6,000+ tickets): shrink entries progressively so uploads stay fast & well under 1 MiB
+  const shrinkCaps = [180, 90, 35, 0];
   for (const cap of shrinkCaps) {
     const candidate: DaySnapshot = {
       ...basePayload,
@@ -3465,6 +3496,13 @@ export function makeUniquePartyArchiveId(
   return raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
 }
 
+function sanitizeOptionalRuleId(raw: string | undefined | null): string {
+  return String(raw || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 128);
+}
+
 function buildPartyArchiveDocBody(
   actorUid: string,
   party: CloudPartyDoc,
@@ -3473,14 +3511,24 @@ function buildPartyArchiveDocBody(
   targetPayload: DaySnapshot,
   isAdminActor: boolean
 ) {
-  const cleanAgencyId = (party.agencyId || AGENCY_ID).trim() || AGENCY_ID;
-  const cleanOwnerUid = (party.ownerUid || actorUid).trim();
+  const cleanAgencyId = sanitizeOptionalRuleId(party.agencyId || AGENCY_ID) || AGENCY_ID;
+  const cleanOwnerUid =
+    sanitizeOptionalRuleId(party.ownerUid || actorUid) || sanitizeOptionalRuleId(actorUid);
+  const cleanPartyId = sanitizeOptionalRuleId(party.partyId);
+  const cleanSnapshotId = sanitizeOptionalRuleId(targetId);
+  const cleanAssignedUid = sanitizeOptionalRuleId(isAdminActor ? party.assignedUid || '' : actorUid);
+  const cleanParentMasterId = sanitizeOptionalRuleId(party.parentMasterId || '');
+  const cleanParentMasterUid = sanitizeOptionalRuleId(party.parentMasterUid || '');
   const rawAdminUids =
     Array.isArray(party.adminUids) && party.adminUids.length > 0
       ? party.adminUids
       : [cleanOwnerUid];
   const adminUids = Array.from(
-    new Set([cleanOwnerUid, ...rawAdminUids].filter((u) => typeof u === 'string' && u.trim().length > 0))
+    new Set(
+      [cleanOwnerUid, ...rawAdminUids]
+        .map((u) => (typeof u === 'string' ? sanitizeOptionalRuleId(u) : ''))
+        .filter((u) => u.length > 0)
+    )
   ).slice(0, 10);
   const cleanSavedAt = String(targetPayload.savedAt || new Date().toISOString()).slice(0, 64);
   const cleanTrigger: DaySnapshot['trigger'] =
@@ -3494,14 +3542,14 @@ function buildPartyArchiveDocBody(
     adminUids,
     body: {
       agencyId: cleanAgencyId,
-      snapshotId: targetId,
-      partyId: party.partyId,
+      snapshotId: cleanSnapshotId,
+      partyId: cleanPartyId,
       partyName: (party.name || 'SELLER').trim().slice(0, 60) || 'SELLER',
       ownerUid: cleanOwnerUid,
       adminUids,
-      assignedUid: isAdminActor ? party.assignedUid || '' : actorUid,
-      parentMasterId: party.parentMasterId || '',
-      parentMasterUid: party.parentMasterUid || '',
+      assignedUid: cleanAssignedUid,
+      parentMasterId: cleanParentMasterId,
+      parentMasterUid: cleanParentMasterUid,
       date: cleanDate,
       savedAt: cleanSavedAt,
       trigger: cleanTrigger,
@@ -3559,7 +3607,7 @@ export async function savePartyArchiveCloud(
               ...(isAdminActor
                 ? {
                     adminUids: built.body.adminUids,
-                    assignedUid: party.assignedUid || '',
+                    assignedUid: built.body.assignedUid,
                   }
                 : {}),
               date: cleanDate,
@@ -3666,6 +3714,11 @@ export function subscribePartyArchives(
   return onSnapshot(
     q,
     (snap) => {
+      // Ignore stale memoryLocalCache snapshots while online so fresh stateless dbLite Sync IDs
+      // writes are never briefly overwritten by older cached data.
+      if (snap.metadata.fromCache && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+        return;
+      }
       const nowMs = Date.now();
       const list: DaySnapshot[] = [];
       for (const d of snap.docs) {
@@ -3877,8 +3930,11 @@ async function fetchAllAgencyPartyArchives(
   }
 
   if (!fetchedPrimary && activeParties.length > 0) {
-    await Promise.all(
-      activeParties.slice(0, 40).map(async (p) => {
+    const slice = activeParties.slice(0, 40);
+    let idx = 0;
+    const workers = Array.from({ length: Math.min(4, slice.length) }, async () => {
+      while (idx < slice.length) {
+        const p = slice[idx++];
         try {
           const qParty = queryLite(
             collectionLite(dbLite, 'agencies', agencyId, 'partyArchives'),
@@ -3888,8 +3944,9 @@ async function fetchAllAgencyPartyArchives(
         } catch {
           // Ignore individual party query failure when no docs exist or restricted
         }
-      })
-    );
+      }
+    });
+    await Promise.all(workers);
   }
 
   return Array.from(byDocId.entries()).map(([docId, data]) => ({ docId, data }));
@@ -4478,10 +4535,14 @@ async function syncSingleAdminArchiveAgainstExisting(
     }
   }
 
-  // Pack writes into stateless dbLite `writeBatchLite` chunks (max 8 ops or ~1.1 MiB JSON per batch)
-  // so EVERY write is 100% acknowledged by Firestore's real server over HTTPS REST before resolving!
-  const MAX_BATCH_OPS = 8;
-  const MAX_BATCH_BYTES = 1_100_000;
+  if (pendingOps.length === 0) return 0;
+
+  // Pack writes into stateless dbLite `writeBatchLite` chunks:
+  // - Max 5 ops per batch (<= 10 Firestore `exists()` rule reads, safely half of Firestore's 20-read batch cap)
+  // - Max 320 KB JSON per batch (~550 KB protobuf) for instant sub-second HTTPS REST commits on mobile 5G/Wi-Fi.
+  const MAX_BATCH_OPS = 5;
+  const MAX_BATCH_BYTES = 320_000;
+  const CONCURRENCY = 4;
   const batches: PendingArchiveWriteOp[][] = [];
   let currentBatch: PendingArchiveWriteOp[] = [];
   let currentBytes = 0;
@@ -4499,6 +4560,46 @@ async function syncSingleAdminArchiveAgainstExisting(
     currentBytes += op.approxBytes;
   }
   if (currentBatch.length > 0) batches.push(currentBatch);
+
+  let lastFailureReason = '';
+  const recordFailureReason = (err: unknown) => {
+    if (lastFailureReason || !err) return;
+    const obj = err as { code?: string; message?: string };
+    const code = typeof obj.code === 'string' ? obj.code.trim() : '';
+    const msg = typeof obj.message === 'string' ? obj.message.trim() : String(err);
+    if (code) {
+      lastFailureReason = code;
+      return;
+    }
+    if (msg.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(msg) as { error?: string };
+        if (parsed.error) {
+          lastFailureReason = parsed.error.slice(0, 80);
+          return;
+        }
+      } catch {
+        // Not valid JSON
+      }
+    }
+    lastFailureReason = msg.slice(0, 80);
+  };
+
+  const runWithConcurrency = async <T,>(
+    items: T[],
+    limit: number,
+    worker: (item: T) => Promise<void>
+  ): Promise<void> => {
+    if (items.length === 0) return;
+    let cursor = 0;
+    const pool = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const item = items[cursor++];
+        await worker(item);
+      }
+    });
+    await Promise.all(pool);
+  };
 
   const runOpIndividually = async (op: PendingArchiveWriteOp): Promise<void> => {
     if (op.kind === 'update') {
@@ -4524,6 +4625,7 @@ async function syncSingleAdminArchiveAgainstExisting(
           await commitUpdate(compactPayload);
           syncedCount++;
         } catch (retryErr) {
+          recordFailureReason(retryErr || err);
           failedParties.push(op.party.name || op.party.partyId);
           console.error('[KK Agency] Could not update partyArchive:', op.party.name, retryErr || err);
         }
@@ -4551,87 +4653,88 @@ async function syncSingleAdminArchiveAgainstExisting(
         });
         syncedCount++;
       } catch (err) {
+        recordFailureReason(err);
         failedParties.push(op.party.name || op.party.partyId);
         console.error('[KK Agency] Could not create missing partyArchive:', op.party.name, err);
       }
     }
   };
 
-  await Promise.all(
-    batches.map(async (ops) => {
-      try {
-        const batch = writeBatchLite(dbLite);
-        const createdMeta: Array<{
-          docId: string;
-          op: Extract<PendingArchiveWriteOp, { kind: 'create' }>;
-          ownerUid: string;
-          adminUids: string[];
-        }> = [];
-        for (const op of ops) {
-          if (op.kind === 'update') {
-            const ref = docLite(dbLite, 'agencies', agencyId, 'partyArchives', op.item.docId);
-            batch.update(ref, {
-              payload: op.payload,
-              updatedAt: serverTimestampLite(),
-            });
-          } else {
-            const targetId = op.payload.id || makeUniquePartyArchiveId(op.party.partyId, cleanDate);
-            const built = buildPartyArchiveDocBody(
-              ownerUid,
-              op.party,
-              targetId,
-              cleanDate,
-              op.payload,
-              true
-            );
-            const ref = docLite(dbLite, 'agencies', built.cleanAgencyId, 'partyArchives', targetId);
-            batch.set(ref, built.body);
-            createdMeta.push({
-              docId: targetId,
-              op,
-              ownerUid: built.cleanOwnerUid,
-              adminUids: built.adminUids,
-            });
-          }
-        }
-        await withNetworkTimeout(batch.commit(), 20000);
-        for (const op of ops) {
-          if (op.kind === 'update') {
-            op.item.data = { ...op.item.data, payload: op.payload };
-          }
-          syncedCount++;
-        }
-        for (const meta of createdMeta) {
-          allPartyArchiveDocs.push({
-            docId: meta.docId,
-            data: {
-              agencyId,
-              snapshotId: meta.docId,
-              partyId: meta.op.party.partyId,
-              partyName: meta.op.party.name,
-              ownerUid: meta.ownerUid,
-              adminUids: meta.adminUids,
-              assignedUid: meta.op.party.assignedUid || '',
-              parentMasterId: meta.op.party.parentMasterId || '',
-              parentMasterUid: meta.op.party.parentMasterUid || '',
-              date: cleanDate,
-              savedAt: meta.op.payload.savedAt,
-              trigger: meta.op.payload.trigger,
-              payload: meta.op.payload,
-            },
+  // Bounded concurrency (max 4 in-flight HTTPS requests) prevents flooding iOS Safari's 6-connection cap
+  await runWithConcurrency(batches, CONCURRENCY, async (ops) => {
+    try {
+      const batch = writeBatchLite(dbLite);
+      const createdMeta: Array<{
+        docId: string;
+        op: Extract<PendingArchiveWriteOp, { kind: 'create' }>;
+        ownerUid: string;
+        adminUids: string[];
+      }> = [];
+      for (const op of ops) {
+        if (op.kind === 'update') {
+          const ref = docLite(dbLite, 'agencies', agencyId, 'partyArchives', op.item.docId);
+          batch.update(ref, {
+            payload: op.payload,
+            updatedAt: serverTimestampLite(),
+          });
+        } else {
+          const targetId = op.payload.id || makeUniquePartyArchiveId(op.party.partyId, cleanDate);
+          const built = buildPartyArchiveDocBody(
+            ownerUid,
+            op.party,
+            targetId,
+            cleanDate,
+            op.payload,
+            true
+          );
+          const ref = docLite(dbLite, 'agencies', built.cleanAgencyId, 'partyArchives', built.body.snapshotId);
+          batch.set(ref, built.body);
+          createdMeta.push({
+            docId: built.body.snapshotId,
+            op,
+            ownerUid: built.cleanOwnerUid,
+            adminUids: built.adminUids,
           });
         }
-      } catch {
-        // If any single doc in the batch collided, exceeded size, or timed out, fall back cleanly per-op via dbLite
-        await Promise.all(ops.map((op) => runOpIndividually(op)));
       }
-    })
-  );
+      await withNetworkTimeout(batch.commit(), 15000);
+      for (const op of ops) {
+        if (op.kind === 'update') {
+          op.item.data = { ...op.item.data, payload: op.payload };
+        }
+        syncedCount++;
+      }
+      for (const meta of createdMeta) {
+        allPartyArchiveDocs.push({
+          docId: meta.docId,
+          data: {
+            agencyId,
+            snapshotId: meta.docId,
+            partyId: meta.op.party.partyId,
+            partyName: meta.op.party.name,
+            ownerUid: meta.ownerUid,
+            adminUids: meta.adminUids,
+            assignedUid: meta.op.party.assignedUid || '',
+            parentMasterId: meta.op.party.parentMasterId || '',
+            parentMasterUid: meta.op.party.parentMasterUid || '',
+            date: cleanDate,
+            savedAt: meta.op.payload.savedAt,
+            trigger: meta.op.payload.trigger,
+            payload: meta.op.payload,
+          },
+        });
+      }
+    } catch {
+      // If any single doc in the batch collided, exceeded size, or timed out, fall back cleanly per-op via dbLite
+      await runWithConcurrency(ops, CONCURRENCY, runOpIndividually);
+    }
+  });
 
   if (failedParties.length > 0) {
     onPartialFailure?.(failedParties);
     if (syncedCount === 0) {
-      throw new Error(`Archive sync failed for: ${failedParties.slice(0, 4).join(', ')}`);
+      const reasonSuffix = lastFailureReason ? ` (${lastFailureReason})` : '';
+      throw new Error(`Archive sync failed${reasonSuffix} for: ${failedParties.slice(0, 4).join(', ')}`);
     }
   }
 
