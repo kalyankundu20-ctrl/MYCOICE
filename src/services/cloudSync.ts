@@ -45,6 +45,7 @@ import {
 import {
   AgencyConfig,
   AppState,
+  AppThemeId,
   ArchivedSellerSummary,
   DaySnapshot,
   PrizeListRow,
@@ -54,6 +55,7 @@ import {
   SessionId,
   TicketEntryRow,
 } from '../types/ledger';
+import { resolveThemeOption } from '../utils/theme';
 
 export const AGENCY_ID = 'kk-main';
 export const BOOTSTRAP_ADMIN_EMAIL = 'kalyankundu20@gmail.com';
@@ -81,6 +83,7 @@ export interface CloudAgencyDoc {
   winning1PM: string;
   winning6PM: string;
   winning8PM: string;
+  theme?: AppThemeId;
 }
 
 export type CloudAnnouncementKind = 'offer' | 'urgent' | 'notice';
@@ -573,6 +576,7 @@ export async function bootstrapAdminAgency(
   const cleanWin1 = String(state.winningRaw['1PM'] || '').slice(0, 20000);
   const cleanWin6 = String(state.winningRaw['6PM'] || '').slice(0, 20000);
   const cleanWin8 = String(state.winningRaw['8PM'] || '').slice(0, 20000);
+  const cleanTheme = resolveThemeOption(state.config.theme).id;
 
   if (!existingAgency) {
     const batch = writeBatch(db);
@@ -589,6 +593,7 @@ export async function bootstrapAdminAgency(
       winning1PM: cleanWin1,
       winning6PM: cleanWin6,
       winning8PM: cleanWin8,
+      theme: cleanTheme,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -645,6 +650,7 @@ export async function bootstrapAdminAgency(
       winning1PM: cleanWin1,
       winning6PM: cleanWin6,
       winning8PM: cleanWin8,
+      theme: cleanTheme,
     };
   }
 
@@ -743,10 +749,30 @@ export async function syncAdminAgencyState(state: AppState): Promise<void> {
         winning1PM: String(state.winningRaw['1PM'] || '').slice(0, 20000),
         winning6PM: String(state.winningRaw['6PM'] || '').slice(0, 20000),
         winning8PM: String(state.winningRaw['8PM'] || '').slice(0, 20000),
+        theme: resolveThemeOption(state.config.theme).id,
         updatedAt: serverTimestampLite(),
       }),
       15000,
       'NETWORK_TIMEOUT: Agency sync timeout ho gaya. 1 baar dubara Sync IDs dabayein.'
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+/**
+ * Push Admin's selected theme immediately to /agencies/kk-main so all Master & Sub-Master portals update live.
+ */
+export async function syncAdminAgencyTheme(theme: AppThemeId): Promise<void> {
+  const path = `agencies/${AGENCY_ID}`;
+  const cleanTheme = resolveThemeOption(theme).id;
+  try {
+    await withNetworkTimeout(
+      updateDocLite(docLite(dbLite, 'agencies', AGENCY_ID), {
+        theme: cleanTheme,
+        updatedAt: serverTimestampLite(),
+      }),
+      10000
     );
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);

@@ -91,6 +91,7 @@ import {
   subscribeAdminSheets,
   subscribePublicAnnouncement,
   syncAdminAgencyState,
+  syncAdminAgencyTheme,
   syncAdminArchivesBatchToPartiesCloud,
   syncAdminArchivesCloud,
   syncAdminLedgerChunksCloud,
@@ -147,7 +148,7 @@ import {
   writeLocalStorageSafe,
   writePermanentSellers,
 } from './utils/storage';
-import { applyDocumentTheme } from './utils/theme';
+import { applyDocumentTheme, resolveThemeOption } from './utils/theme';
 
 const CLOUD_SESSION_CACHE_KEY = 'kk_agency_cloud_session_v1';
 
@@ -2240,6 +2241,10 @@ export default function App() {
             pausedAutoArchiveDate: priv
               ? priv.pausedAutoArchiveDate
               : local.config.pausedAutoArchiveDate,
+            theme: agency?.theme
+              ? resolveThemeOption(agency.theme).id
+              : local.config.theme,
+            themeVersion: 4,
           };
           const restoredExtraNames =
             priv && priv.extraNames.length > 0 ? priv.extraNames : local.extraNames;
@@ -2256,6 +2261,7 @@ export default function App() {
             winning1PM: restoredWinning['1PM'],
             winning6PM: restoredWinning['6PM'],
             winning8PM: restoredWinning['8PM'],
+            theme: resolveThemeOption(restoredConfig.theme).id,
           });
           lastPrivateConfigSigRef.current = JSON.stringify({
             whatsappNumber: restoredConfig.whatsappNumber,
@@ -2319,6 +2325,10 @@ export default function App() {
               priv && priv.whatsappNumber.trim()
                 ? priv.whatsappNumber
                 : local.config.whatsappNumber,
+            theme: agency?.theme
+              ? resolveThemeOption(agency.theme).id
+              : local.config.theme,
+            themeVersion: 4,
           };
           const mergedExtraNames =
             priv && priv.extraNames.length > 0
@@ -2336,6 +2346,7 @@ export default function App() {
             winning1PM: mergedWinning['1PM'],
             winning6PM: mergedWinning['6PM'],
             winning8PM: mergedWinning['8PM'],
+            theme: resolveThemeOption(mergedConfig.theme).id,
           });
 
           const nextMerged: AppState = {
@@ -2425,6 +2436,7 @@ export default function App() {
     ) {
       return;
     }
+    const resolvedTheme = resolveThemeOption(state.config.theme).id;
     const sig = JSON.stringify({
       date: state.date,
       limitThreshold: state.config.limitThreshold,
@@ -2434,15 +2446,18 @@ export default function App() {
       winning1PM: state.winningRaw['1PM'],
       winning6PM: state.winningRaw['6PM'],
       winning8PM: state.winningRaw['8PM'],
+      theme: resolvedTheme,
     });
     const agencyDateDrifted = Boolean(cloudAgency.date && state.date && cloudAgency.date !== state.date);
-    if (sig === lastAgencySigRef.current && !agencyDateDrifted) return;
+    const agencyThemeDrifted = !cloudAgency.theme || cloudAgency.theme !== resolvedTheme;
+    if (sig === lastAgencySigRef.current && !agencyDateDrifted && !agencyThemeDrifted) return;
 
     const timer = window.setTimeout(() => {
       if (isAdminRestoredViewRef.current || !adminVaultHydratedRef.current || dayCloseSyncingRef.current) return;
       void syncAdminAgencyState(latestStateRef.current)
         .then(() => {
           lastAgencySigRef.current = sig;
+          setCloudAgency((prev) => (prev ? { ...prev, theme: resolvedTheme } : prev));
         })
         .catch((err) => {
           lastAgencySigRef.current = '';
@@ -2461,6 +2476,7 @@ export default function App() {
     state.config.sellerLimitThreshold,
     state.config.excludedPrizeNames,
     state.config.itemOptions,
+    state.config.theme,
     state.winningRaw,
   ]);
 
@@ -6037,6 +6053,14 @@ export default function App() {
       ...prev,
       config: { ...prev.config, ...patch },
     }));
+    if (patch.theme && cloudSession.kind === 'admin' && cloudAgencyRef.current) {
+      const cleanTheme = resolveThemeOption(patch.theme).id;
+      void syncAdminAgencyTheme(cleanTheme)
+        .then(() => {
+          setCloudAgency((prev) => (prev ? { ...prev, theme: cleanTheme } : prev));
+        })
+        .catch(() => {});
+    }
   };
 
   const handleUpdateExtraNames = (extraNames: string[]) => {

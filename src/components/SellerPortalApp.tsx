@@ -64,6 +64,7 @@ import {
 import { BillReceiptPayload, sendBillCardDirectToWhatsApp } from '../utils/billImageGenerator';
 import { AppSounds } from '../utils/sound';
 import { scheduleIdlePersistence } from '../utils/storage';
+import { applyDocumentTheme, resolveThemeOption } from '../utils/theme';
 import { AnnouncementBanner } from './AnnouncementBanner';
 import { getIstClockParts, getSellerSessionLockStatus, SessionLockStatus } from '../utils/sessionLock';
 import { ArchiveView } from './ArchiveView';
@@ -302,6 +303,12 @@ export function SellerPortalApp({
   partyRef.current = party;
   agencyRef.current = agency;
   sheetExistsRef.current = sheetExists;
+
+  useEffect(() => {
+    if (agency?.theme) {
+      applyDocumentTheme(resolveThemeOption(agency.theme).id);
+    }
+  }, [agency?.theme]);
 
   useEffect(() => {
     if (scrollRef.current) {

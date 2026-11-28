@@ -185,7 +185,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'agencyId', 'name', 'ownerUid', 'adminUids', 'date',
           'limitThreshold', 'sellerLimitThreshold', 'excludedPrizeNames', 'itemOptions',
-          'winning1PM', 'winning6PM', 'winning8PM', 'createdAt', 'updatedAt'
+          'winning1PM', 'winning6PM', 'winning8PM', 'theme', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.agencyId) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
@@ -199,6 +199,7 @@ service cloud.firestore {
         data.winning1PM is string && data.winning1PM.size() <= 20000 &&
         data.winning6PM is string && data.winning6PM.size() <= 20000 &&
         data.winning8PM is string && data.winning8PM.size() <= 20000 &&
+        (!('theme' in data) || (data.theme is string && data.theme.size() <= 24 && (data.theme == 'aurora-live' || data.theme == 'navy' || data.theme == 'sapphire'))) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -610,7 +611,7 @@ service cloud.firestore {
         incoming().diff(existing()).affectedKeys().hasOnly([
           'name', 'adminUids', 'date', 'limitThreshold', 'sellerLimitThreshold',
           'excludedPrizeNames', 'itemOptions',
-          'winning1PM', 'winning6PM', 'winning8PM', 'updatedAt'
+          'winning1PM', 'winning6PM', 'winning8PM', 'theme', 'updatedAt'
         ]);
       allow delete: if isVerifiedUser() && isValidId(agencyId) && (
         isBootstrapAdmin() || existing().ownerUid == request.auth.uid

@@ -74,6 +74,7 @@
         "winning1PM": { "type": "string", "minLength": 0, "maxLength": 20000 },
         "winning6PM": { "type": "string", "minLength": 0, "maxLength": 20000 },
         "winning8PM": { "type": "string", "minLength": 0, "maxLength": 20000 },
+        "theme": { "type": "string", "enum": ["aurora-live", "navy", "sapphire"], "maxLength": 24, "description": "Active agency theme set by Admin and synced live to all Master and Sub-Master portals." },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

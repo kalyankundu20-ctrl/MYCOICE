@@ -243,7 +243,7 @@ export function SettingsDrawer({
                     <div>
                       <h3 className="text-xs font-bold text-slate-900 dark:text-white">App Theme</h3>
                       <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                        Choose your executive color style
+                        Syncs live to Admin, Master &amp; Sub-Master apps
                       </p>
                     </div>
                   </div>
