@@ -752,7 +752,8 @@ export function getSellerPrizeRates(rankStr: string, sellerName: string): {
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '');
-  const isSpecialSeller = compactName === 'TAPAN' || compactName === 'SONU';
+  const isSpecialSeller =
+    compactName === 'TAPAN' || compactName === 'SONU' || compactName === 'ROHIT';
   const isHeroSeller = compactName === 'HERO' || compactName === 'HEEO';
 
   switch (rank) {
